@@ -18,6 +18,9 @@ use iced_luminate::{Element, Luminate, Renderer, Theme};
 /// Steps in the card's pager.
 const STEPS: usize = 2;
 
+/// Read-only rows that pad step 2 past the card's `max_height`.
+const FILLER: [&str; 2] = ["Environment", "Arguments"];
+
 /// Messages of the card page.
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
@@ -84,20 +87,21 @@ impl Page for CardPage {
             row![
                 space().width(Length::Fill),
                 luminate.button(
-                    Button::new("Back")
+                    Button::new("Cancel")
                         .hierarchy(ButtonHierarchy::Secondary)
                         .on_press_maybe(can_go_back.then_some(Message::Back))
                 ),
                 luminate.button(
-                    Button::new("Next").on_press_maybe(can_go_next.then_some(Message::Next))
+                    Button::new("Apply").on_press_maybe(can_go_next.then_some(Message::Next))
                 ),
             ]
             .spacing(10)
             .padding(15),
         );
 
-        let mut card = Card::new("New entry")
+        let mut card = Card::new("Add External Runtime")
             .header_cache(self.header_cache.clone())
+            .width(418)
             .pages([self.step_1(), self.step_2()], self.current)
             .controls(controls);
         if let Ok(height) = self.max_height.parse::<f32>() {
@@ -125,8 +129,8 @@ impl CardPage {
         column![
             self.luminate.input(
                 Input::new("Name", &self.name)
-                    .label("Name")
-                    .hint("What this entry is called")
+                    .label("Path To Binary")
+                    .hint("Path to runtime executable file")
                     .on_input(Message::NameChanged),
             )
         ]
@@ -150,16 +154,24 @@ impl CardPage {
                 ]
                 .padding(Padding::default().top(10))
                 .spacing(10),
-                column![
-                    // No `on_input`: a read-only field.
-                    self.luminate
-                        .input(Input::new("Summary", &self.name).label("Summary")),
-                    self.luminate.input(
-                        Input::new("Notes", &self.notes)
-                            .label("Notes")
-                            .on_input(Message::NotesChanged)
+                column(
+                    [
+                        // No `on_input`: a read-only field.
+                        self.luminate
+                            .input(Input::new("Summary", &self.name).label("Summary")),
+                        self.luminate.input(
+                            Input::new("Notes", &self.notes)
+                                .label("Notes")
+                                .on_input(Message::NotesChanged),
+                        ),
+                    ]
+                    .into_iter()
+                    .chain(
+                        FILLER.iter().map(|label| {
+                            self.luminate.input(Input::new(label, "").label(label))
+                        })
                     ),
-                ]
+                )
                 .spacing(15),
             ]
             .spacing(20)

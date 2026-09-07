@@ -25,6 +25,13 @@ fn main() -> iced::Result {
     // `RUST_LOG=info` shows the adapter and the surface-format choice.
     env_logger::init();
 
+    // The sharpest reconstruction tier, for every cached composite in the
+    // process. Left to itself the tier is picked per adapter, and an
+    // integrated GPU would take the cheaper single tap — worth having, but it
+    // softens sliding text enough that the moment a `Pager` stops compositing
+    // and draws its page directly reads as a change in sharpness. This is a
+    // showcase; it can afford the taps. Set it once, here: the override is
+    // process-wide, so a page that sets it in passing changes the whole app.
     set_filter_quality(FilterQuality::CatmullRom);
 
     let app = iced::application(App::new, App::update, App::view)

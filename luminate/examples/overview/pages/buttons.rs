@@ -51,7 +51,7 @@ impl Page for ButtonsPage {
         let luminate = &self.luminate;
 
         column![
-            luminate.button(Button::new("Go to inputs").on_press(Message::NavigateInputs)),
+            luminate.button(Button::new("Go To Inputs").on_press(Message::NavigateInputs)),
             luminate.button(
                 Button::new("Action")
                     .hierarchy(ButtonHierarchy::Secondary)
