@@ -175,7 +175,11 @@ fn input_style(theme: &Theme, is_error: bool, status: text_input::Status) -> tex
     let tokens = theme.input;
     let is_disabled = matches!(status, text_input::Status::Disabled);
 
+    // `Disabled` is matched first: a field nobody can type into states that
+    // it is inert, not that its contents are wrong, so it keeps the plain
+    // border even while its value is in error.
     let (border_color, border_width) = match (status, is_error) {
+        (text_input::Status::Disabled, _) => (tokens.border, 1.0),
         (text_input::Status::Focused { .. }, false) => (Color::TRANSPARENT, 0.0),
         (_, true) => (tokens.border_error, 1.0),
         (_, false) => (tokens.border, 1.0),
