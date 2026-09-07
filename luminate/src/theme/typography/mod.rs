@@ -35,6 +35,67 @@ pub const FONT_INTER_ITALIC: &[u8] = include_bytes!("./assets/InterVariable-Ital
 /// bundled files (`tests/fonts.rs` asserts it resolves).
 pub const FAMILY: &str = "Inter Variable";
 
+/// The extra weights the bundled faces are *declared* at, beyond the 400 a
+/// variable font carries by default.
+///
+/// The text stack picks a face by exact declared weight: it looks for a face
+/// of the requested family whose `OS/2.usWeightClass` equals the requested
+/// weight, and if there is none it takes whatever other family does declare
+/// it. A variable font declares one weight, so asking a bundled face for
+/// [`Weight::Medium`] found no exact match and the text silently came out in
+/// some system font that happens to ship a 500 face.
+///
+/// [`Luminate::fonts`](crate::Luminate::fonts) therefore hands the text stack
+/// one extra copy of each face per weight listed here, differing only in that
+/// field. The copies keep their `fvar`/`gvar` tables, so a copy is still a
+/// variable font: selected at 500, it is *also* the face that renders 437 or
+/// 612 when a weight is animated between them.
+///
+/// Weights not listed still work whenever no other installed family declares
+/// them exactly — which is why the gaps between these are safe to animate
+/// through, and why the round hundreds are the ones worth declaring.
+#[cfg(feature = "bundled-font")]
+pub const DECLARED_WEIGHTS: [u16; 3] = [500, 600, 700];
+
+/// `font` with `OS/2.usWeightClass` rewritten to `weight`, or `None` if the
+/// bytes are not an sfnt font with an `OS/2` table.
+///
+/// Only those two bytes change: every table, including `fvar` and `gvar`,
+/// is carried over untouched. Table checksums are deliberately left stale —
+/// the copy is handed straight to the text stack, whose parser does not
+/// verify them, and never written back out.
+#[cfg(feature = "bundled-font")]
+#[must_use]
+pub(crate) fn with_declared_weight(font: &[u8], weight: u16) -> Option<Vec<u8>> {
+    /// sfnt header: version, table count, then three fields we don't need.
+    const HEADER: usize = 12;
+    /// One table directory record: tag, checksum, offset, length.
+    const RECORD: usize = 16;
+    /// `usWeightClass` sits after `version` and `xAvgCharWidth`.
+    const US_WEIGHT_CLASS: usize = 4;
+
+    let version = font.get(..4)?;
+    if version != 0x0001_0000_u32.to_be_bytes() && version != *b"OTTO" {
+        return None;
+    }
+
+    let count = u16::from_be_bytes(font.get(4..6)?.try_into().ok()?) as usize;
+    let directory = font.get(HEADER..HEADER.checked_add(count.checked_mul(RECORD)?)?)?;
+    let record = directory
+        .as_chunks::<RECORD>()
+        .0
+        .iter()
+        .find(|record| record[..4] == *b"OS/2")?;
+    let table = u32::from_be_bytes(record[8..12].try_into().ok()?) as usize;
+    let field = table.checked_add(US_WEIGHT_CLASS)?;
+
+    let mut out = font.to_vec();
+    out.get_mut(field..field.checked_add(2)?)?
+        .copy_from_slice(&weight.to_be_bytes());
+
+    Some(out)
+}
+
 /// [`FAMILY`] at normal weight and slant: the application's default font
 /// (`iced::application(..).default_font(FONT)`).
 pub const FONT: Font = Font {
@@ -365,6 +426,75 @@ mod tests {
     fn the_default_font_is_the_family_upright() {
         assert_eq!(FONT.family, Family::Name(FAMILY));
         assert_eq!(FONT, TextStyle::text(TextSize::Md, Weight::Normal).font());
+    }
+
+    /// Reads `OS/2.usWeightClass` back out of an sfnt, the same way the text
+    /// stack's parser does.
+    #[cfg(feature = "bundled-font")]
+    fn declared_weight(font: &[u8]) -> u16 {
+        let count = u16::from_be_bytes(font[4..6].try_into().unwrap()) as usize;
+        let record = font[12..12 + count * 16]
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .find(|record| record[..4] == *b"OS/2")
+            .expect("the bundled faces have an OS/2 table");
+        let table = u32::from_be_bytes(record[8..12].try_into().unwrap()) as usize;
+
+        u16::from_be_bytes(font[table + 4..table + 6].try_into().unwrap())
+    }
+
+    #[cfg(feature = "bundled-font")]
+    #[test]
+    fn a_declared_weight_copy_changes_two_bytes_and_nothing_else() {
+        assert_eq!(declared_weight(FONT_INTER), 400, "the shipped face is 400");
+
+        for weight in DECLARED_WEIGHTS {
+            let copy = with_declared_weight(FONT_INTER, weight).expect("a valid sfnt");
+
+            assert_eq!(declared_weight(&copy), weight);
+            assert_eq!(copy.len(), FONT_INTER.len(), "no table was resized");
+
+            let differing = copy.iter().zip(FONT_INTER).filter(|(a, b)| a != b).count();
+            assert!(
+                differing <= 2,
+                "{weight}: {differing} bytes differ, expected only usWeightClass"
+            );
+        }
+    }
+
+    /// The copies are still variable fonts: that is what lets one of them
+    /// render an animated weight between the declared ones.
+    #[cfg(feature = "bundled-font")]
+    #[test]
+    fn a_declared_weight_copy_keeps_its_variation_tables() {
+        let copy = with_declared_weight(FONT_INTER, 700).expect("a valid sfnt");
+        let count = u16::from_be_bytes(copy[4..6].try_into().unwrap()) as usize;
+        let tags: Vec<[u8; 4]> = copy[12..12 + count * 16]
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .map(|record| record[..4].try_into().unwrap())
+            .collect();
+
+        for tag in [b"fvar", b"gvar", b"HVAR"] {
+            assert!(
+                tags.contains(tag),
+                "{} is missing",
+                str::from_utf8(tag).unwrap()
+            );
+        }
+    }
+
+    #[cfg(feature = "bundled-font")]
+    #[test]
+    fn nonsense_bytes_are_not_patched() {
+        assert!(with_declared_weight(b"not a font", 500).is_none());
+        assert!(with_declared_weight(&[], 500).is_none());
+        // A plausible header whose table count runs off the end.
+        let mut truncated = FONT_INTER[..64].to_vec();
+        truncated[4..6].copy_from_slice(&9999_u16.to_be_bytes());
+        assert!(with_declared_weight(&truncated, 500).is_none());
     }
 
     #[cfg(feature = "bundled-font")]

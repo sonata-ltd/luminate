@@ -132,6 +132,15 @@ The first release. What each crate provides:
 
 - `Luminate`: theme + motion engine; `host`, `button`, `input`, `sidebar`,
   `card`, `pager`; `Luminate::fonts()`.
+- `Luminate::fonts()` returns eight buffers, not two: the upright and italic
+  faces, plus one copy of each per weight in
+  `typography::DECLARED_WEIGHTS` (500, 600, 700), differing only in
+  `OS/2.usWeightClass`. The text stack selects a face by *exact* declared
+  weight and falls back to any other family that declares it, and a variable
+  font declares one — so without the copies, asking the kit's family for
+  Medium silently rendered in a system font. The copies keep their
+  `fvar`/`gvar` tables, so each is still the variable face that renders an
+  animated weight between the declared ones. Each costs about 900 KB.
 - `descriptor::{Button, ButtonContent, ButtonHierarchy, ButtonSize, Input,
   Sidebar, Axis, Card, Pager}` as plain data with builders.
 - `theme::Theme` (`LIGHT`, `DARK`) implementing `iced::theme::Base` and the

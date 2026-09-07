@@ -86,21 +86,41 @@ impl Luminate {
         self.motion.host(content).into()
     }
 
-    /// The font files to load: pass each to `iced::application(..).font(..)`
-    /// (upright, then italic). Empty without the `bundled-font` feature.
+    /// The font files to load: pass each to `iced::application(..).font(..)`.
+    /// Empty without the `bundled-font` feature.
+    ///
+    /// The two bundled faces come first, upright then italic, followed by one
+    /// copy of each per weight in
+    /// [`DECLARED_WEIGHTS`](crate::theme::typography::DECLARED_WEIGHTS) —
+    /// eight buffers in all. The copies exist so the text stack can select
+    /// the kit's family by exact weight; see `DECLARED_WEIGHTS` for why, and
+    /// note that each costs about 900 KB of memory.
     ///
     /// ```
     /// use iced_luminate::Luminate;
     ///
     /// let fonts = Luminate::fonts();
-    /// assert_eq!(fonts.len(), if cfg!(feature = "bundled-font") { 2 } else { 0 });
+    /// assert_eq!(fonts.len(), if cfg!(feature = "bundled-font") { 8 } else { 0 });
     /// ```
     #[must_use]
     pub fn fonts() -> Vec<Cow<'static, [u8]>> {
         #[cfg(feature = "bundled-font")]
         {
-            use crate::theme::typography::{FONT_INTER, FONT_INTER_ITALIC};
-            vec![Cow::Borrowed(FONT_INTER), Cow::Borrowed(FONT_INTER_ITALIC)]
+            use crate::theme::typography::{
+                DECLARED_WEIGHTS, FONT_INTER, FONT_INTER_ITALIC, with_declared_weight,
+            };
+
+            let faces = [FONT_INTER, FONT_INTER_ITALIC];
+            let mut fonts: Vec<Cow<'static, [u8]>> =
+                faces.iter().map(|face| Cow::Borrowed(*face)).collect();
+
+            fonts.extend(faces.iter().flat_map(|face| {
+                DECLARED_WEIGHTS
+                    .iter()
+                    .filter_map(move |weight| with_declared_weight(face, *weight).map(Cow::Owned))
+            }));
+
+            fonts
         }
         #[cfg(not(feature = "bundled-font"))]
         {
