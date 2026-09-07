@@ -5,6 +5,7 @@ mod cached;
 #[cfg(feature = "wgpu")]
 mod composite;
 mod compositor;
+mod content_stack;
 mod filter;
 mod geometry;
 mod pager;
@@ -25,6 +26,7 @@ pub use iced_animate;
 
 pub use cached::{Cached, PixelSnap, cached};
 pub use compositor::Compositor;
+pub use content_stack::{ContentStack, content_stack};
 pub use filter::{FilterQuality, filter_quality, set_filter_quality};
 pub use pager::{Pager, pager};
 pub use record::{Record, TextureRenderer};

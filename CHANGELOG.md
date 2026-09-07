@@ -92,6 +92,18 @@ The first release. What each crate provides:
   vertically. `LayoutOnly` additionally snaps the pager's own horizontal
   origin, so a layout shift under a running slide cannot move the resampling
   phase; only the slide does.
+- `ContentStack` / `content_stack()`: the same sliding page stack reached
+  from the other side. A `Pager` puts the slide in the layout, so
+  hit-testing and overlays need no correction and the composited origin has
+  to be split into the moving part and the still one; a `ContentStack` lays
+  its pages out in a fixed row and puts the slide in the *composite*. Because
+  a page's layout box does not move, there is nothing for the device grid to
+  quantise, and the resting frame is computed by the same expression as the
+  sliding one — so the frame the stack stops compositing and starts drawing
+  its page directly puts every pixel where the previous frame had it. The
+  price is that everything asking "where is this page?" is corrected by hand.
+  Reach for it when the transition has to be flawless; `Pager` when that
+  correction is not acceptable.
 - `TextureCache` handles with `id`, `invalidate`, `is_invalidated`,
   `record_count`, `generation`; `TextureCacheId`.
 - `Renderer` and `Compositor` for wgpu and tiny-skia (optional features, at
