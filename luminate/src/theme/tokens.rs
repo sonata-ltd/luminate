@@ -99,9 +99,16 @@ pub struct ButtonTheme {
     pub radius: f32,
     /// Thickness of the pressed ring.
     pub ring_width: f32,
-    /// Gap between the button and the ring. The ring's corner radius is
-    /// derived (`radius + ring_offset + ring_width`).
+    /// Gap between the button and the ring.
     pub ring_offset: f32,
+    /// Corner radius of the pressed ring.
+    ///
+    /// Calibrated by eye, not derived. A ring concentric with a 10 px
+    /// corner, 2 px out and 2 px thick, would be 14.0; the shipped looks
+    /// draw it at 13.0, a pixel tighter, as the original kit did. Written
+    /// down rather than computed so that reinstating the formula cannot
+    /// silently round it back up.
+    pub ring_radius: f32,
     /// Type style of the label.
     pub label: TextStyle,
     /// Icon side length in logical pixels.
@@ -165,9 +172,12 @@ pub struct InputTheme {
     pub padding: Padding,
     /// Thickness of the focus ring.
     pub ring_width: f32,
-    /// Gap between the field and the focus ring. The ring's corner radius is
-    /// derived (`radius + ring_offset + ring_width`).
+    /// Gap between the field and the focus ring.
     pub ring_offset: f32,
+    /// Corner radius of the focus ring. Concentric with the field's corner
+    /// (`radius + ring_offset + ring_width`), written down for the same
+    /// reason the button's is.
+    pub ring_radius: f32,
     /// Type style of the typed text.
     pub text_style: TextStyle,
     /// Type style of the label.
@@ -372,6 +382,7 @@ const fn light_button(p: &Palette, typography: &TypographyTheme) -> ButtonTheme 
         radius: 10.0,
         ring_width: 2.0,
         ring_offset: 2.0,
+        ring_radius: 13.0,
         label: typography.label,
         icon_size: 20.0,
         icon_spacing: 5.0,
@@ -396,6 +407,7 @@ const fn light_input(p: &Palette, typography: &TypographyTheme) -> InputTheme {
         padding: padding_vh(7.0, 8.0),
         ring_width: 3.5,
         ring_offset: 0.0,
+        ring_radius: 13.5,
         text_style: typography.body,
         label_style: typography.label,
         hint_style: typography.caption,
@@ -825,6 +837,35 @@ mod tests {
         assert_eq!(theme.button.primary.active.background, palette.accent);
         assert_eq!(theme.scrollable.scroller_dragged, palette.accent);
         assert_eq!(theme.button.small, Theme::LIGHT.button.small);
+    }
+
+    /// A ring concentric with the control's corner would be
+    /// `radius + ring_offset + ring_width`. The input's is exactly that;
+    /// the button's is a pixel tighter, calibrated by eye. Both are written
+    /// into the tokens rather than computed, so this test is what keeps the
+    /// intent — and the deviation — from being refactored away.
+    #[test]
+    fn the_ring_radii_are_authored_not_derived() {
+        let concentric = |radius: f32, offset: f32, width: f32| radius + offset + width;
+
+        for theme in [Theme::LIGHT, Theme::DARK] {
+            let i = theme.input;
+            assert_eq!(
+                i.ring_radius,
+                concentric(i.radius, i.ring_offset, i.ring_width),
+                "{}: the input's focus ring is concentric",
+                theme.name
+            );
+
+            let b = theme.button;
+            assert_eq!(b.ring_radius, 13.0, "{}", theme.name);
+            assert_eq!(
+                concentric(b.radius, b.ring_offset, b.ring_width) - b.ring_radius,
+                1.0,
+                "{}: the button's ring is deliberately a pixel tighter",
+                theme.name
+            );
+        }
     }
 
     #[test]

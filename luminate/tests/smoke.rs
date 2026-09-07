@@ -67,6 +67,39 @@ fn a_disabled_button_delivers_nothing() {
     assert_eq!(ui.into_messages().count(), 0);
 }
 
+/// The pressed ring is drawn outside the layout box, so a button occupies
+/// exactly its padding plus one line of its label — nothing more. Two
+/// buttons stacked with no spacing therefore sit exactly one box apart.
+///
+/// This is the proportion the kit is calibrated to: reserving room for the
+/// ring instead would add `2 × (ring_width + ring_offset)` to every button
+/// in the interface, at rest, forever.
+#[test]
+fn a_button_reserves_no_room_for_its_pressed_ring() {
+    let luminate = Luminate::new();
+    let theme = Theme::LIGHT;
+    let items: Vec<Element<'_, Message>> = ["top", "bottom"]
+        .into_iter()
+        .map(|label| luminate.button(Button::new(label).on_press(Message::Pressed)))
+        .collect();
+
+    let root: Element<'_, Message> = column(items).spacing(0).into();
+    let mut ui = simulator(luminate.host(root));
+    settle(&mut ui);
+
+    let top = ui.find("top").expect("on screen").bounds();
+    let bottom = ui.find("bottom").expect("on screen").bounds();
+
+    let padding = theme.button.small.text;
+    let expected = padding.top + padding.bottom + theme.button.label.line_height;
+    assert_eq!(expected, 34.0, "the shipped small button is 7 + 20 + 7");
+    assert!(
+        (bottom.y - top.y - expected).abs() < 0.5,
+        "button box is {} px, expected {expected}",
+        bottom.y - top.y
+    );
+}
+
 #[test]
 fn every_button_variant_lays_out() {
     let luminate = Luminate::new();

@@ -6,7 +6,6 @@ use iced::widget::{Svg, button, container, row};
 
 use crate::descriptor::{Button, ButtonContent};
 use crate::luminate::Luminate;
-use crate::theme::metrics::ring_radius;
 use crate::theme::typography::styled_text;
 use crate::theme::{ButtonClass, SvgClass, Theme};
 use crate::widget::multi_border::{Ring, Style, multi_border};
@@ -71,26 +70,28 @@ impl Luminate {
             .on_press_maybe(on_press)
             .class(ButtonClass::Hierarchy(hierarchy));
 
-        // The pressed ring sits outside the button; reserve its room so it
-        // stays inside the layout box. The closure reads the tokens from the
-        // theme it is handed, capturing only the hierarchy.
-        let ringed = multi_border(button)
-            .disabled(is_disabled)
-            .outer_thickness(tokens.ring_width + tokens.ring_offset)
-            .style(move |theme: &Theme, status| {
-                if !status.is_pressed || status.is_disabled {
-                    return Style::new();
-                }
+        // The pressed ring is drawn outside the layout box, so a row of
+        // buttons sits as tightly at rest as it would with no ring at all;
+        // an ancestor that clips will cut it. The closure reads the tokens
+        // from the theme it is handed, capturing only the hierarchy.
+        let ringed =
+            multi_border(button)
+                .disabled(is_disabled)
+                .style(move |theme: &Theme, status| {
+                    if !status.is_pressed || status.is_disabled {
+                        return Style::new();
+                    }
 
-                let t = theme.button;
-                let variant = t.variant(hierarchy);
+                    let t = theme.button;
+                    let variant = t.variant(hierarchy);
 
-                Style::new().ring(
-                    Ring::outer(t.ring_width, variant.ring)
-                        .offset(t.ring_offset)
-                        .radius(ring_radius(t.radius, t.ring_offset, t.ring_width)),
-                )
-            });
+                    Style::new().ring(
+                        Ring::outer(t.ring_width, variant.ring)
+                            .offset(t.ring_offset)
+                            .radius(t.ring_radius)
+                            .overflowing(),
+                    )
+                });
 
         match id {
             Some(id) => container(ringed).id(id).into(),

@@ -6,7 +6,6 @@ use iced::widget::{Column, text_input};
 
 use crate::descriptor::Input;
 use crate::luminate::Luminate;
-use crate::theme::metrics::ring_radius;
 use crate::theme::typography::styled_text;
 use crate::theme::{InputClass, TextClass, Theme};
 use crate::widget::error_bubble::ErrorBubble;
@@ -71,10 +70,12 @@ impl Luminate {
             input = input.id(id);
         }
 
+        // Like the button's pressed ring, the focus ring is drawn outside
+        // the layout box: a field keeps the same footprint focused or not,
+        // so focusing one never nudges the form around it.
         let bordered = multi_border(input)
             .disabled(!is_enabled)
             .focus(Focus::Custom(Box::new(text_input_focused)))
-            .outer_thickness(tokens.ring_width + tokens.ring_offset)
             .style(move |theme: &Theme, status| {
                 if status.is_disabled || !status.is_focused {
                     return Style::new();
@@ -86,7 +87,8 @@ impl Luminate {
                 Style::new().ring(
                     Ring::outer(t.ring_width, color)
                         .offset(t.ring_offset)
-                        .radius(ring_radius(t.radius, t.ring_offset, t.ring_width)),
+                        .radius(t.ring_radius)
+                        .overflowing(),
                 )
             });
 
