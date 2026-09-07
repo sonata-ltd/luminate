@@ -33,8 +33,8 @@ impl SpringParams {
     /// `duration` is the *perceptual* duration: how long the motion reads as
     /// taking, not how long the maths keeps producing values. A no-bounce
     /// spring is about 99 % of the way there when it elapses, and the
-    /// remaining sliver — invisible, and cut off by the engine's settling
-    /// tolerance — takes about half as long again. It is floored at 1 ms.
+    /// remaining sliver — sub-pixel, and cut off by the engine's settling
+    /// tolerance — takes about as long again. It is floored at 1 ms.
     ///
     /// Both parameters mean what they mean in `SwiftUI`'s `Spring(duration:
     /// bounce:)`, down to the coefficients — `stiffness = (2π / duration)²`,
@@ -201,14 +201,22 @@ impl Spring {
     ///
     /// The tolerances scale with the magnitude being animated so that a
     /// window width settles as reliably as an opacity; whatever residual they
-    /// allow is erased by [`snap`](Self::snap). The velocity bound is one
-    /// position tolerance per 60 Hz frame; for springs shorter than about
-    /// 150 ms it is the binding criterion. This stops a
-    /// fast spring from being snapped while still visibly moving.
+    /// allow is erased by [`snap`](Self::snap).
+    ///
+    /// The velocity bound is deliberately far below "one position tolerance
+    /// per 60 Hz frame". That looser rule is right for a position, and wrong
+    /// for everything downstream of one: a track carrying a page index for a
+    /// 418 px slide is still 0.2 device pixels from its target when a
+    /// per-frame bound would call it settled, and a fifth of a pixel is the
+    /// difference between a texture composited at a soft fractional phase and
+    /// one composited crisply on the grid. Snapping there ends the transition
+    /// with a visible jump in sharpness instead of letting the blur resolve.
+    /// The extra frames it costs are sub-pixel: nothing moves in them that
+    /// the eye reads as motion, only the last of the blur clearing.
     pub(crate) fn is_settled(&self) -> bool {
         let scale = self.target.abs().max(self.position.abs()).max(1.0);
 
-        (self.position - self.target).abs() < 5e-4 * scale && self.velocity.abs() < 3e-2 * scale
+        (self.position - self.target).abs() < 5e-4 * scale && self.velocity.abs() < 1e-3 * scale
     }
 
     /// Places the spring exactly at its target and stops it.
@@ -297,11 +305,13 @@ mod tests {
                         (arrival - duration).abs() <= duration * 0.15,
                         "duration {duration} reached 99 % at {arrival}"
                     );
-                    // The invisible remainder: half as long again, and the
-                    // reason `duration` is not the settling time.
+                    // The invisible remainder: about as long again, and the
+                    // reason `duration` is not the settling time. It is spent
+                    // below a pixel, clearing the last of the resampling
+                    // blur; see `is_settled` for why the bound is that tight.
                     let ratio = settled / duration;
                     assert!(
-                        (1.4..=1.8).contains(&ratio),
+                        (1.75..=2.15).contains(&ratio),
                         "duration {duration} fully settled at {ratio}x"
                     );
                     break;
