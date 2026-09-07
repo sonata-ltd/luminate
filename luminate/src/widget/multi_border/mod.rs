@@ -58,11 +58,17 @@ struct State {
 ///
 /// The style comes from the theme's [`Catalog`] or a
 /// [`style`](Self::style) closure and may change with the [`Status`].
-/// Outer rings take space around the content; the layout cannot ask the
-/// style how much (it depends on the status), so
-/// [`outer_thickness`](Self::outer_thickness) reserves it up front. Hover
-/// and press are tracked over the content rectangle, not the reserved
-/// gutter.
+///
+/// An outer ring either takes space around the content or is drawn past
+/// the layout box. Taking space is the default, and because the layout
+/// cannot ask the style how much (it depends on the status),
+/// [`outer_thickness`](Self::outer_thickness) reserves it up front. A ring
+/// marked [`overflowing`](Ring::overflowing) needs no reservation: the
+/// widget's box stays the size of its content and the ring is painted over
+/// whatever sits beside it — right for an outline that appears only while
+/// pressed or focused, where reserving room would space every widget apart
+/// even at rest. Hover and press are tracked over the content rectangle,
+/// not the reserved gutter.
 ///
 /// # Example
 ///
@@ -191,14 +197,26 @@ where
     ///
     /// The layout box grows by `thickness` on every side and the content is
     /// inset by it. Every [`Style`] the class can produce must satisfy
-    /// `style.outer_thickness() <= thickness`: a debug build asserts it
+    /// `style.reserved_thickness() <= thickness`: a debug build asserts it
     /// when drawing; a release build paints the excess outside the layout
     /// box, unclipped.
     ///
+    /// Only rings that take room count. A ring marked
+    /// [`overflowing`](Ring::overflowing) is drawn past the layout box by
+    /// design and needs no reservation, so a widget whose every outer ring
+    /// overflows never calls this at all — the default of `0.0` is right,
+    /// and its box stays the size of its content.
+    ///
+    /// Layout runs before the style is resolved (it has neither the theme
+    /// nor the [`Status`]), so the widget cannot ask the style how much to
+    /// reserve: the total is declared here, up front, for the thickest
+    /// style the class can produce.
+    ///
     /// # Panics
     /// In debug builds, when `thickness` is negative or not finite, and at
-    /// draw time when the resolved style's [`outer_thickness`](Style::outer_thickness)
-    /// exceeds the reserved `thickness`.
+    /// draw time when the resolved style's
+    /// [`reserved_thickness`](Style::reserved_thickness) exceeds the
+    /// reserved `thickness`.
     #[must_use]
     pub fn outer_thickness(mut self, thickness: f32) -> Self {
         debug_assert!(
@@ -228,10 +246,11 @@ where
     fn resolve(&self, theme: &Theme, status: Status) -> Style {
         let style = theme.style(&self.class, status);
         debug_assert!(
-            style.outer_thickness() <= self.outer_thickness + 0.01,
-            "the style's outer rings ({} px) exceed the reserved outer thickness ({} px); \
-             call `outer_thickness` with the thickest style the class produces",
-            style.outer_thickness(),
+            style.reserved_thickness() <= self.outer_thickness + 0.01,
+            "the style's reserved outer rings ({} px) exceed the reserved outer thickness \
+             ({} px); call `outer_thickness` with the thickest style the class produces, \
+             or mark the ring `overflowing` to draw it past the layout box",
+            style.reserved_thickness(),
             self.outer_thickness
         );
         style
@@ -658,6 +677,64 @@ mod tests {
         // The widget is 80 wide; 3 are reserved for the ring on each side.
         assert!((bounds.width - 74.0).abs() < 0.5, "{bounds:?}");
         assert!((bounds.x - 3.0).abs() < 0.5, "{bounds:?}");
+    }
+
+    #[test]
+    fn an_overflowing_ring_takes_no_room_from_the_content() {
+        let ring = |overflowing: bool| {
+            let ring = Ring::outer(2.0, iced::Color::BLACK).offset(1.0);
+            if overflowing {
+                ring.overflowing()
+            } else {
+                ring
+            }
+        };
+        let content = |overflowing: bool| {
+            let root: Element<'_> = multi_border(text("content"))
+                .width(Length::Fixed(80.0))
+                .outer_thickness(if overflowing { 0.0 } else { 3.0 })
+                .style(move |_, _| Style::new().ring(ring(overflowing)))
+                .into();
+            let mut ui = simulator(root);
+            ui.find("content").expect("on screen").bounds()
+        };
+
+        // Reserved, the ring insets the content by its 3 px on each side;
+        // overflowing, the content keeps the full width and the ring is
+        // painted past the layout box.
+        let reserved = content(false);
+        let overflowing = content(true);
+        assert!((reserved.width - 74.0).abs() < 0.5, "{reserved:?}");
+        assert!((overflowing.width - 80.0).abs() < 0.5, "{overflowing:?}");
+        assert!((overflowing.x - 0.0).abs() < 0.5, "{overflowing:?}");
+    }
+
+    /// A ring wider than the reservation is a bug worth catching — but only
+    /// when it asked for room in the first place.
+    #[test]
+    #[should_panic(expected = "exceed the reserved outer thickness")]
+    fn a_reserved_ring_over_its_reservation_is_a_programming_error() {
+        let root: Element<'_> = multi_border(text("content"))
+            .outer_thickness(1.0)
+            .style(|_, _| Style::new().ring(Ring::outer(5.0, iced::Color::BLACK)))
+            .into();
+        let mut ui = simulator(root);
+        let _ = ui.snapshot(&iced::Theme::Light);
+    }
+
+    #[test]
+    fn an_overflowing_ring_never_trips_the_reservation_assert() {
+        let root: Element<'_> = multi_border(text("content"))
+            .style(|_, _| {
+                Style::new().ring(
+                    Ring::outer(5.0, iced::Color::BLACK)
+                        .offset(2.0)
+                        .overflowing(),
+                )
+            })
+            .into();
+        let mut ui = simulator(root);
+        let _ = ui.snapshot(&iced::Theme::Light);
     }
 
     #[test]

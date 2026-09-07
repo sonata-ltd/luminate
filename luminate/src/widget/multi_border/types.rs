@@ -29,6 +29,17 @@ pub struct Ring {
     /// Gap toward the content edge: to the previous ring on this side, or
     /// to the content for the first ring.
     pub offset: f32,
+    /// Whether the ring takes room in the layout box.
+    ///
+    /// Outer rings do by default, and the widget's
+    /// [`outer_thickness`](super::MultiBorder::outer_thickness) must reserve
+    /// them. A ring marked [`overflowing`](Self::overflowing) is drawn
+    /// outside the layout box instead: it overlaps whatever sits next to the
+    /// widget and is cut by any ancestor that clips.
+    ///
+    /// Meaningless for [`Side::Inner`], which is drawn over the content and
+    /// never takes room; inner rings carry `false`.
+    pub reserved: bool,
 }
 
 impl Ring {
@@ -62,7 +73,23 @@ impl Ring {
             color,
             radius: 0.0,
             offset: 0.0,
+            reserved: matches!(side, Side::Outer),
         }
+    }
+
+    /// Draws this ring outside the layout box instead of inside it.
+    ///
+    /// The widget's box stays the size of its content, so the ring overlaps
+    /// whatever sits beside it and an ancestor that clips cuts it off. Use
+    /// it for a ring that appears only in a transient state — a pressed or
+    /// focused outline — where reserving room for it would space every
+    /// widget apart even at rest.
+    ///
+    /// No-op for [`Side::Inner`], which never takes room anyway.
+    #[must_use]
+    pub fn overflowing(mut self) -> Self {
+        self.reserved = false;
+        self
     }
 
     /// Sets the corner radius.
@@ -142,13 +169,27 @@ impl Style {
         self
     }
 
-    /// Total thickness of the outer rings (widths plus offsets): what the
-    /// layout must reserve around the content.
+    /// Total thickness of the outer rings (widths plus offsets): how far
+    /// the rings extend beyond the content, whether or not the layout
+    /// reserves room for them.
     #[must_use]
     pub fn outer_thickness(&self) -> f32 {
+        self.thickness(|ring| ring.side == Side::Outer)
+    }
+
+    /// Total thickness of the outer rings that take room in the layout —
+    /// what [`outer_thickness`](super::MultiBorder::outer_thickness) must
+    /// reserve. Rings marked [`overflowing`](Ring::overflowing) are
+    /// excluded: they are drawn past the layout box on purpose.
+    #[must_use]
+    pub fn reserved_thickness(&self) -> f32 {
+        self.thickness(|ring| ring.side == Side::Outer && ring.reserved)
+    }
+
+    fn thickness(&self, keep: impl Fn(&Ring) -> bool) -> f32 {
         self.rings
             .iter()
-            .filter(|ring| ring.side == Side::Outer)
+            .filter(|ring| keep(ring))
             .map(|ring| ring.width + ring.offset)
             .sum()
     }
@@ -164,6 +205,35 @@ mod tests {
         let b = Style::new().ring(Ring::outer(1.0, Color::BLACK).radius(2.0));
         assert_eq!(a, b);
         assert_ne!(a, Style::new());
+    }
+
+    #[test]
+    fn outer_rings_are_reserved_unless_marked_overflowing() {
+        assert!(Ring::outer(1.0, Color::BLACK).reserved);
+        assert!(!Ring::outer(1.0, Color::BLACK).overflowing().reserved);
+        // Inner rings never take room, so they are never reserved.
+        assert!(!Ring::inner(1.0, Color::BLACK).reserved);
+    }
+
+    #[test]
+    fn only_reserved_rings_count_toward_the_reserved_thickness() {
+        let style = Style::new()
+            .ring(Ring::outer(2.0, Color::BLACK).offset(1.0))
+            .ring(Ring::outer(4.0, Color::WHITE).offset(3.0).overflowing())
+            .ring(Ring::inner(9.0, Color::BLACK));
+
+        // Both outer rings are painted…
+        assert_eq!(style.outer_thickness(), 10.0);
+        // …but only the first one asks the layout for room.
+        assert_eq!(style.reserved_thickness(), 3.0);
+    }
+
+    #[test]
+    fn a_wholly_overflowing_style_reserves_nothing() {
+        let style = Style::new().ring(Ring::outer(2.0, Color::BLACK).offset(2.0).overflowing());
+
+        assert_eq!(style.outer_thickness(), 4.0);
+        assert_eq!(style.reserved_thickness(), 0.0);
     }
 
     #[test]
