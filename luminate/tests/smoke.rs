@@ -100,6 +100,41 @@ fn a_button_reserves_no_room_for_its_pressed_ring() {
     );
 }
 
+/// The same for a field: padding plus one line of its type style, with no
+/// room set aside for the focus ring. Stacked with no spacing, two fields
+/// sit exactly one box apart.
+#[test]
+fn an_input_reserves_no_room_for_its_focus_ring() {
+    let luminate = Luminate::new();
+    let theme = Theme::LIGHT;
+    let fields: Vec<Element<'_, Message>> = ["first", "second"]
+        .into_iter()
+        .map(|placeholder| {
+            luminate.input(
+                Input::new(placeholder, "")
+                    .width(Length::Fixed(200.0))
+                    .on_input(Message::Typed),
+            )
+        })
+        .collect();
+
+    let root: Element<'_, Message> = column(fields).spacing(0).into();
+    let mut ui = simulator(luminate.host(root));
+    settle(&mut ui);
+
+    let first = ui.find("first").expect("on screen").bounds();
+    let second = ui.find("second").expect("on screen").bounds();
+
+    let padding = theme.input.padding;
+    let expected = padding.top + padding.bottom + theme.input.text_style.line_height;
+    assert_eq!(expected, 34.0, "the shipped field is 5 + 24 + 5");
+    assert!(
+        (second.y - first.y - expected).abs() < 0.5,
+        "field box is {} px, expected {expected}",
+        second.y - first.y
+    );
+}
+
 #[test]
 fn every_button_variant_lays_out() {
     let luminate = Luminate::new();

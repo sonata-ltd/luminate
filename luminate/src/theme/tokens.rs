@@ -345,8 +345,12 @@ const fn light_button(p: &Palette, typography: &TypographyTheme) -> ButtonTheme 
             p.white,
             p.white,
             p.focus,
+            // A hand-picked glow, lighter and less saturated than the
+            // accent it sits under; it is not derivable from `accent` by
+            // any mix, so it is written down. A look built on a different
+            // accent should set `button.primary.shadow` alongside it.
             Some(Shadow {
-                color: with_alpha(p.accent, 0.5),
+                color: Color::from_rgba8(50, 145, 233, 0.5),
                 offset: Vector::ZERO,
                 blur_radius: 10.0,
             }),
@@ -421,7 +425,12 @@ const fn light_input(p: &Palette, typography: &TypographyTheme) -> InputTheme {
         hint_text: p.text_secondary,
         hint_text_error: p.red.s500,
         radius: 10.0,
-        padding: padding_vh(7.0, 8.0),
+        padding: Padding {
+            top: 5.0,
+            right: 8.0,
+            bottom: 5.0,
+            left: 8.0,
+        },
         ring_width: 3.5,
         ring_offset: 0.0,
         ring_radius: 13.5,
@@ -455,10 +464,10 @@ const fn light_card(p: &Palette, typography: &TypographyTheme) -> CardTheme {
         radius: 25.0,
         width: 400.0,
         header_padding: Padding {
-            top: 15.0,
-            right: 17.0,
-            bottom: 15.0,
-            left: 17.0,
+            top: 11.0,
+            right: 15.0,
+            bottom: 11.0,
+            left: 15.0,
         },
         header_shadow: Shadow {
             color: with_alpha(p.black, 0.1),
@@ -744,11 +753,11 @@ mod tests {
         }
         assert!(t.sidebar.collapsed_size > 0.0 && t.sidebar.header_size > 0.0);
         assert!(t.card.width > 0.0);
-        assert!(
-            (t.card.header_height() - 58.0).abs() < 1e-6,
-            "{}",
-            t.card.header_height()
-        );
+        // 11 + 11 of padding around one line of the heading style, whose
+        // line height is 28. The original kit wrote 53.4 into the code as a
+        // constant; the tighter padding here lands the row on a whole 50.
+        assert_eq!(t.card.header_height(), 50.0);
+        assert_eq!(t.card.header_style.line_height, 28.0);
     }
 
     /// Thresholds from decision D11.
@@ -884,6 +893,21 @@ mod tests {
                 theme.name
             );
         }
+    }
+
+    /// The glow under a primary button is a hand-picked colour, not a
+    /// derivation of the accent: no mix of the accent with black or white
+    /// reaches it.
+    #[test]
+    fn the_primary_glow_is_not_derived_from_the_accent() {
+        let shadow = Theme::LIGHT
+            .button
+            .primary
+            .shadow
+            .expect("the primary button glows");
+        assert_eq!(shadow.color, Color::from_rgba8(50, 145, 233, 0.5));
+        assert_eq!(shadow.blur_radius, 10.0);
+        assert_ne!(shadow.color, with_alpha(Theme::LIGHT.palette.accent, 0.5));
     }
 
     #[test]
