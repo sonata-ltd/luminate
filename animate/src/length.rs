@@ -53,6 +53,20 @@ impl AnimLength {
         }
     }
 
+    /// Returns `true` if this length is bound to a track, whether or not that
+    /// track is moving right now.
+    ///
+    /// The difference from [`is_animating`](Self::is_animating) matters to
+    /// anything that must not change *how* it draws when the motion starts or
+    /// stops: a settled track is still going to move again.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        match self {
+            AnimLength::Fixed(value) => value.is_live(),
+            _ => false,
+        }
+    }
+
     /// The value to advertise from [`Widget::size_hint`].
     ///
     /// A live track is reported as [`Length::Shrink`] rather than its current

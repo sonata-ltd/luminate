@@ -80,6 +80,7 @@ pub struct Shape {
     radius: Anim<Radius>,
     border_color: Anim<Color>,
     border_width: Anim<f32>,
+    pixel_snap: PixelSnap,
 }
 
 impl Default for Shape {
@@ -100,6 +101,7 @@ impl Shape {
             radius: Anim::constant(Radius::default()),
             border_color: Anim::constant(Color::TRANSPARENT),
             border_width: Anim::constant(0.0),
+            pixel_snap: PixelSnap::default(),
         }
     }
 
@@ -150,6 +152,19 @@ impl Shape {
         self
     }
 
+    /// Sets when the quad is rounded to the device pixel grid.
+    ///
+    /// The default, [`PixelSnap::Auto`], already declines to snap a shape
+    /// that animates its own size. Reach for [`PixelSnap::Never`] when the
+    /// shape is *moved* by something above it — a card re-centring as a page
+    /// stack interpolates its height — which `Auto` cannot detect finely
+    /// enough to keep off the grid on the frame the motion ends.
+    #[must_use]
+    pub fn pixel_snap(mut self, pixel_snap: PixelSnap) -> Self {
+        self.pixel_snap = pixel_snap;
+        self
+    }
+
     /// `true` while any of the shape's values is in motion.
     #[must_use]
     pub fn is_animating(&self) -> bool {
@@ -187,6 +202,40 @@ struct State {
     last_bounds: Cell<Option<Rectangle>>,
 }
 
+/// When a [`Shape`] rounds its quad to the device pixel grid.
+///
+/// Snapping is geometry, not sharpness: the renderer rounds *both* the
+/// origin and the far edge of the quad, so switching it on or off displaces
+/// the shape by up to a pixel. That makes *when* it changes as visible as
+/// whether it is on — which is why this is a choice and not a constant.
+///
+/// Whichever variant is chosen, nothing snaps unless iced's `crisp` feature
+/// is on; it decides whether snapping is on the table at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum PixelSnap {
+    /// Snap while the bounds stand still, leave them alone while they move:
+    /// crisp at rest, smooth in motion. The default.
+    ///
+    /// A shape whose *size* is bound to a track never snaps, settled or not,
+    /// because the alternative is a step onto the grid on the one frame the
+    /// motion ends — the moment it is most visible. A shape moved by an
+    /// *ancestor* still pays that step: this widget can see its own tracks,
+    /// but only that its bounds changed, never by how much of a device pixel,
+    /// so it cannot separate the travel from the grid the way
+    /// [`Cached`](https://docs.rs/iced_texture_cache) can. Reach for
+    /// [`Never`](PixelSnap::Never) there.
+    #[default]
+    Auto,
+    /// Snap every frame. A resting edge is always crisp and nothing steps at
+    /// the end of an animation, but a moving edge travels in whole-pixel
+    /// lurches.
+    Always,
+    /// Never snap. Nothing ever steps, at the cost of a soft edge whenever
+    /// the shape does not land on the grid by itself.
+    Never,
+}
+
 impl Shape {
     /// Whether this frame's quad should be snapped to the pixel grid.
     ///
@@ -194,8 +243,19 @@ impl Shape {
     /// cannot see in its own values.
     fn snaps(&self, state: &State, bounds: Rectangle) -> bool {
         let moved = state.last_bounds.replace(Some(bounds)) != Some(bounds);
+        // Bound, not merely moving. A size that is going to animate again must
+        // not snap on the frame its track settles: the quad would step up to
+        // half a device pixel just as the eye is told the motion is over,
+        // which is the most noticeable moment it could pick. A shape whose box
+        // is a plain number has no such frame coming and snaps as before.
+        let box_is_bound = self.width.is_live() || self.height.is_live();
 
-        renderer::Quad::default().snap && !moved && !self.is_animating()
+        renderer::Quad::default().snap
+            && match self.pixel_snap {
+                PixelSnap::Auto => !moved && !box_is_bound,
+                PixelSnap::Always => true,
+                PixelSnap::Never => false,
+            }
     }
 }
 
@@ -257,10 +317,10 @@ where
         // the frame the engine just ticked is the frame that gets painted.
         //
         // Snapping to the pixel grid keeps a resting 1 px border as crisp as
-        // the container next to it (when iced's `crisp` feature is on), but
-        // it rounds *both* edges of the quad, so a moving one changes size in
-        // whole-pixel lurches. Hence `snaps`: at rest, crisp; in motion, in
-        // whatever place the frame actually asks for.
+        // the container next to it (when iced's `crisp` feature is on), but it
+        // rounds *both* edges of the quad, so when the box moves it changes size
+        // in whole-pixel lurches. Hence `snaps`: at rest, crisp; when the box is
+        // moving, in whatever place the frame actually asks for.
         renderer.fill_quad(
             renderer::Quad {
                 bounds,
@@ -349,12 +409,92 @@ mod tests {
         let state = State::default();
         let bounds = Rectangle::new(Point::new(2.0, 4.0), Size::new(40.0, 40.0));
 
+        assert!(
+            !widget.snaps(&state, bounds),
+            "nothing to compare against yet"
+        );
+
         let _ = clock.run(3);
-        assert!(!widget.snaps(&state, bounds), "the fill is still moving");
-        assert!(!widget.snaps(&state, bounds), "and it stays unsnapped");
+        assert!(
+            widget.snaps(&state, bounds),
+            "the fill moves, the box does not"
+        );
 
         let _ = clock.run_until_settled();
-        assert!(widget.snaps(&state, bounds), "settled: snapped again");
+        assert!(
+            widget.snaps(&state, bounds),
+            "and settling changes nothing: no step for the eye to catch"
+        );
+    }
+
+    #[test]
+    fn a_shape_animating_its_own_box_never_snaps_not_even_once_it_settles() {
+        // The flip is the artifact, not the snapping. A box that glides
+        // sub-pixel and then lands on the grid changes position by up to half
+        // a device pixel in the one frame the eye has just been told the
+        // motion is over, which is exactly where it is most noticeable. A
+        // shape that animates its own size can see that coming, so it declines
+        // to snap for as long as the track is live *and* on the frame it
+        // settles.
+        let motion = Motion::new();
+        let mut clock = FrameClock::new(&motion);
+        let k = key!();
+        let _ = motion.to(k, BOUNCY, 40.0);
+
+        let widget: Shape = shape().width(motion.to(k, BOUNCY, 90.0)).height(40.0);
+        let state = State::default();
+        let at = |side: f32| Rectangle::new(Point::new(2.0, 4.0), Size::new(side, 40.0));
+
+        let _ = clock.run(3);
+        assert!(!widget.snaps(&state, at(52.3)), "the box is still growing");
+
+        let _ = clock.run_until_settled();
+        assert!(
+            !widget.snaps(&state, at(90.0)),
+            "settled, and still unsnapped: the settling frame must not step"
+        );
+        assert!(
+            !widget.snaps(&state, at(90.0)),
+            "and it stays that way while the track is bound"
+        );
+    }
+
+    #[test]
+    fn always_snaps_even_while_the_bounds_move() {
+        if !iced_core::renderer::Quad::default().snap {
+            return;
+        }
+
+        let widget: Shape = shape().pixel_snap(super::PixelSnap::Always);
+        let state = State::default();
+        let at = |x: f32, side: f32| Rectangle::new(Point::new(x, 4.0), Size::new(side, side));
+
+        assert!(
+            widget.snaps(&state, at(2.0, 40.0)),
+            "the first frame snaps too: `Always` never consults the bounds"
+        );
+        assert!(
+            widget.snaps(&state, at(3.7, 41.3)),
+            "moved and grown, and it still snaps"
+        );
+        assert!(
+            widget.snaps(&state, at(3.7, 41.3)),
+            "settled, and nothing changed - which is the whole point"
+        );
+    }
+
+    #[test]
+    fn never_snaps_even_at_rest() {
+        let widget: Shape = shape().pixel_snap(super::PixelSnap::Never);
+        let state = State::default();
+        let at = |x: f32, side: f32| Rectangle::new(Point::new(x, 4.0), Size::new(side, side));
+
+        assert!(!widget.snaps(&state, at(2.0, 40.0)));
+        assert!(
+            !widget.snaps(&state, at(2.0, 40.0)),
+            "standing still is exactly where `Auto` would snap, and this does not"
+        );
+        assert!(!widget.snaps(&state, at(3.7, 41.3)));
     }
 
     #[test]

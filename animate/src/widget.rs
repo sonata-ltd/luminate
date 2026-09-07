@@ -18,5 +18,5 @@
 //! [`Anim`]: crate::Anim
 
 pub use crate::host::{Host, host};
-pub use crate::shape::{Shape, shape};
+pub use crate::shape::{PixelSnap, Shape, shape};
 pub use crate::sized::{Sized, sized};

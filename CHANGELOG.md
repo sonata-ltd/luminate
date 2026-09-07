@@ -49,11 +49,17 @@ The first release. What each crate provides:
   instead of teleporting it to the end.
 - Widgets `widget::{Shape, Sized, Host}` with `shape()`, `sized()`, `host()`
   (under `widget` only; the engine and value types live at the root).
-- `Shape` snaps its quad to the pixel grid only while its geometry is still.
-  iced's `crisp` feature rounds *both* edges of a quad, so a moving one
-  changes size in whole-pixel lurches; the shape compares its bounds against
-  the previous frame's, which catches motion driven by an ancestor (a `Sized`
-  growing the space it sits in) as well as its own animated values.
+- `Shape::pixel_snap(PixelSnap::{Auto, Always, Never})`: when the quad is
+  rounded to the pixel grid. iced's `crisp` feature rounds *both* edges of a
+  quad, so a moving one changes size in whole-pixel lurches — but switching
+  the rounding on or off displaces the shape by up to a pixel, which makes
+  *when* it changes as visible as whether it is on.
+  The default `Auto` snaps only while the bounds stand still, and a shape
+  whose size is bound to a track never snaps at all, settled or not: the
+  alternative is a step onto the grid on the one frame the motion ends. A
+  shape moved by an *ancestor* still pays that step — it can see its own
+  tracks, but only that its bounds changed, never by how much of a device
+  pixel — so `Never` is the answer there.
 - Depends on `iced_core` and `log` only.
 
 #### iced_texture_cache
