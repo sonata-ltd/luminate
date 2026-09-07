@@ -5,7 +5,8 @@ use iced::advanced::widget::{Operation, Tree};
 use iced::advanced::{Clipboard, Shell, Widget, mouse, overlay, renderer};
 use iced::widget::{Space, container};
 use iced::{Event, Length, Point, Rectangle, Size, Vector};
-use iced_texture_cache::{Cached, Pager};
+use iced_animate::curves;
+use iced_texture_cache::{Cached, Pager, PixelSnap};
 
 use crate::descriptor::Card;
 use crate::luminate::Luminate;
@@ -39,6 +40,10 @@ impl Luminate {
             .width(Length::Fill)
             .padding(tokens.header_padding);
         let header: Element<'a, M> = match header_cache {
+            // The default `PixelSnap::LayoutOnly` is what this wants: the
+            // header animates nothing itself, but the card's height does, and
+            // a card centred in its parent travels as that height
+            // interpolates.
             Some(cache) => Cached::new(cache, header).into(),
             None => header.into(),
         };
@@ -47,6 +52,8 @@ impl Luminate {
             .current(current)
             .motion(self.motion.clone())
             .width(Length::Fill)
+            .curve(curves::sharp::STRUCTURAL)
+            .pixel_snap(PixelSnap::LayoutOnly)
             .into();
 
         let controls = controls.unwrap_or_else(|| Space::new().into());
