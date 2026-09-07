@@ -17,7 +17,7 @@
 
 use iced::advanced::text;
 use iced::font::{Family, Stretch, Style, Weight};
-use iced::widget::text::{LineHeight, Text};
+use iced::widget::text::{LineHeight, Shaping, Text};
 use iced::{Font, Pixels};
 
 /// The upright Inter variable font (weights 100-900, optical sizes 14-32;
@@ -281,6 +281,13 @@ impl TextStyle {
     }
 
     /// Applies this style to a text widget.
+    ///
+    /// The shaping is always [`Shaping::Advanced`]. iced's default,
+    /// `Shaping::Auto`, drops to `Shaping::Basic` for ASCII, and the basic
+    /// shaper reads advances from the font's *default* instance and skips
+    /// `kern`. The kit ships one variable face per family, so that would set
+    /// every weight on Regular's spacing, unkerned, however heavy the glyphs
+    /// are drawn.
     #[must_use]
     pub fn apply<'a, Theme, Renderer>(
         self,
@@ -293,6 +300,7 @@ impl TextStyle {
         text.font(self.font())
             .size(self.size)
             .line_height(self.line_height())
+            .shaping(Shaping::Advanced)
     }
 }
 
