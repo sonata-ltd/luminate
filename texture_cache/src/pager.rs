@@ -300,7 +300,7 @@ where
             motion: None,
             curve: STRUCTURAL,
             filter: None,
-            pixel_snap: PixelSnap::Auto,
+            pixel_snap: PixelSnap::default(),
         }
     }
 
@@ -789,7 +789,7 @@ where
                     pager_page_bounds(filter, self.pixel_snap, child_bounds, bounds, scale),
                     scale,
                     1.0,
-                    false,
+                    None,
                 );
                 // Clip to the pager (a page mid-slide overhangs its edges)
                 // and to the parent's clip.

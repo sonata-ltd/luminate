@@ -4,8 +4,8 @@ use iced_animate::{Anim, Tier};
 use iced_core::layout::{self, Layout};
 use iced_core::widget::{Operation, Tree, Widget, tree};
 use iced_core::{
-    Clipboard, Element, Event, Length, Rectangle, Shell, Size, Transformation, Vector, mouse,
-    overlay, renderer, window,
+    Clipboard, Element, Event, Length, Point, Rectangle, Shell, Size, Transformation, Vector,
+    mouse, overlay, renderer, window,
 };
 
 use crate::ancestors;
@@ -41,20 +41,45 @@ pub enum PixelSnap {
     /// Snap only a pure translation that is **at rest**: crisp when stopped,
     /// smooth while moving. Never snaps while a live scale is bound (the
     /// snap→unsnap flip at the first frame of a scale would read as a jerk).
-    /// The default.
-    #[default]
+    ///
+    /// The flip is the catch. A layer that glides sub-pixel and then lands on
+    /// the grid changes its rendering in one frame, at the moment the eye has
+    /// just been told the motion is over — which reads worse than the steady
+    /// roughness of [`LayoutOnly`](PixelSnap::LayoutOnly), even though less
+    /// total movement is quantised. Reach for `Auto` when smooth motion
+    /// matters more than the frame it ends on.
     Auto,
     /// Always snap the composited origin to the device grid.
     Always,
     /// Never snap; rely on [`Cached::supersample`] or accept the softness of
     /// a fractional position.
     Never,
-    /// Snap only the layout part of the origin; the user transform's
-    /// translation stays fractional. Keeps the blur level from "breathing"
-    /// when the layout reshuffles under a running translate animation, at
-    /// the cost of up to ½ device pixel of displacement between the layout
-    /// box and the image. The texture and its viewport still agree exactly:
-    /// the record translates by the snapped origin too.
+    /// Snap the *discrete* part of the origin and carry the smooth part on
+    /// top of it untouched. The default, and the only policy whose rendering
+    /// never switches modes: nothing is rounded that is moving, and nothing
+    /// that has stopped is left off the grid, so there is no frame in which
+    /// the layer changes how it is drawn.
+    ///
+    /// Which part is discrete depends on where the motion comes from, and
+    /// this tier covers both:
+    ///
+    /// * With a running [`translate`](Cached::translate) or
+    ///   [`scale`](Cached::scale), the layout box is the discrete part: it is
+    ///   snapped every frame, so the resampling phase varies only with the
+    ///   animation and the blur level cannot "breathe" when the surrounding
+    ///   layout reshuffles mid-animation.
+    /// * With no animation of its own, a widget can still be moving, because
+    ///   an ancestor is animating the space it is laid out in — the way a card
+    ///   re-centres its header as the page stack below it interpolates its
+    ///   height. Then the *last resting position* is the discrete part; it
+    ///   stays snapped while the travel since rides on top fractionally,
+    ///   instead of the creep being rounded into a staircase of whole-pixel
+    ///   jumps.
+    ///
+    /// The cost is up to ½ device pixel of displacement between the layout box
+    /// and the image. The texture and its viewport still agree exactly: the
+    /// record translates by the snapped origin too.
+    #[default]
     LayoutOnly,
 }
 
@@ -185,7 +210,7 @@ where
             scale: Anim::constant(1.0),
             opacity: Anim::constant(1.0),
             auto_invalidate: true,
-            pixel_snap: PixelSnap::Auto,
+            pixel_snap: PixelSnap::LayoutOnly,
             supersample_in_motion: false,
             filter: None,
         }
@@ -218,7 +243,7 @@ where
         self
     }
 
-    /// Sets the [`PixelSnap`] policy (default [`PixelSnap::Auto`]).
+    /// Sets the [`PixelSnap`] policy (default [`PixelSnap::LayoutOnly`]).
     ///
     /// [`FilterQuality::Snap`] overrides this: see
     /// [`filter_quality`](Self::filter_quality).
@@ -325,6 +350,23 @@ struct State {
     last_interaction: mouse::Interaction,
     /// The effective transform seen on the previous `RedrawRequested`.
     last_transform: Option<Transformation>,
+    /// The layout bounds seen on the previous `RedrawRequested`.
+    ///
+    /// A `Cached` with no animation of its own can still be moving: an
+    /// ancestor may be animating the space it is laid out in, the way a card
+    /// re-centres its header as the page stack below it interpolates its
+    /// height. Comparing bounds between frames is how it finds out — the
+    /// same question `Shape` asks, for the same reason.
+    last_bounds: Option<Rectangle>,
+    /// Where the layout put this widget the last time nothing was moving it.
+    ///
+    /// [`PixelSnap::LayoutOnly`] snaps *this* rather than the live bounds, and
+    /// adds the travel since on top untouched. Holding it for the length of a
+    /// move is what separates the discrete part of the origin from the smooth
+    /// one when the motion arrives through layout — as it does for a card
+    /// header re-centred by the page stack below it, which has no transform of
+    /// its own to split the two.
+    snap_anchor: Option<Point>,
     /// The transform is not animating and did not change since the previous
     /// frame: the texture may snap to the device grid.
     at_rest: bool,
@@ -339,6 +381,8 @@ impl State {
             activity: Activity::default(),
             last_interaction: mouse::Interaction::None,
             last_transform: None,
+            last_bounds: None,
+            snap_anchor: None,
             at_rest: false,
             propagated_generation: 0,
         }
@@ -434,8 +478,21 @@ where
             state.at_rest = !self.is_moving()
                 && state
                     .last_transform
-                    .is_none_or(|last| last == user_transform);
+                    .is_none_or(|last| last == user_transform)
+                && state.last_bounds.is_none_or(|last| last == bounds);
             state.last_transform = Some(user_transform);
+            state.last_bounds = Some(bounds);
+            // Which part of the origin is the discrete one depends on where
+            // the motion comes from. A widget animating its own transform has
+            // the layout as its discrete part, so the anchor follows the
+            // bounds every frame and a mid-animation reshuffle is still
+            // snapped away — the case this tier was written for. A widget
+            // standing still that is nonetheless being carried has the
+            // opposite split: the anchor holds at its last resting position
+            // and the travel since rides on top unrounded.
+            if state.at_rest || self.is_moving() {
+                state.snap_anchor = Some(bounds.position());
+            }
         }
 
         let mut local_messages = Vec::new();
@@ -560,13 +617,13 @@ where
 
         let supersample =
             geometry::record_supersample(self.supersample, self.supersample_in_motion, at_rest);
-        let composite = geometry::composite_geometry(
-            BLEED,
-            bounds,
-            scale,
-            supersample,
-            self.pixel_snap == PixelSnap::LayoutOnly,
-        );
+        // A widget that has never been through a redraw has no anchor yet;
+        // where it is now is the best available answer, and it is a resting
+        // position by definition.
+        let layout_anchor = (self.pixel_snap == PixelSnap::LayoutOnly)
+            .then(|| state.snap_anchor.unwrap_or_else(|| bounds.position()));
+        let composite =
+            geometry::composite_geometry(BLEED, bounds, scale, supersample, layout_anchor);
 
         let snap = geometry::snap_decision(
             filter,

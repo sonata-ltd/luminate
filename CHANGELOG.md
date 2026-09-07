@@ -66,9 +66,14 @@ The first release. What each crate provides:
 
 - `Cached` / `cached()`: records a subtree into a texture and composites it
   with animated `translate`, `scale`, `opacity`; `supersample`,
-  `supersample_in_motion`, `pixel_snap(PixelSnap::{Auto, Always, Never,
-  LayoutOnly})`, `filter_quality`, `auto_invalidate`; automatic invalidation
+  `supersample_in_motion`, `pixel_snap(PixelSnap::{LayoutOnly, Auto, Always,
+  Never})`, `filter_quality`, `auto_invalidate`; automatic invalidation
   when the content reacts, nested caches propagate to their ancestors.
+  `LayoutOnly` is the default: it is the only policy whose rendering never
+  switches modes, so a layer carried by an animating ancestor cannot glide
+  sub-pixel and then land on the grid in a single frame at the end of the
+  transition. `Auto` keeps the smoother motion and pays for it with that
+  frame.
 - `FilterQuality::{CatmullRom, Bilinear, Snap}`: the reconstruction kernel used
   when a texture is composited between device pixels. Chosen from the graphics
   adapter by default (`CatmullRom` discrete, `Bilinear` integrated, `Snap`
@@ -79,12 +84,14 @@ The first release. What each crate provides:
 - `Pager` / `pager()`: a sliding page stack with per-page textures and
   interpolated height (`current`, `motion`, `curve`, `width`, `max_height`,
   `filter_quality`, `pixel_snap`). `pixel_snap` applies to the sliding frames
-  only and treats the axes separately: the default `Auto` snaps the vertical
-  axis, which a slide moves only through its height interpolation, and leaves
-  the horizontal one fractional so the slide still glides. That puts one axis
-  at integer phase, where the composite shader collapses its kernel from 9
-  taps to 3 and stops resampling the page vertically. `LayoutOnly` also snaps
-  the pager's own horizontal origin, keeping only the slide fractional.
+  only and treats the axes separately: both `LayoutOnly` (the default) and
+  `Auto` snap the vertical axis, which a slide moves only through its height
+  interpolation, and leave the horizontal one fractional so the slide still
+  glides. That puts one axis at integer phase, where the composite shader
+  collapses its kernel from 9 taps to 3 and stops resampling the page
+  vertically. `LayoutOnly` additionally snaps the pager's own horizontal
+  origin, so a layout shift under a running slide cannot move the resampling
+  phase; only the slide does.
 - `TextureCache` handles with `id`, `invalidate`, `is_invalidated`,
   `record_count`, `generation`; `TextureCacheId`.
 - `Renderer` and `Compositor` for wgpu and tiny-skia (optional features, at

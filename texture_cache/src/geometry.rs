@@ -115,14 +115,22 @@ pub(crate) struct CompositeGeometry {
 
 /// Sizes the texture for `bounds` padded by `bleed` logical pixels on every
 /// side (so bilinear filtering at the edges does not clip anti-aliased
-/// pixels). With `snap_layout_origin` the layout part of the origin is
-/// pre-snapped to the device grid ([`PixelSnap::LayoutOnly`]).
+/// pixels).
+///
+/// `layout_anchor` is the part of `bounds`' origin that nothing is animating —
+/// where the layout would put this texture if every track were at rest.
+/// [`PixelSnap::LayoutOnly`] passes one; the anchor is snapped to the device
+/// grid and however far `bounds` has since travelled from it is carried on top
+/// at whatever sub-pixel phase the frame asks for. That is the whole of the
+/// tier: standing still is crisp, and being carried by an animating ancestor
+/// is smooth, without a frame in which the two disagree. `None` leaves the
+/// origin exactly where the layout put it.
 pub(crate) fn composite_geometry(
     bleed: u32,
     bounds: Rectangle,
     scale: f32,
     supersample: f32,
-    snap_layout_origin: bool,
+    layout_anchor: Option<Point>,
 ) -> CompositeGeometry {
     // A renderer that reports no usable scale (zero, negative, NaN) records
     // at 1:1 rather than producing an empty or infinite texture.
@@ -132,10 +140,12 @@ pub(crate) fn composite_geometry(
         1.0
     };
 
-    let (origin_x, origin_y) = if snap_layout_origin {
-        (snap_to_grid(bounds.x, scale), snap_to_grid(bounds.y, scale))
-    } else {
-        (bounds.x, bounds.y)
+    let (origin_x, origin_y) = match layout_anchor {
+        Some(anchor) => (
+            snap_to_grid(anchor.x, scale) + (bounds.x - anchor.x),
+            snap_to_grid(anchor.y, scale) + (bounds.y - anchor.y),
+        ),
+        None => (bounds.x, bounds.y),
     };
 
     let padded = Size::new(
@@ -192,10 +202,17 @@ pub(crate) fn snap_decision(
 /// fractional, or the page steps by whole device pixels. `page.y` moves only
 /// because the pager interpolates its height between the two pages and
 /// centres each one in the result — a side effect of the transition, not the
-/// motion the eye follows. Snapping `y` therefore costs nothing visible and
-/// buys a great deal: with one axis at integer phase the composite shader
-/// collapses its separable kernel from 9 taps to 3 and stops resampling the
-/// page vertically, which is the direction text can least afford to lose.
+/// motion the eye follows.
+///
+/// Snapping `y` buys a great deal: with one axis at integer phase the
+/// composite shader collapses its separable kernel from 9 taps to 3 and stops
+/// resampling the page vertically, which is the direction text can least
+/// afford to lose. `tests/sharpness_ab.rs` measures what giving that up costs
+/// — the edge spread of a line of text roughly doubles for the length of the
+/// slide. It is not free, though: the centring offset creeps by a fraction of
+/// a device pixel per frame near the end of a slide, and rounding it turns
+/// that creep into a staircase of whole-pixel steps. Sharp and stepping is the
+/// trade this makes; [`PixelSnap::Never`] is the other side of it.
 ///
 /// The pager's own origin is the *discrete* part of a page's position — it
 /// jumps when the surrounding layout reshuffles — and the page's offset
@@ -229,10 +246,12 @@ pub(crate) fn pager_page_bounds(
         return page;
     }
 
-    // `Auto` and `LayoutOnly` both snap the vertical axis. They differ on the
-    // horizontal one: `LayoutOnly` also snaps the pager's own origin there,
-    // so the resampling phase varies only with the slide and the blur level
-    // cannot "breathe" when the layout shifts mid-slide.
+    // Both tiers snap the pager's own origin vertically and let the centring
+    // offset ride on top of it fractionally. They differ on the horizontal
+    // axis: `LayoutOnly` gives the slide the same treatment, so the resampling
+    // phase varies only with the slide and the blur level cannot "breathe"
+    // when the layout shifts mid-slide, where `Auto` leaves the layout
+    // untouched.
     let x = if mode == PixelSnap::LayoutOnly {
         snapped(pager.x) + (page.x - pager.x)
     } else {
@@ -296,7 +315,7 @@ mod tests {
 
     #[test]
     fn geometry_pads_by_bleed_and_scales_to_physical() {
-        let geometry = composite_geometry(2, rect(5.0, 7.0, 10.0, 20.0), 2.0, 1.0, false);
+        let geometry = composite_geometry(2, rect(5.0, 7.0, 10.0, 20.0), 2.0, 1.0, None);
         assert_eq!(geometry.physical, Size::new(28, 48));
         assert_eq!(geometry.texture_scale, 2.0);
         assert_eq!(geometry.cache_bounds, rect(3.0, 5.0, 14.0, 24.0));
@@ -304,7 +323,7 @@ mod tests {
 
     #[test]
     fn geometry_applies_supersample_to_texture_only() {
-        let geometry = composite_geometry(2, rect(0.0, 0.0, 10.0, 10.0), 1.0, 2.0, false);
+        let geometry = composite_geometry(2, rect(0.0, 0.0, 10.0, 10.0), 1.0, 2.0, None);
         assert_eq!(geometry.physical, Size::new(28, 28));
         assert_eq!(geometry.texture_scale, 2.0);
         assert_eq!(geometry.cache_bounds.width, 14.0);
@@ -312,14 +331,20 @@ mod tests {
 
     #[test]
     fn geometry_never_produces_zero_texture() {
-        let geometry = composite_geometry(0, rect(0.0, 0.0, 0.0, 0.0), 1.0, 1.0, false);
+        let geometry = composite_geometry(0, rect(0.0, 0.0, 0.0, 0.0), 1.0, 1.0, None);
         assert_eq!(geometry.physical, Size::new(1, 1));
     }
 
     #[test]
     fn an_unusable_scale_falls_back_to_one() {
         for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            let geometry = composite_geometry(0, rect(0.0, 0.0, 10.0, 10.0), scale, 1.0, true);
+            let geometry = composite_geometry(
+                0,
+                rect(0.0, 0.0, 10.0, 10.0),
+                scale,
+                1.0,
+                Some(Point::ORIGIN),
+            );
             assert_eq!(geometry.texture_scale, 1.0, "scale {scale}");
             assert_eq!(geometry.physical, Size::new(10, 10), "scale {scale}");
         }
@@ -331,7 +356,7 @@ mod tests {
             rect(-5.0, -5.0, -10.0, -10.0),
             rect(f32::NAN, 0.0, f32::NAN, 4.0),
         ] {
-            let geometry = composite_geometry(2, bounds, 1.0, 1.0, false);
+            let geometry = composite_geometry(2, bounds, 1.0, 1.0, None);
             assert!(
                 geometry.physical.width >= 1 && geometry.physical.height >= 1,
                 "{bounds:?}"
@@ -342,14 +367,47 @@ mod tests {
     #[test]
     fn layout_only_snaps_only_the_bounds_origin() {
         let bounds = rect(10.3, 20.7, 10.0, 10.0);
-        let snapped = composite_geometry(0, bounds, 2.0, 1.0, true);
+        let snapped = composite_geometry(0, bounds, 2.0, 1.0, Some(bounds.position()));
         // 10.3 * 2 = 20.6 -> 21 -> 10.5 ; 20.7 * 2 = 41.4 -> 41 -> 20.5
         assert_eq!(
             (snapped.cache_bounds.x, snapped.cache_bounds.y),
             (10.5, 20.5)
         );
-        let plain = composite_geometry(0, bounds, 2.0, 1.0, false);
+        let plain = composite_geometry(0, bounds, 2.0, 1.0, None);
         assert_eq!((plain.cache_bounds.x, plain.cache_bounds.y), (10.3, 20.7));
+    }
+
+    #[test]
+    fn an_anchored_origin_snaps_the_anchor_and_carries_the_travel() {
+        // The card-header case: an ancestor re-centres this widget a fifth of
+        // a device pixel per frame. Rounding the live origin turns that into a
+        // staircase of whole-pixel jumps; anchoring it to the last resting
+        // position keeps the travel intact and still lands on the grid the
+        // moment the travel is zero.
+        let anchor = Point::new(10.3, 20.7);
+        let at_rest = composite_geometry(0, rect(10.3, 20.7, 10.0, 10.0), 2.0, 1.0, Some(anchor));
+        // 10.3 * 2 = 20.6 -> 21 -> 10.5 ; 20.7 * 2 = 41.4 -> 41 -> 20.5
+        assert_eq!(
+            (at_rest.cache_bounds.x, at_rest.cache_bounds.y),
+            (10.5, 20.5),
+            "a resting widget is snapped outright"
+        );
+
+        let creep = 0.1;
+        let travelled = composite_geometry(
+            0,
+            rect(10.3 + creep, 20.7 + creep, 10.0, 10.0),
+            2.0,
+            1.0,
+            Some(anchor),
+        );
+        assert!((travelled.cache_bounds.x - (10.5 + creep)).abs() < 1e-5);
+        assert!((travelled.cache_bounds.y - (20.5 + creep)).abs() < 1e-5);
+        // The point of the whole exercise: sub-pixel travel survives.
+        assert!(
+            (travelled.cache_bounds.x - at_rest.cache_bounds.x - creep).abs() < 1e-5,
+            "the travel was rounded away"
+        );
     }
 
     #[test]
@@ -651,7 +709,7 @@ mod tests {
         // put it or the page steps by whole device pixels.
         assert_eq!(placed.x, page.x);
         // y moves only because the pager interpolates its height, so snapping
-        // it is free and collapses the shader kernel to three taps.
+        // it keeps the text crisp and collapses the shader kernel to three taps.
         assert_eq!(placed.y, snap_to_grid(page.y, 2.0));
         assert_ne!(placed.y, page.y, "the fixture's y must be off the grid");
     }
@@ -709,7 +767,7 @@ mod tests {
             ),
         ] {
             let placed = pager_page_bounds(FilterQuality::CatmullRom, mode, page, pager, scale);
-            let composite = composite_geometry(BLEED, placed, scale, 1.0, false);
+            let composite = composite_geometry(BLEED, placed, scale, 1.0, None);
             let on_screen = composite.cache_bounds.x + BLEED as f32;
 
             assert!(
