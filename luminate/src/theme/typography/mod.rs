@@ -44,7 +44,21 @@ pub const FONT: Font = Font {
     style: Style::Normal,
 };
 
+/// The size and line height of one step of the scale, in logical pixels.
+#[derive(Debug)]
+pub struct Metrics {
+    /// Font size.
+    pub size: f32,
+    /// Line height. Authored, not derived: see [`TextSize`].
+    pub line_height: f32,
+}
+
 /// Body text sizes.
+///
+/// Each step's line height is authored, not computed from its size: the
+/// ratios run from 1.43 to 1.56 and every one is rounded to a whole pixel,
+/// because a fractional line box puts the baseline on a subpixel boundary
+/// and softens the text (`tests::every_line_height_is_a_whole_pixel`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextSize {
     /// 12 px, 18 px line height.
@@ -59,7 +73,40 @@ pub enum TextSize {
     Xl,
 }
 
+impl TextSize {
+    /// The metrics of this step.
+    #[must_use]
+    pub const fn metrics(self) -> Metrics {
+        match self {
+            Self::Xs => Metrics {
+                size: 12.0,
+                line_height: 18.0,
+            },
+            Self::Sm => Metrics {
+                size: 14.0,
+                line_height: 20.0,
+            },
+            Self::Md => Metrics {
+                size: 16.0,
+                line_height: 24.0,
+            },
+            Self::Lg => Metrics {
+                size: 18.0,
+                line_height: 28.0,
+            },
+            Self::Xl => Metrics {
+                size: 20.0,
+                line_height: 30.0,
+            },
+        }
+    }
+}
+
 /// Display (heading) sizes.
+///
+/// The line heights are authored for the same reason [`TextSize`]'s are, on
+/// a tighter set of ratios: display type is set at 1.2 to 1.33, where body
+/// type needs closer to 1.5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DisplaySize {
     /// 24 px, 32 px line height.
@@ -74,6 +121,39 @@ pub enum DisplaySize {
     Xl,
     /// 72 px, 90 px line height.
     Xxl,
+}
+
+impl DisplaySize {
+    /// The metrics of this step.
+    #[must_use]
+    pub const fn metrics(self) -> Metrics {
+        match self {
+            Self::Xs => Metrics {
+                size: 24.0,
+                line_height: 32.0,
+            },
+            Self::Sm => Metrics {
+                size: 30.0,
+                line_height: 38.0,
+            },
+            Self::Md => Metrics {
+                size: 36.0,
+                line_height: 44.0,
+            },
+            Self::Lg => Metrics {
+                size: 48.0,
+                line_height: 60.0,
+            },
+            Self::Xl => Metrics {
+                size: 60.0,
+                line_height: 72.0,
+            },
+            Self::Xxl => Metrics {
+                size: 72.0,
+                line_height: 90.0,
+            },
+        }
+    }
 }
 
 /// A complete type style: size, line height, weight and slant.
@@ -93,14 +173,7 @@ impl TextStyle {
     /// A body text style.
     #[must_use]
     pub const fn text(size: TextSize, weight: Weight) -> Self {
-        let (size, line_height) = match size {
-            TextSize::Xs => (12.0, 18.0),
-            TextSize::Sm => (14.0, 20.0),
-            TextSize::Md => (16.0, 24.0),
-            TextSize::Lg => (18.0, 28.0),
-            TextSize::Xl => (20.0, 30.0),
-        };
-
+        let Metrics { size, line_height } = size.metrics();
         Self {
             size,
             line_height,
@@ -112,15 +185,7 @@ impl TextStyle {
     /// A display (heading) style.
     #[must_use]
     pub const fn display(size: DisplaySize, weight: Weight) -> Self {
-        let (size, line_height) = match size {
-            DisplaySize::Xs => (24.0, 32.0),
-            DisplaySize::Sm => (30.0, 38.0),
-            DisplaySize::Md => (36.0, 44.0),
-            DisplaySize::Lg => (48.0, 60.0),
-            DisplaySize::Xl => (60.0, 72.0),
-            DisplaySize::Xxl => (72.0, 90.0),
-        };
-
+        let Metrics { size, line_height } = size.metrics();
         Self {
             size,
             line_height,
@@ -225,11 +290,57 @@ impl Default for TypographyTheme {
 mod tests {
     use super::*;
 
+    fn every_style() -> Vec<TextStyle> {
+        let text = [
+            TextSize::Xs,
+            TextSize::Sm,
+            TextSize::Md,
+            TextSize::Lg,
+            TextSize::Xl,
+        ]
+        .into_iter()
+        .map(|size| TextStyle::text(size, Weight::Normal));
+        let display = [
+            DisplaySize::Xs,
+            DisplaySize::Sm,
+            DisplaySize::Md,
+            DisplaySize::Lg,
+            DisplaySize::Xl,
+            DisplaySize::Xxl,
+        ]
+        .into_iter()
+        .map(|size| TextStyle::display(size, Weight::Normal));
+
+        text.chain(display).collect()
+    }
+
+    /// A fractional line height puts the baseline on a subpixel boundary,
+    /// which drops the text a pixel and softens it. Every line box the kit
+    /// produces is a whole number of pixels tall.
+    #[test]
+    fn every_line_height_is_a_whole_pixel() {
+        for style in every_style() {
+            assert_eq!(
+                style.line_height,
+                style.line_height.trunc(),
+                "{} px has a fractional line height {}",
+                style.size,
+                style.line_height
+            );
+        }
+    }
+
     #[test]
     fn sizes_and_line_heights_follow_the_scale() {
         let label = TypographyTheme::DEFAULT.label;
         assert_eq!((label.size, label.line_height), (14.0, 20.0));
         assert_eq!(label.weight, Weight::Medium);
+
+        let body = TypographyTheme::DEFAULT.body;
+        assert_eq!((body.size, body.line_height), (16.0, 24.0));
+
+        let heading = TypographyTheme::DEFAULT.heading;
+        assert_eq!((heading.size, heading.line_height), (18.0, 28.0));
 
         let h = TextStyle::display(DisplaySize::Xxl, Weight::Bold);
         assert_eq!((h.size, h.line_height), (72.0, 90.0));
