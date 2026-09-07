@@ -24,7 +24,7 @@
 use iced::theme::Mode;
 use iced::{Color, Padding, Shadow, Vector};
 
-use crate::descriptor::{ButtonContent, ButtonHierarchy, ButtonSize};
+use crate::descriptor::{Axis, ButtonContent, ButtonHierarchy, ButtonSize};
 use crate::theme::metrics::padding_vh;
 use crate::theme::palette::{Palette, mix, with_alpha};
 use crate::theme::typography::{TextStyle, TypographyTheme};
@@ -209,8 +209,25 @@ pub struct SidebarTheme {
     pub icon_size: f32,
     /// Padding around the children.
     pub padding: f32,
-    /// Gap between children.
-    pub spacing: f32,
+    /// Gap between the children of a column ([`Axis::Vertical`]).
+    pub column_spacing: f32,
+    /// Gap between the children of a row ([`Axis::Horizontal`]).
+    ///
+    /// Wider than [`column_spacing`](Self::column_spacing): a toolbar's
+    /// items sit side by side and need more air between them than stacked
+    /// navigation entries do.
+    pub row_spacing: f32,
+}
+
+impl SidebarTheme {
+    /// The gap between children along `axis`.
+    #[must_use]
+    pub const fn spacing(&self, axis: Axis) -> f32 {
+        match axis {
+            Axis::Vertical => self.column_spacing,
+            Axis::Horizontal => self.row_spacing,
+        }
+    }
 }
 
 /// Everything a card is drawn with.
@@ -426,7 +443,8 @@ const fn light_sidebar(p: &Palette) -> SidebarTheme {
         collapsed_size: 50.0,
         icon_size: 20.0,
         padding: 10.0,
-        spacing: 5.0,
+        column_spacing: 5.0,
+        row_spacing: 8.0,
     }
 }
 
@@ -866,6 +884,20 @@ mod tests {
                 theme.name
             );
         }
+    }
+
+    #[test]
+    fn a_row_of_sidebar_children_sits_wider_apart_than_a_column() {
+        let s = Theme::LIGHT.sidebar;
+        assert_eq!(s.spacing(Axis::Vertical), s.column_spacing);
+        assert_eq!(s.spacing(Axis::Horizontal), s.row_spacing);
+        assert!(
+            s.row_spacing > s.column_spacing,
+            "{} vs {}",
+            s.row_spacing,
+            s.column_spacing
+        );
+        assert_eq!(Theme::DARK.sidebar.row_spacing, s.row_spacing);
     }
 
     #[test]
