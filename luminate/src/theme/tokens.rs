@@ -143,6 +143,8 @@ impl ButtonTheme {
 /// Everything a text input is drawn with.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InputTheme {
+    /// Height of the input field.
+    pub height: f32,
     /// Fill of the input field.
     pub background: Color,
     /// Fill while disabled.
@@ -413,6 +415,7 @@ const fn light_button(p: &Palette, typography: &TypographyTheme) -> ButtonTheme 
 /// The light look's `input` tokens; see [`Theme::light`].
 const fn light_input(p: &Palette, typography: &TypographyTheme) -> InputTheme {
     InputTheme {
+        height: 34.0,
         background: p.gray.s25,
         background_disabled: p.gray.s50,
         text: p.text_primary,

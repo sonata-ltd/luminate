@@ -38,6 +38,7 @@ impl Luminate {
             label,
             hint,
             error,
+            height,
             width,
             id,
             secure,
@@ -91,6 +92,8 @@ impl Luminate {
                         .overflowing(),
                 )
             });
+
+        let bordered = bordered.height(height.unwrap_or(tokens.height));
 
         // Colours come from the theme's `error_bubble::Catalog` default
         // class; the metrics are forwarded from the tokens.

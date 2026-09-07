@@ -18,6 +18,8 @@ pub struct Input<'a, Message> {
     /// Error message: `Some` switches to the error look (red border, red
     /// hint) and floats the message in a bubble next to the field.
     pub error: Option<&'a str>,
+    /// Height of the field.
+    pub height: Option<f32>,
     /// Width of the field, label and hint (default `Fill`).
     pub width: Length,
     /// Widget id, for `text_input::focus` and friends.
@@ -43,6 +45,7 @@ impl<'a, Message> Input<'a, Message> {
             label: None,
             hint: None,
             error: None,
+            height: None,
             width: Length::Fill,
             id: None,
             secure: false,
@@ -92,6 +95,13 @@ impl<'a, Message> Input<'a, Message> {
     #[must_use]
     pub fn error(mut self, message: Option<&'a str>) -> Self {
         self.error = message;
+        self
+    }
+
+    /// Set the height of the input
+    #[must_use]
+    pub fn height(mut self, height: impl Into<f32>) -> Self {
+        self.height = Some(height.into());
         self
     }
 
