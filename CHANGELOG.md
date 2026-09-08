@@ -32,9 +32,10 @@ The first release. What each crate provides:
   SwiftUI's `Spring(duration:bounce:)` is (`stiffness = (2π / duration)²`,
   `damping = (1 - bounce) · 4π / duration`), so values quoted for Apple's
   springs can be used unchanged. The spring is ~99 % of the way there when the
-  duration elapses; full settling takes about twice as long. The tail is
-  sub-pixel and exists so a transition ends with the resampling blur cleared
-  rather than snapped away in one frame. The shipped presets
+  duration elapses; full settling takes about 1.6x longer. The spring stops
+  the frame nothing visible remains ahead of it — the excursion still to
+  come, not the speed right now — so it never lingers below a pixel long
+  enough to drift past its target and turn around. The shipped presets
   run shorter than Apple's own, whose durations are tuned for touch.
 - `curves::sharp::{SMOOTH, QUICK, BOUNCY, STRUCTURAL}`: the same four springs
   about 1.6× brisker again, for interfaces that want to feel immediate.

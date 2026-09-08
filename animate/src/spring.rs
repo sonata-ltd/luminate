@@ -33,8 +33,8 @@ impl SpringParams {
     /// `duration` is the *perceptual* duration: how long the motion reads as
     /// taking, not how long the maths keeps producing values. A no-bounce
     /// spring is about 99 % of the way there when it elapses, and the
-    /// remaining sliver — sub-pixel, and cut off by the engine's settling
-    /// tolerance — takes about as long again. It is floored at 1 ms.
+    /// remaining sliver — sub-pixel, and cut off once nothing visible is
+    /// still ahead — takes about 0.6x as long again. It is floored at 1 ms.
     ///
     /// Both parameters mean what they mean in `SwiftUI`'s `Spring(duration:
     /// bounce:)`, down to the coefficients — `stiffness = (2π / duration)²`,
@@ -196,27 +196,89 @@ impl Spring {
         self.velocity = v;
     }
 
-    /// Returns `true` once the spring is close enough to its target, in both
-    /// position and velocity, to stop animating.
+    /// The largest distance from the target the spring will still reach, over
+    /// all the time it has left.
     ///
-    /// The tolerances scale with the magnitude being animated so that a
-    /// window width settles as reliably as an opacity; whatever residual they
-    /// allow is erased by [`snap`](Self::snap).
+    /// The trajectory [`tick`](Self::tick) integrates is smooth, so its
+    /// largest value lies either at `t = 0` or at its first turning point.
+    /// This solves for that turning point rather than taking the envelope at
+    /// `t = 0`: the envelope is a bound, but a loose one late in a spring's
+    /// life, where it predicts an overshoot several times the one that
+    /// actually arrives — and predicting an overshoot that never comes is
+    /// what keeps a settling spring running through the reversal this is
+    /// meant to avoid.
+    #[allow(clippy::many_single_char_names)] // the oscillator's own symbols
+    fn peak_excursion(&self) -> f32 {
+        let (w, z) = (self.omega, self.zeta);
+        let x0 = self.position - self.target;
+        let v0 = self.velocity;
+
+        if w <= 0.0 || !x0.is_finite() || !v0.is_finite() {
+            return x0.abs();
+        }
+
+        // The same split `tick` makes, for the same reason: just below
+        // critical damping `ω_d → 0` and `b` amplifies rounding.
+        let (turning_point, at) = if z < 1.0 - 1e-3 {
+            // `x(t) = e^{-σt}(a cos ω_d t + b sin ω_d t)`; `x'(t) = 0` at
+            // `tan ω_d t = (b ω_d - σ a) / (σ b + a ω_d)`.
+            let wd = w * (1.0 - z * z).sqrt();
+            let s = z * w;
+            let (a, b) = (x0, (v0 + s * x0) / wd);
+            let t = (b * wd - s * a).atan2(s * b + a * wd) / wd;
+            let t = if t > 0.0 {
+                t
+            } else {
+                t + std::f32::consts::PI / wd
+            };
+
+            let e = (-s * t).exp();
+            let (sin, cos) = (wd * t).sin_cos();
+            (t, e * (a * cos + b * sin))
+        } else {
+            // Critically damped: `x(t) = e^{-ωt}(x0 + b t)`, `x'(t) = 0` at
+            // `t = 1/ω - x0/b`.
+            let b = v0 + w * x0;
+            if b.abs() <= f32::EPSILON {
+                return x0.abs();
+            }
+            let t = 1.0 / w - x0 / b;
+            let e = (-w * t).exp();
+            (t, e * (x0 + b * t))
+        };
+
+        // A turning point in the past or beyond the floating-point horizon
+        // says the spring is already on its way down: `t = 0` is the peak.
+        if turning_point <= 0.0 || !at.is_finite() {
+            return x0.abs();
+        }
+
+        x0.abs().max(at.abs())
+    }
+
+    /// Returns `true` once nothing the spring has left to do would be visible,
+    /// so it can stop animating.
     ///
-    /// The velocity bound is deliberately far below "one position tolerance
-    /// per 60 Hz frame". That looser rule is right for a position, and wrong
-    /// for everything downstream of one: a track carrying a page index for a
-    /// 418 px slide is still 0.2 device pixels from its target when a
-    /// per-frame bound would call it settled, and a fifth of a pixel is the
-    /// difference between a texture composited at a soft fractional phase and
-    /// one composited crisply on the grid. Snapping there ends the transition
-    /// with a visible jump in sharpness instead of letting the blur resolve.
-    /// The extra frames it costs are sub-pixel: nothing moves in them that
-    /// the eye reads as motion, only the last of the blur clearing.
+    /// The tolerance scales with the magnitude being animated so that a
+    /// window width settles as reliably as an opacity; whatever residual it
+    /// allows is erased by [`snap`](Self::snap).
+    ///
+    /// The question asked is about the *excursion still ahead*
+    /// ([`peak_excursion`](Self::peak_excursion)), not the speed right now.
+    /// Those differ exactly where it matters. A fast spring crossing its
+    /// target is close in position but has a large excursion ahead, so it
+    /// keeps running — the case a bare position test would snap mid-flight.
+    /// A bouncy spring on its last approach is the mirror image: it is about
+    /// to drift a sliver past the target and come back, and a velocity test
+    /// keeps it alive for those frames. That reversal is worse than the
+    /// residual it protects, because a texture composited across it changes
+    /// size in a frame the eye has just been told the motion is over. Asking
+    /// about the excursion covers both: run while something visible remains
+    /// ahead, stop when nothing does.
     pub(crate) fn is_settled(&self) -> bool {
         let scale = self.target.abs().max(self.position.abs()).max(1.0);
 
-        (self.position - self.target).abs() < 5e-4 * scale && self.velocity.abs() < 1e-3 * scale
+        self.peak_excursion() < 5e-4 * scale
     }
 
     /// Places the spring exactly at its target and stops it.
@@ -305,16 +367,93 @@ mod tests {
                         (arrival - duration).abs() <= duration * 0.15,
                         "duration {duration} reached 99 % at {arrival}"
                     );
-                    // The invisible remainder: about as long again, and the
-                    // reason `duration` is not the settling time. It is spent
-                    // below a pixel, clearing the last of the resampling
-                    // blur; see `is_settled` for why the bound is that tight.
+                    // The invisible remainder: about 0.6x again, and the
+                    // reason `duration` is not the settling time. It ends the
+                    // frame nothing visible remains ahead; see `is_settled`.
                     let ratio = settled / duration;
                     assert!(
-                        (1.75..=2.15).contains(&ratio),
+                        (1.5..=1.8).contains(&ratio),
                         "duration {duration} fully settled at {ratio}x"
                     );
                     break;
+                }
+            }
+        }
+    }
+
+    /// The reason `is_settled` asks about the excursion ahead rather than the
+    /// speed right now.
+    ///
+    /// A bouncy spring's last approach drifts a sliver past its target and
+    /// comes back. Those frames are all inside the settling tolerance, so
+    /// nothing in them is worth showing — but they contain a *reversal*, and
+    /// a reversal is the one thing the eye reads as a twitch however small it
+    /// is: a scaled texture composited across one visibly changes size. A
+    /// velocity test keeps the spring alive through them. Asking what
+    /// excursion is still ahead stops it before the first of them.
+    ///
+    /// Crossing the target at speed is the opposite case and must still run:
+    /// the error is momentarily small, but a large excursion remains.
+    #[test]
+    fn a_settling_spring_renders_no_frame_it_could_not_be_seen_in() {
+        for bounce in [0.0, 0.2, 0.35, 0.6, 0.9] {
+            let mut s = Spring::new(SpringParams::new(bounce, Duration::from_millis(300)), 1.0);
+            s.set_target(1.6);
+
+            let tolerance = |s: &Spring| 5e-4 * s.target.abs().max(s.position().abs()).max(1.0);
+
+            // Every frame the spring actually renders, and the error it shows.
+            let mut frames = Vec::new();
+            for _ in 0..10_000 {
+                s.tick(1.0 / 60.0);
+                if s.is_settled() {
+                    break;
+                }
+                frames.push((s.position() - s.target, tolerance(&s)));
+            }
+            assert!(!frames.is_empty(), "bounce {bounce}: settled before moving");
+
+            // The invisible tail: every frame after the last one the eye could
+            // have seen. One is the frame that carried the spring in; more
+            // than one means it lingered there, which is where it turns
+            // around.
+            let last_visible = frames
+                .iter()
+                .rposition(|(error, tolerance)| error.abs() >= *tolerance);
+            let tail = match last_visible {
+                Some(i) => frames.len() - 1 - i,
+                None => frames.len(),
+            };
+            assert!(
+                tail <= 1,
+                "bounce {bounce}: {tail} frames rendered below the tolerance, \
+                 errors {:?}",
+                frames[frames.len() - tail..]
+                    .iter()
+                    .map(|(e, _)| *e)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// `peak_excursion` is only allowed to over-estimate: it is what lets the
+    /// spring stop early, so an under-estimate would cut a visible frame.
+    #[test]
+    fn the_peak_excursion_bounds_every_frame_still_to_come() {
+        for bounce in [0.0, 0.35, 0.9] {
+            for velocity in [-40.0, -3.0, 0.0, 3.0, 40.0] {
+                let mut s = Spring::new(SpringParams::new(bounce, Duration::from_millis(250)), 7.0);
+                s.set_target(0.0);
+                s.velocity = velocity;
+
+                let bound = s.peak_excursion();
+                for _ in 0..2_000 {
+                    s.tick(1.0 / 240.0);
+                    let error = (s.position() - s.target).abs();
+                    assert!(
+                        error <= bound + 1e-3,
+                        "bounce {bounce}, v {velocity}: reached {error}, bound said {bound}"
+                    );
                 }
             }
         }

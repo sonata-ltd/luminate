@@ -13,6 +13,7 @@ use iced_luminate::router::{Registry, RouteMessage};
 use iced_luminate::theme::typography::FONT;
 use iced_luminate::{Element, Luminate, Router};
 use iced_texture_cache::{FilterQuality, set_filter_quality};
+use luminate_examples_support::bench::Bench;
 
 use crate::pages::{
     buttons::ButtonsPage, card::CardPage, inputs::InputsPage, motion::MotionPage,
@@ -51,6 +52,7 @@ fn main() -> iced::Result {
 struct App {
     luminate: Luminate,
     router: Router,
+    bench: Bench,
 }
 
 /// Application messages.
@@ -60,6 +62,8 @@ pub(crate) enum Message {
     Navigate(usize),
     /// Anything addressed to a page or to the router's history.
     Route(RouteMessage),
+    /// A frame timestamp, while `LUMINATE_BENCH=1`.
+    Tick(iced::time::Instant),
 }
 
 impl App {
@@ -79,11 +83,21 @@ impl App {
             .navigate::<ButtonsPage>()
             .expect("ButtonsPage was added above");
 
-        (Self { luminate, router }, Task::none())
+        (
+            Self {
+                luminate,
+                router,
+                bench: Bench::from_env(),
+            },
+            Task::none(),
+        )
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        self.router.subscription().map(Message::Route)
+        Subscription::batch([
+            self.router.subscription().map(Message::Route),
+            self.bench.subscription().map(Message::Tick),
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -95,6 +109,10 @@ impl App {
                 Task::none()
             }
             Message::Route(message) => self.router.update(message).map(Message::Route),
+            Message::Tick(now) => {
+                self.bench.tick(now);
+                Task::none()
+            }
         }
     }
 

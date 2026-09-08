@@ -484,6 +484,7 @@ where
             .scale(factor)
             // Recording at 2x keeps the enlarged texture from going soft.
             .supersample(2.0)
+            .pixel_snap(iced_texture_cache::PixelSnap::Never)
             .into(),
         style,
     )

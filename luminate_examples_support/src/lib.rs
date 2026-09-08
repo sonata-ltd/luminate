@@ -10,6 +10,7 @@
 //! builds only as part of an example or `--workspace` build (see
 //! `Cargo.toml`).
 
+pub mod bench;
 pub mod demo;
 
 mod autoplay;
