@@ -259,6 +259,9 @@ pub(crate) enum Step {
 /// [`value`]: Self::value
 pub(crate) struct Track {
     value: [AtomicU32; MAX_COMPONENTS],
+    /// The target of [`state`](Self::state), mirrored into atomics so that a
+    /// widget can read it in `layout` as cheaply as it reads the value.
+    target: [AtomicU32; MAX_COMPONENTS],
     components: usize,
     settled: AtomicBool,
     tier: AtomicU8,
@@ -298,6 +301,7 @@ impl Track {
 
         Self {
             value: std::array::from_fn(|i| AtomicU32::new(start[i].to_bits())),
+            target: std::array::from_fn(|i| AtomicU32::new(start[i].to_bits())),
             components,
             settled: AtomicBool::new(true),
             tier: AtomicU8::new(UNMARKED),
@@ -322,6 +326,12 @@ impl Track {
     /// Returns the published value of every component.
     pub(crate) fn value(&self) -> [f32; MAX_COMPONENTS] {
         std::array::from_fn(|i| f32::from_bits(self.value[i].load(Ordering::Relaxed)))
+    }
+
+    /// Returns the target of every component: where the track is headed, or
+    /// where it rests once it has arrived.
+    pub(crate) fn target(&self) -> [f32; MAX_COMPONENTS] {
+        std::array::from_fn(|i| f32::from_bits(self.target[i].load(Ordering::Relaxed)))
     }
 
     fn publish(&self, value: &[f32; MAX_COMPONENTS]) {
@@ -423,6 +433,10 @@ impl Track {
         state.delay = curve.delay;
         state.target = target;
         state.delay_left = curve.delay.as_secs_f32();
+
+        for (slot, component) in self.target.iter().zip(target.iter()) {
+            slot.store(component.to_bits(), Ordering::Relaxed);
+        }
 
         // `target` is `Copy`; taking it out of `state` first keeps the solver
         // borrow below exclusive.

@@ -80,3 +80,4 @@ macro_rules! catalog {
 pub mod error_bubble;
 pub mod multi_border;
 pub mod sidebar;
+pub mod weighted_text;

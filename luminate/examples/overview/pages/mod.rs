@@ -7,3 +7,4 @@ pub(crate) mod motion;
 pub(crate) mod nested_sidebar;
 pub(crate) mod showcase;
 pub(crate) mod snapshot;
+pub(crate) mod weight;

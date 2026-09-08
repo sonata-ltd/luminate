@@ -22,6 +22,9 @@ The first release. What each crate provides:
 - `Motion`: a tree-external animation engine with keyed tracks (`MotionKey`,
   `key!`), `to`, `to_set`, `play`, `enter`, `retire`, `presence`, `get`,
   `end_build`, `collect`, `track_count`.
+- `Anim::target()`: where a track is headed, read without a lock like
+  `Anim::get()`, for a widget that needs the end of an animation before the
+  animation gets there — laying text out at its final font weight, say.
 - `Anim<T>` handles resolved inside widgets; `Animatable` for `f32`, `Pixels`,
   `Vector`, `Point`, `Size`, `Rectangle`, `Radians`, `Color`, `Padding`,
   `Radius` (`MAX_COMPONENTS` = 4); `AnimLength`; `motion_set!` / `MotionSet`.
@@ -133,15 +136,20 @@ The first release. What each crate provides:
 
 - `Luminate`: theme + motion engine; `host`, `button`, `input`, `sidebar`,
   `card`, `pager`; `Luminate::fonts()`.
-- `Luminate::fonts()` returns eight buffers, not two: the upright and italic
-  faces, plus one copy of each per weight in
-  `typography::DECLARED_WEIGHTS` (500, 600, 700), differing only in
-  `OS/2.usWeightClass`. The text stack selects a face by *exact* declared
-  weight and falls back to any other family that declares it, and a variable
-  font declares one — so without the copies, asking the kit's family for
-  Medium silently rendered in a system font. The copies keep their
+- `Luminate::fonts()` returns eighteen buffers, not two: the upright and
+  italic faces, plus one copy of each per weight in
+  `typography::DECLARED_WEIGHTS` (every round hundred but the native 400),
+  differing only in `OS/2.usWeightClass`. The text stack collects the faces
+  whose declared weight matches *exactly* and looks for the requested family
+  among those alone, and a variable font declares one weight — so without the
+  copies, asking the kit's family for Medium silently rendered in a system
+  font, and any hundred left undeclared lost to whatever else ships it
+  (DejaVu Sans at 200, Noto Sans at 900). The weights *between* the hundreds
+  need no copy: nothing declares 437, so the exact-match set is empty for
+  every family at once and the family query decides. The copies keep their
   `fvar`/`gvar` tables, so each is still the variable face that renders an
-  animated weight between the declared ones. Each costs about 900 KB.
+  animated weight between the declared ones. Each costs about 900 KB, some
+  14 MB for the set.
 - `descriptor::{Button, ButtonContent, ButtonHierarchy, ButtonSize, Input,
   Sidebar, Axis, Card, Pager}` as plain data with builders.
 - `theme::Theme` (`LIGHT`, `DARK`) implementing `iced::theme::Base` and the
@@ -150,8 +158,22 @@ The first release. What each crate provides:
   DisplaySize, TypographyTheme, styled_text, FONT, FAMILY}`; bundled Inter
   (OFL-1.1) behind `bundled-font`.
 - Widgets `widget::{multi_border::MultiBorder, sidebar::Sidebar,
-  error_bubble::ErrorBubble}` with `multi_border()`, `sidebar()`,
-  `error_bubble()`; every item has one public path.
+  error_bubble::ErrorBubble, weighted_text::WeightedText}` with
+  `multi_border()`, `sidebar()`, `error_bubble()`, `weighted_text()`; every
+  item has one public path.
+- `widget::weighted_text`: text drawn at an animated `wght`, the axis the
+  bundled Inter carries. `iced::Font` names nine weights and nothing between
+  them, so the widget shapes its own `cosmic_text::Buffer` at an arbitrary
+  `u16` weight and hands the renderer that buffer — which is what makes 437
+  and 612 reachable, and what `DECLARED_WEIGHTS` was always for.
+  `WeightLayout::{Live, Snapped}` chooses whether the line is measured at the
+  weight of the moment (honest, `Tier::Layout`) or at the one it is heading
+  for (still, `Tier::Paint`). The weight is rounded to a `step` before it is
+  shaped, on a grid anchored at the target so a settled animation is exact:
+  every distinct weight is a font instance built and cached inside
+  cosmic-text and an atlas entry per glyph, which is also why this is for
+  labels and not for running text. A weight that is not animating is drawn
+  through the ordinary paragraph path instead.
 - Re-exports `iced`, `iced_animate` (as `animate`), `iced_page_router` (as
   `router`) and `iced_texture_cache` (as `texture`); `Element`, `Renderer`,
   `Router` aliases.

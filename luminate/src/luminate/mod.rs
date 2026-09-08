@@ -96,15 +96,19 @@ impl Luminate {
         doc = "[`DECLARED_WEIGHTS`](crate::theme::typography::DECLARED_WEIGHTS) —"
     )]
     #[cfg_attr(not(feature = "bundled-font"), doc = "`DECLARED_WEIGHTS` —")]
-    /// eight buffers in all. The copies exist so the text stack can select
+    /// eighteen buffers in all. The copies exist so the text stack can select
     /// the kit's family by exact weight; see `DECLARED_WEIGHTS` for why, and
-    /// note that each costs about 900 KB of memory.
+    /// note that each costs about 900 KB of memory — some 14 MB for the set,
+    /// and about 9 ms to build and register, measured in a release build.
+    /// That is what it costs to own all nine weights of the family rather
+    /// than lose one of them to whatever else is installed; an application
+    /// pays it once, at startup, and nothing per frame.
     ///
     /// ```
     /// use iced_luminate::Luminate;
     ///
     /// let fonts = Luminate::fonts();
-    /// assert_eq!(fonts.len(), if cfg!(feature = "bundled-font") { 8 } else { 0 });
+    /// assert_eq!(fonts.len(), if cfg!(feature = "bundled-font") { 18 } else { 0 });
     /// ```
     #[must_use]
     pub fn fonts() -> Vec<Cow<'static, [u8]>> {

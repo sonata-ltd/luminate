@@ -283,6 +283,27 @@ impl<T: Animatable> Anim<T> {
         }
     }
 
+    /// Resolves the value this handle is heading for: the target the view
+    /// last gave [`Motion::to`], or the resting value once it has arrived.
+    ///
+    /// Read it where a widget needs the end of an animation before the
+    /// animation gets there — laying text out at its final font weight, say,
+    /// so the line does not change width while the weight moves. Like
+    /// [`get`], the read takes no lock.
+    ///
+    /// [`get`]: Self::get
+    /// [`Motion::to`]: crate::Motion::to
+    #[must_use]
+    pub fn target(&self) -> T {
+        match &self.inner {
+            Inner::Const(value) => *value,
+            Inner::Live(track, _) => {
+                track.touch();
+                T::read(&track.target())
+            }
+        }
+    }
+
     /// Returns `true` if this value is currently in motion.
     #[must_use]
     pub fn is_animating(&self) -> bool {
@@ -458,6 +479,52 @@ mod tests {
             !status.layout_invalid,
             "an unmarked track costs a redraw, never a relayout"
         );
+    }
+
+    #[test]
+    fn a_target_is_readable_before_the_track_arrives() {
+        let m = Motion::new();
+        let mut clock = FrameClock::new(&m);
+        let key = key!();
+
+        let _ = m.to(key, FAST, 500.0_f32);
+        let value = m.to(key, FAST, 600.0_f32);
+
+        assert_eq!(
+            value.target(),
+            600.0,
+            "the target is known the moment the view retargets the track"
+        );
+
+        let _ = clock.run(1);
+        assert!(value.is_animating(), "the track is still on its way");
+        assert!(
+            value.get() < 600.0,
+            "and its current value has not arrived yet"
+        );
+        assert_eq!(value.target(), 600.0, "which does not move the target");
+    }
+
+    #[test]
+    fn a_settled_track_targets_where_it_rests() {
+        let m = Motion::new();
+        let mut clock = FrameClock::new(&m);
+        let key = key!();
+
+        let _ = m.to(key, FAST, 0.0_f32);
+        let value = m.to(key, FAST, 1.0_f32);
+
+        let _ = clock.run(120);
+        assert!(!value.is_animating(), "120 frames settle a fast spring");
+        assert_eq!(value.target(), value.get());
+    }
+
+    #[test]
+    fn a_constant_targets_itself() {
+        let value: Anim<f32> = 16.0.into();
+
+        assert_eq!(value.target(), 16.0);
+        assert_eq!(value.target(), value.get());
     }
 
     #[test]

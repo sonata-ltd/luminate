@@ -38,10 +38,10 @@ pub const FAMILY: &str = "Inter Variable";
 /// The extra weights the bundled faces are *declared* at, beyond the 400 a
 /// variable font carries by default.
 ///
-/// The text stack picks a face by exact declared weight: it looks for a face
-/// of the requested family whose `OS/2.usWeightClass` equals the requested
-/// weight, and if there is none it takes whatever other family does declare
-/// it. A variable font declares one weight, so asking a bundled face for
+/// The text stack picks a face by exact declared weight, and only then by
+/// family: it collects every installed face whose `OS/2.usWeightClass` equals
+/// the requested weight and looks for the requested family among *those*. A
+/// variable font declares one weight, so asking a bundled face for
 /// [`Weight::Medium`] found no exact match and the text silently came out in
 /// some system font that happens to ship a 500 face.
 ///
@@ -51,11 +51,21 @@ pub const FAMILY: &str = "Inter Variable";
 /// variable font: selected at 500, it is *also* the face that renders 437 or
 /// 612 when a weight is animated between them.
 ///
-/// Weights not listed still work whenever no other installed family declares
-/// them exactly — which is why the gaps between these are safe to animate
-/// through, and why the round hundreds are the ones worth declaring.
+/// Every round hundred is listed because those are the weights real fonts
+/// declare: leave one out and it is the one weight of the nine at which the
+/// kit's own family loses to whatever else is installed — `DejaVu Sans` at
+/// 200, `Noto Sans` at 900. The weights *between* them need no copy for the opposite
+/// reason: nothing anywhere declares 437, the exact-match set comes up empty
+/// for every family at once, and the family query decides. So the gaps are
+/// safe to animate through and the hundreds are the ones that must be
+/// declared.
+///
+/// [`weighted_text`](crate::widget::weighted_text) is what asks for a weight
+/// between them: [`TextStyle`] carries [`Weight`], which names nine weights
+/// and nothing in between, so animating along the axis needs a widget that
+/// shapes its own buffer.
 #[cfg(feature = "bundled-font")]
-pub const DECLARED_WEIGHTS: [u16; 3] = [500, 600, 700];
+pub const DECLARED_WEIGHTS: [u16; 8] = [100, 200, 300, 500, 600, 700, 800, 900];
 
 /// `font` with `OS/2.usWeightClass` rewritten to `weight`, or `None` if the
 /// bytes are not an sfnt font with an `OS/2` table.

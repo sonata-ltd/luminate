@@ -18,6 +18,7 @@ use luminate_examples_support::bench::Bench;
 use crate::pages::{
     buttons::ButtonsPage, card::CardPage, inputs::InputsPage, motion::MotionPage,
     nested_sidebar::NestedSidebar, showcase::ShowcasePage, snapshot::SnapshotPage,
+    weight::WeightPage,
 };
 
 mod pages;
@@ -77,6 +78,7 @@ impl App {
             .add::<SnapshotPage>("Snapshot")
             .add::<CardPage>("Card")
             .add::<MotionPage>("Motion")
+            .add::<WeightPage>("Weight")
             .add::<ShowcasePage>("Showcase")
             .add::<NestedSidebar>("Nested sidebar");
         router
