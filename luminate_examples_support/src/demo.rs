@@ -48,8 +48,8 @@ where
     let color = m.to(key!(), SMOOTH, if on { ACTIVE } else { IDLE });
 
     cell(
-        "fill",
-        "let color = m.to(key!(), SMOOTH,\n    if on { ACTIVE } else { IDLE });\n\nshape()\n    .width(BOX).height(BOX)\n    .fill(color)\n    .radius(uniform_radius(8.0))",
+        "Fill",
+        "Animated primitive figure",
         shape()
             .width(BOX)
             .height(BOX)
@@ -81,8 +81,8 @@ where
     );
 
     cell(
-        "radius",
-        "let corner = m.to(key!(), SMOOTH,\n    uniform_radius(if on { BOX / 2.0 } else { 6.0 }));\n\nshape()\n    .width(BOX).height(BOX)\n    .radius(corner)",
+        "Radius",
+        "Animated primitive figure",
         shape()
             .width(BOX)
             .height(BOX)
@@ -113,8 +113,8 @@ where
     let color = m.to(key!("color"), SMOOTH, if on { ACTIVE } else { MUTED });
 
     cell(
-        "border",
-        "// One key, two discriminators:\n// separate tracks, one idea.\nlet width = m.to(key!(\"width\"), SMOOTH, ..);\nlet color = m.to(key!(\"color\"), SMOOTH, ..);",
+        "Border",
+        "Animated primitive figure",
         shape()
             .width(BOX)
             .height(BOX)
@@ -150,8 +150,8 @@ where
     let side = m.to(key!(), SMOOTH, if on { 76.0_f32 } else { BOX });
 
     cell(
-        "size (layout)",
-        "let side = m.to(key!(), SMOOTH,\n    if on { 76.0 } else { BOX });\n\n// The dot beside it is pushed along:\n// only this tier moves siblings.\nsized(shape())\n    .width(side).height(side)",
+        "Size",
+        "Animated primitive figure with layout",
         row![
             sized(shape().fill(IDLE).radius(uniform_radius(8.0)))
                 .width(side.clone())
@@ -186,8 +186,8 @@ where
     let pad = m.to(key!(), SMOOTH, Padding::from(if on { 18.0 } else { 4.0 }));
 
     cell(
-        "padding (layout)",
-        "let pad = m.to(key!(), SMOOTH,\n    Padding::from(if on { 18.0 } else { 4.0 }));\n\nsized(inner).padding(pad)",
+        "Padding",
+        "Animated primitive figure with layout",
         container(
             sized(
                 shape()
@@ -255,8 +255,8 @@ where
     let s = m.to_set(key!(), SMOOTH, if on { BADGE_ACTIVE } else { BADGE_IDLE });
 
     cell(
-        "motion_set!",
-        "// Three properties, two tiers, one line.\nlet s = m.to_set(key!(), SMOOTH,\n    if on { BADGE_ACTIVE } else { BADGE_IDLE });\n\nsized(shape()\n    .fill(s.fill)\n    .radius(s.radius))\n    .width(s.side)\n    .height(s.side)",
+        "Multiple set",
+        "Three properties animation",
         sized(shape().fill(s.fill).radius(s.radius))
             .width(s.side.clone())
             .height(s.side)
@@ -290,8 +290,8 @@ where
     );
 
     cell(
-        "spring vs ease",
-        "// blue = spring, grey = ease.\nlet sprung = m.to(key!(\"spring\"), QUICK, target);\nlet eased = m.to(key!(\"ease\"),\n    Curve::ease(Easing::EaseInOut, 320ms), target);",
+        "Comparison",
+        "Spring vs Ease",
         column![marker(sprung, IDLE), marker(eased, MUTED)]
             .spacing(10)
             .into(),
@@ -323,8 +323,8 @@ where
     };
 
     cell(
-        "delay / stagger",
-        "let curve = SMOOTH\n    .delayed(Duration::from_millis(90 * i));\n\nm.to(key!(i), curve, target)",
+        "Delay / Stagger",
+        "Three lanes off one call site",
         column![
             marker(lane(0), IDLE),
             marker(lane(1), IDLE),
@@ -382,8 +382,8 @@ where
     let last = chips.iter().rev().find(|c| !c.leaving).map(|c| c.id);
 
     cell(
-        "enter / exit",
-        "let side = if chip.leaving {\n    let side = m.retire(\n        chip.key(), QUICK, 0.0);\n\n    // Cannot animate an Element\n    // the view no longer builds.\n    if m.presence(chip.key())\n        == Presence::Gone\n    {\n        continue;\n    }\n    side\n} else {\n    // Replays on first sight only.\n    m.enter(chip.key(),\n        BOUNCY, 0.0, 20.0)\n};",
+        "Enter / Exit",
+        "Chips that grow and shrink out",
         column![
             lane,
             row![
@@ -447,8 +447,8 @@ where
     );
 
     cell(
-        "translate",
-        "let offset = m.to(key!(), SMOOTH, if on {\n    Vector::new(64.0, 0.0)\n} else {\n    Vector::ZERO\n});\n\ncached(cache, square)\n    .translate(offset)",
+        "Translate",
+        "Animated texture layer",
         row![
             cached(cache.clone(), square(IDLE)).translate(offset),
             Space::new().width(Length::Fill),
@@ -478,8 +478,8 @@ where
     let factor = m.to(key!(), BOUNCY, if on { 1.6_f32 } else { 1.0 });
 
     cell(
-        "scale",
-        "let factor = m.to(key!(), BOUNCY,\n    if on { 1.6 } else { 1.0 });\n\n// About its own centre.\n// Siblings do not move.\ncached(cache, square)\n    .scale(factor)\n    .supersample(2.0)",
+        "Scale",
+        "Animated texture layer",
         cached(cache.clone(), square(IDLE))
             .scale(factor)
             // Recording at 2x keeps the enlarged texture from going soft.
@@ -509,8 +509,8 @@ where
     let alpha = m.to(key!(), FADE, if on { 0.15_f32 } else { 1.0 });
 
     cell(
-        "opacity",
-        "let alpha = m.to(key!(), FADE,\n    if on { 0.15 } else { 1.0 });\n\n// Fades the subtree as one image,\n// not piece by piece.\ncached(cache, square)\n    .opacity(alpha)",
+        "Opacity",
+        "Animated texture layer",
         cached(cache.clone(), square(IDLE)).opacity(alpha).into(),
         style,
     )

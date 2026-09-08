@@ -16,6 +16,7 @@
 //! Rotation is not offered: the compositor blits an axis-aligned rectangle,
 //! so a rotation has nowhere to live between the widget and the GPU.
 
+use iced::widget::scrollable;
 use iced_luminate::animate::Presence;
 use iced_luminate::descriptor::Button;
 use iced_luminate::iced::widget::{column, grid, text};
@@ -138,7 +139,7 @@ impl Page for MotionPage {
             .color(MUTED),
             self.luminate
                 .button(Button::new(if on { "Reset" } else { "Play" }).on_press(Message::Toggle)),
-            cells,
+            scrollable(cells).height(Length::Fill),
             text(format!("view rebuilds: {}", self.rebuilds.count()))
                 .size(12)
                 .color(MUTED),
