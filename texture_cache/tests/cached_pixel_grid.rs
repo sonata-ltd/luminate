@@ -26,7 +26,7 @@ use iced_core::renderer::{Headless, Quad};
 use iced_core::{Color, Element, Font, Padding, Pixels, Rectangle, Size, mouse, renderer, window};
 use iced_core::{Event, Renderer as _, clipboard};
 use iced_test::runtime::user_interface::{self, UserInterface};
-use iced_texture_cache::{PixelSnap, Renderer, TextureCache, cached};
+use iced_texture_cache::{FilterQuality, PixelSnap, Renderer, TextureCache, cached};
 
 const CANVAS: Size = Size::new(200.0, 200.0);
 const WIDTH: usize = 200;
@@ -39,6 +39,13 @@ const TO: f32 = 46.0;
 
 /// A fast spring, so the travel is over in a dozen frames.
 const FAST: Curve = Curve::spring(SpringParams::new(0.0, Duration::from_millis(300)));
+
+/// Pinned, because the tier is otherwise the adapter's to choose and
+/// [`FilterQuality::Snap`] — what a software or virtual adapter gets, which is
+/// what CI runs on — rounds the composite whatever `PixelSnap` asks for. That
+/// is the documented order of precedence, not a bug; it just leaves nothing
+/// for these tests to measure. Either non-snapping tier proves the same thing.
+const FILTER: FilterQuality = FilterQuality::Bilinear;
 
 /// The ink-weighted vertical centroid of the frame.
 ///
@@ -104,10 +111,13 @@ impl Harness {
                 background: Some(Color::BLACK.into()),
                 ..iced::widget::container::Style::default()
             });
-        let layer: Element<'_, (), iced::Theme, Renderer> =
-            sized(cached(self.cache.clone(), square).pixel_snap(self.snap))
-                .padding(padding)
-                .into();
+        let layer: Element<'_, (), iced::Theme, Renderer> = sized(
+            cached(self.cache.clone(), square)
+                .pixel_snap(self.snap)
+                .filter_quality(FILTER),
+        )
+        .padding(padding)
+        .into();
 
         let ui_cache = self.ui_cache.take().expect("returned after every frame");
         let mut messages = Vec::new();

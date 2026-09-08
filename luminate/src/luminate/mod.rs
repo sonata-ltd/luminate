@@ -91,7 +91,11 @@ impl Luminate {
     ///
     /// The two bundled faces come first, upright then italic, followed by one
     /// copy of each per weight in
-    /// [`DECLARED_WEIGHTS`](crate::theme::typography::DECLARED_WEIGHTS) —
+    #[cfg_attr(
+        feature = "bundled-font",
+        doc = "[`DECLARED_WEIGHTS`](crate::theme::typography::DECLARED_WEIGHTS) —"
+    )]
+    #[cfg_attr(not(feature = "bundled-font"), doc = "`DECLARED_WEIGHTS` —")]
     /// eight buffers in all. The copies exist so the text stack can select
     /// the kit's family by exact weight; see `DECLARED_WEIGHTS` for why, and
     /// note that each costs about 900 KB of memory.
