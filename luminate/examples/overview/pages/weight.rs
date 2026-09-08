@@ -89,14 +89,14 @@ impl Page for WeightPage {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        column![self.welcome(), self.axis(), self.weighted_text_snapping()]
+        column![Self::welcome(), self.axis(), self.weighted_text_snapping()]
             .spacing(50)
             .into()
     }
 }
 
 impl WeightPage {
-    fn welcome(&self) -> Element<'_, Message> {
+    fn welcome<'a>() -> Element<'a, Message> {
         column![
             styled_text(
                 "Weight",
