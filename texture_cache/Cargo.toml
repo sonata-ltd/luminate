@@ -43,7 +43,7 @@ iced = { workspace = true, features = [
 ] }
 iced_test.workspace = true
 iced_runtime.workspace = true
-naga = { version = "27", features = ["wgsl-in"] }
+naga = { version = "30", features = ["wgsl-in"] }
 # The examples install a logger so `RUST_LOG=info` shows the adapter and
 # surface-format choice.
 env_logger = "0.11"
