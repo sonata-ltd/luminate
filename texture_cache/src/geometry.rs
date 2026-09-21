@@ -180,7 +180,9 @@ pub(crate) fn composite_geometry(
 pub(crate) fn snap_decision(
     filter: FilterQuality,
     mode: PixelSnap,
-    has_live_scale: bool,
+    // A live scale or a live warp: either makes the composite something
+    // other than a translation, and snapping its origin meaningless.
+    has_live_transform: bool,
     translation_only: bool,
     at_rest: bool,
 ) -> bool {
@@ -191,7 +193,7 @@ pub(crate) fn snap_decision(
     match mode {
         PixelSnap::Always => true,
         PixelSnap::Never | PixelSnap::LayoutOnly => false,
-        PixelSnap::Auto => !has_live_scale && translation_only && at_rest,
+        PixelSnap::Auto => !has_live_transform && translation_only && at_rest,
     }
 }
 
@@ -288,6 +290,26 @@ pub(crate) fn composite_clip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_live_warp_suppresses_auto_snapping_like_a_live_scale() {
+        // Auto snaps only a resting, translation-only composite.
+        assert!(snap_decision(
+            FilterQuality::Bilinear,
+            PixelSnap::Auto,
+            false,
+            true,
+            true
+        ));
+        // A live warp arrives through the same parameter as a live scale.
+        assert!(!snap_decision(
+            FilterQuality::Bilinear,
+            PixelSnap::Auto,
+            true,
+            true,
+            true
+        ));
+    }
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {
         Rectangle {

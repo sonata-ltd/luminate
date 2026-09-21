@@ -14,6 +14,7 @@ use crate::geometry;
 use crate::reaction::{Activity, observe};
 use crate::record::{Record, TextureRenderer};
 use crate::texture_cache::{TextureCache, TextureCacheId};
+use crate::warp::{Corner, Genie, Warp};
 
 /// Logical pixels of content padding recorded around the layout bounds, so
 /// bilinear filtering at the texture's edge does not clip anti-aliasing.
@@ -159,6 +160,10 @@ where
     supersample_in_motion: bool,
     /// `None` inherits the renderer's tier; see [`Cached::filter_quality`].
     filter: Option<FilterQuality>,
+    /// The corner a genie collapses into, or `None` for no warp at all.
+    warp_anchor: Option<Corner>,
+    /// Genie progress. Meaningless without an anchor.
+    warp_progress: Anim<f32>,
 }
 
 impl<Message, Theme, Renderer> std::fmt::Debug for Cached<'_, Message, Theme, Renderer>
@@ -213,6 +218,8 @@ where
             pixel_snap: PixelSnap::LayoutOnly,
             supersample_in_motion: false,
             filter: None,
+            warp_anchor: None,
+            warp_progress: Anim::constant(1.0),
         }
     }
 
@@ -328,10 +335,51 @@ where
         self
     }
 
+    /// Warps the cached texture when compositing: a non-affine collapse that
+    /// [`scale`](Self::scale) cannot express. Resolved every frame inside the
+    /// widget, and costs neither a relayout nor a re-record
+    /// ([`Tier::Composite`]).
+    ///
+    /// A warp only ever shrinks the image inside its own rectangle, so
+    /// siblings do not move and nothing has to make room. Drive it with a
+    /// curve that does not overshoot — `curves::QUICK` and `curves::SMOOTH`
+    /// are zero-bounce springs — since progress is clamped to `0..=1` and a
+    /// bouncy curve would simply flatten against that ceiling.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use iced::widget::text;
+    /// use iced_texture_cache::{Corner, TextureCache, cached};
+    ///
+    /// let cache = TextureCache::new();
+    /// let _: iced_texture_cache::Element<'_, ()> = cached(cache, text("collapsing"))
+    ///     .genie(0.5, Corner::TopLeft)
+    ///     .into();
+    /// ```
+    #[must_use]
+    pub fn genie(mut self, progress: impl Into<Anim<f32>>, anchor: Corner) -> Self {
+        self.warp_anchor = Some(anchor);
+        self.warp_progress = progress.into();
+        self.warp_progress.mark_tier(Tier::Composite);
+        self
+    }
+
+    /// The warp composited this frame, built from the anchor and whatever
+    /// progress has reached.
+    fn warp(&self) -> Warp {
+        match self.warp_anchor {
+            None => Warp::None,
+            Some(anchor) => Warp::Genie(Genie::new(self.warp_progress.get(), anchor)),
+        }
+    }
+
     /// Whether the transform is still moving. Opacity is deliberately not
     /// part of it: a fade changes no texel phase.
     fn is_moving(&self) -> bool {
-        self.translate.is_animating() || self.scale.is_animating()
+        self.translate.is_animating()
+            || self.scale.is_animating()
+            || self.warp_progress.is_animating()
     }
 
     /// The transform actually composited this frame.
@@ -611,9 +659,20 @@ where
         }
         let opacity = opacity.min(1.0);
 
+        let warp = self.warp();
+
         let user_transform = self.transform(bounds);
         let at_rest = state.at_rest;
         let filter = self.filter.unwrap_or_else(|| renderer.filter_quality());
+        // The neck minifies hard, and a cache texture has no mip chain to
+        // minify through. `CatmullRom`'s high-frequency boost makes that
+        // worse rather than better, so a live warp drops to a single
+        // bilinear tap and the configured tier returns at rest.
+        let filter = if warp.is_live() && !filter.snaps() {
+            FilterQuality::Bilinear
+        } else {
+            filter
+        };
 
         let supersample =
             geometry::record_supersample(self.supersample, self.supersample_in_motion, at_rest);
@@ -628,7 +687,7 @@ where
         let snap = geometry::snap_decision(
             filter,
             self.pixel_snap,
-            self.scale.is_live(),
+            self.scale.is_live() || warp.is_live(),
             geometry::is_translation_only(&user_transform),
             at_rest,
         );
