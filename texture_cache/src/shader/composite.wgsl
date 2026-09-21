@@ -2,6 +2,7 @@
 @group(0) @binding(1) var cache_sampler: sampler;
 
 // Eight scalars, exactly 32 bytes, matching the Rust side.
+// Twelve scalars, exactly 48 bytes, matching the Rust side.
 struct Params {
     opacity: f32,
     // Reconstruction kernel: 0 = Catmull-Rom, 1 = a single bilinear tap.
@@ -18,9 +19,14 @@ struct Params {
     warp_target_width: f32,
     // How sharply a row's travel lags with its distance from the anchor.
     warp_stretch_power: f32,
+    // The side curve's control values, at the wide end and the neck end.
+    warp_curve_in: f32,
+    warp_curve_out: f32,
     // Axis mirrors putting the anchor corner at the origin, 0.0 or 1.0.
     warp_flip_x: f32,
     warp_flip_y: f32,
+    pad0: f32,
+    pad1: f32,
 }
 @group(0) @binding(2) var<uniform> params: Params;
 
@@ -83,12 +89,16 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
 
     // The row's width comes straight from the destination row. `1 - y` is
     // how far along the travel path it sits, which is what makes the neck
-    // sweep, and the smoothstep is the side curve: flat at both ends,
-    // steepest in the middle, so the side reads as a wave rather than an
-    // arch. Rows converge on `warp_target_width`, not on a point.
+    // sweep. The cubic is the side curve — the Bézier through
+    // `(0, curve_in, curve_out, 1)`, which at its defaults is the smoothstep
+    // and so the reference's own curve. This is `warp::bend`; keep the two
+    // in step. Rows converge on `warp_target_width`, not on a point.
     let along = clamp(1.0 - p.y, 0.0, 1.0);
-    let shape = along * along * (3.0 - 2.0 * along);
-    let w = 1.0 - k * shape * (1.0 - params.warp_target_width);
+    let u_along = 1.0 - along;
+    let bend = 3.0 * u_along * u_along * along * params.warp_curve_in
+             + 3.0 * u_along * along * along * params.warp_curve_out
+             + along * along * along;
+    let w = 1.0 - k * bend * (1.0 - params.warp_target_width);
     if (w <= 1e-4) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }

@@ -39,6 +39,11 @@ const DEFAULT_STRETCH_POWER: f32 = 2.0;
 /// The target width `GenieShape::default` uses.
 const DEFAULT_TARGET_WIDTH: f32 = 0.12;
 
+/// The side-curve controls `GenieShape::default` uses: the pair that makes
+/// [`bend`] the smoothstep, which is `GenieWarpMesh`'s own side curve.
+const DEFAULT_CURVE_IN: f32 = 0.0;
+const DEFAULT_CURVE_OUT: f32 = 1.0;
+
 /// A row narrower than this has closed. Dividing by it would turn rounding
 /// into a visible streak across the rest of the row.
 const CLOSED: f32 = 1e-4;
@@ -117,6 +122,17 @@ pub struct GenieShape {
     /// fast as the near one, and all that is left to see is the concave half
     /// — an inward arch.
     pub stretch_power: f32,
+    /// The side curve's control value at the wide end, clamped to `0..=1`.
+    ///
+    /// `bend`'s slope there is `3 * curve_in`, so `0` leaves the side
+    /// exactly parallel to the travel — a flat run before anything happens —
+    /// and raising it bends the side sooner.
+    pub curve_in: f32,
+    /// The side curve's control value at the neck end, clamped to `0..=1`.
+    ///
+    /// `bend`'s slope there is `3 * (1 - curve_out)`, so `1` arrives
+    /// parallel to the travel and lowering it bends the side later.
+    pub curve_out: f32,
 }
 
 impl Default for GenieShape {
@@ -125,6 +141,8 @@ impl Default for GenieShape {
             anchor: Corner::TopLeft,
             target_width: DEFAULT_TARGET_WIDTH,
             stretch_power: DEFAULT_STRETCH_POWER,
+            curve_in: DEFAULT_CURVE_IN,
+            curve_out: DEFAULT_CURVE_OUT,
         }
     }
 }
@@ -167,6 +185,19 @@ impl Genie {
                 shape.stretch_power.clamp(0.0, MAX_STRETCH_POWER)
             } else {
                 DEFAULT_STRETCH_POWER
+            },
+            // Inside `0..=1` the Bézier stays inside its own convex hull,
+            // which is what keeps the width from exceeding the content's
+            // rectangle and being clipped at its edge.
+            curve_in: if shape.curve_in.is_finite() {
+                shape.curve_in.clamp(0.0, 1.0)
+            } else {
+                DEFAULT_CURVE_IN
+            },
+            curve_out: if shape.curve_out.is_finite() {
+                shape.curve_out.clamp(0.0, 1.0)
+            } else {
+                DEFAULT_CURVE_OUT
             },
         };
 
@@ -258,7 +289,7 @@ impl Genie {
         }
         let y = f32::midpoint(lo, hi);
 
-        let w = width(y, k, self.shape.target_width);
+        let w = width(y, k, self.shape);
         if w <= CLOSED {
             return None;
         }
@@ -288,7 +319,7 @@ impl Genie {
 
         // The width comes straight from the destination row, which is what
         // keeps the inverse closed-form.
-        let w = width(y, k, self.shape.target_width);
+        let w = width(y, k, self.shape);
         if w <= CLOSED {
             return None;
         }
@@ -347,21 +378,29 @@ impl From<Genie> for Warp {
     }
 }
 
-/// The width of the row drawn at `y`, stretched by `k`, converging on
-/// `target`.
+/// The width of the row drawn at `y`, stretched by `k`, with `shape`'s
+/// target width and side curve.
 ///
 /// `1 - y` is the row's position along the travel path, which is what makes
-/// the neck sweep. The smoothstep is the side curve: `GenieWarpMesh` builds
-/// it as a cubic Bézier whose control points keep their endpoints' cross-axis
-/// coordinate, and the horizontal component of such a Bézier is
-/// `3t² - 2t³` exactly — so this is not an approximation of that curve, it is
-/// that curve. Its flat tangents at both ends are what make the side read as
-/// a wave; a profile steepest at the anchor reads as an arch.
-fn width(y: f32, k: f32, target: f32) -> f32 {
+/// the neck sweep.
+fn width(y: f32, k: f32, shape: GenieShape) -> f32 {
     let along = (1.0 - y).clamp(0.0, 1.0);
-    let shape = along * along * (3.0 - 2.0 * along);
 
-    1.0 - k * shape * (1.0 - target)
+    1.0 - k * bend(along, shape.curve_in, shape.curve_out) * (1.0 - shape.target_width)
+}
+
+/// The side curve: the cubic Bézier through `(0, c_in, c_out, 1)`.
+///
+/// `GenieWarpMesh` builds each side as a Bézier whose control points sit on
+/// its endpoints' cross-axis coordinates, which is this with `c_in = 0` and
+/// `c_out = 1` — and that pair is exactly `3t² - 2t³`, the smoothstep. So
+/// the default is the reference's own curve, and the two controls open up
+/// the shape either side of it: the slope is `3·c_in` at the wide end and
+/// `3·(1 - c_out)` at the neck.
+fn bend(t: f32, c_in: f32, c_out: f32) -> f32 {
+    let u = 1.0 - t;
+
+    3.0 * u * u * t * c_in + 3.0 * u * t * t * c_out + t * t * t
 }
 
 /// Mirrors a normalised coordinate when the anchor is on the far side.
@@ -451,7 +490,8 @@ mod tests {
         // Flat at both ends, steepest in the middle. An arch is steepest at
         // one end and passes every other test in this module, so this is
         // asserted directly: it is the shape that was shipped and rejected.
-        let slope = |a: f32, b: f32| (width(b, 1.0, 0.0) - width(a, 1.0, 0.0)).abs() / (b - a);
+        let flat = shape(Corner::TopLeft, 0.0);
+        let slope = |a: f32, b: f32| (width(b, 1.0, flat) - width(a, 1.0, flat)).abs() / (b - a);
 
         let at_anchor = slope(0.0, 0.05);
         let middle = slope(0.475, 0.525);
@@ -498,6 +538,7 @@ mod tests {
                         anchor: Corner::TopLeft,
                         target_width: 0.0,
                         stretch_power: power,
+                        ..GenieShape::default()
                     },
                 );
 
@@ -509,6 +550,85 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_default_bend_is_the_smoothstep_it_replaces() {
+        // Generalising the side curve has to be a refactor, not a change of
+        // shape: at its defaults the Bézier is the reference's own curve.
+        for step in 0u8..=20 {
+            let t = f32::from(step) / 20.0;
+            let smoothstep = t * t * (3.0 - 2.0 * t);
+            let bend = bend(t, DEFAULT_CURVE_IN, DEFAULT_CURVE_OUT);
+            assert!(
+                (bend - smoothstep).abs() < 1e-6,
+                "at {t}: {bend} != {smoothstep}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_curve_controls_move_the_ends_they_name() {
+        // `curve_in` bends the wide end sooner...
+        let flat = bend(0.15, 0.0, DEFAULT_CURVE_OUT);
+        let bent = bend(0.15, 0.6, DEFAULT_CURVE_OUT);
+        assert!(
+            bent > flat,
+            "curve_in did not bend the wide end: {bent} vs {flat}"
+        );
+
+        // ...and `curve_out` bends the neck end later.
+        let arrives_flat = bend(0.85, DEFAULT_CURVE_IN, 1.0);
+        let arrives_late = bend(0.85, DEFAULT_CURVE_IN, 0.4);
+        assert!(
+            arrives_late < arrives_flat,
+            "curve_out did not bend the neck end: {arrives_late} vs {arrives_flat}"
+        );
+    }
+
+    #[test]
+    fn the_curve_controls_keep_the_width_inside_the_rectangle() {
+        // A Bézier lies inside the convex hull of its control values, so a
+        // clamped pair can never widen a row past the content itself. That
+        // is what the whole no-inflation design rests on.
+        for control in 0u8..=10 {
+            let c = f32::from(control) / 10.0;
+            for step in 0u8..=20 {
+                let t = f32::from(step) / 20.0;
+                for (c_in, c_out) in [(c, DEFAULT_CURVE_OUT), (DEFAULT_CURVE_IN, c)] {
+                    let b = bend(t, c_in, c_out);
+                    assert!(
+                        (0.0..=1.0).contains(&b),
+                        "bend({t}, {c_in}, {c_out}) = {b} left the unit range"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_curve_control_outside_the_unit_range_is_clamped() {
+        let over = Genie::new(
+            0.5,
+            GenieShape {
+                curve_in: 4.0,
+                curve_out: 9.0,
+                ..GenieShape::default()
+            },
+        );
+        assert!((over.shape().curve_in - 1.0).abs() < f32::EPSILON);
+        assert!((over.shape().curve_out - 1.0).abs() < f32::EPSILON);
+
+        let under = Genie::new(
+            0.5,
+            GenieShape {
+                curve_in: -2.0,
+                curve_out: -2.0,
+                ..GenieShape::default()
+            },
+        );
+        assert!(under.shape().curve_in.abs() < f32::EPSILON);
+        assert!(under.shape().curve_out.abs() < f32::EPSILON);
     }
 
     #[test]
@@ -541,6 +661,7 @@ mod tests {
                 anchor: Corner::TopLeft,
                 target_width: 0.0,
                 stretch_power: 0.0,
+                ..GenieShape::default()
             },
         );
         let (_, squash) = genie.phases();
@@ -557,11 +678,12 @@ mod tests {
     #[test]
     fn the_rows_converge_on_a_band_not_a_point() {
         // Fully stretched, the row at the anchor is the target width.
-        assert!((width(0.0, 1.0, 0.25) - 0.25).abs() < 1e-6);
+        let band = shape(Corner::TopLeft, 0.25);
+        assert!((width(0.0, 1.0, band) - 0.25).abs() < 1e-6);
         // A target width of zero still collapses to a point.
-        assert!(width(0.0, 1.0, 0.0).abs() < 1e-6);
+        assert!(width(0.0, 1.0, shape(Corner::TopLeft, 0.0)).abs() < 1e-6);
         // The far row keeps its width whatever the target is.
-        assert!((width(1.0, 1.0, 0.25) - 1.0).abs() < 1e-6);
+        assert!((width(1.0, 1.0, band) - 1.0).abs() < 1e-6);
     }
 
     #[test]

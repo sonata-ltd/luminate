@@ -36,14 +36,20 @@ struct Params {
     warp_target_width: f32,
     /// How sharply a row's travel lags with its distance from the anchor.
     warp_stretch_power: f32,
+    /// The side curve's control values, at the wide end and the neck end.
+    warp_curve_in: f32,
+    warp_curve_out: f32,
     /// Axis mirrors that put the genie's anchor corner at the origin, as
     /// `0.0` or `1.0`: WGSL uniforms carry no booleans.
     warp_flip_x: f32,
     warp_flip_y: f32,
+    /// Ten floats is forty bytes, and a uniform struct is rounded up to a
+    /// multiple of sixteen.
+    _pad: [f32; 2],
 }
 
 const PARAMS_SIZE: u64 = std::mem::size_of::<Params>() as u64;
-const _: () = assert!(PARAMS_SIZE == 32, "the WGSL `Params` struct is 32 bytes");
+const _: () = assert!(PARAMS_SIZE == 48, "the WGSL `Params` struct is 48 bytes");
 
 /// The warp's half of [`Params`], flattened for the uniform.
 ///
@@ -55,6 +61,8 @@ struct WarpParams {
     squash: f32,
     target_width: f32,
     stretch_power: f32,
+    curve_in: f32,
+    curve_out: f32,
     flip_x: f32,
     flip_y: f32,
 }
@@ -66,11 +74,14 @@ impl Params {
             Warp::Genie(genie) => {
                 let (stretch, squash) = genie.phases();
                 let (flip_x, flip_y) = genie.flips();
+                let shape = genie.shape();
                 WarpParams {
                     stretch,
                     squash,
-                    target_width: genie.target_width(),
-                    stretch_power: genie.shape().stretch_power,
+                    target_width: shape.target_width,
+                    stretch_power: shape.stretch_power,
+                    curve_in: shape.curve_in,
+                    curve_out: shape.curve_out,
                     flip_x: f32::from(u8::from(flip_x)),
                     flip_y: f32::from(u8::from(flip_y)),
                 }
@@ -84,8 +95,11 @@ impl Params {
             warp_squash: warp.squash,
             warp_target_width: warp.target_width,
             warp_stretch_power: warp.stretch_power,
+            warp_curve_in: warp.curve_in,
+            warp_curve_out: warp.curve_out,
             warp_flip_x: warp.flip_x,
             warp_flip_y: warp.flip_y,
+            _pad: [0.0; 2],
         }
     }
 }
