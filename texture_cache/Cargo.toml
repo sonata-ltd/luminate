@@ -85,3 +85,7 @@ required-features = ["wgpu"]
 [[example]]
 name = "cache_benchmark"
 required-features = ["wgpu"]
+
+[[example]]
+name = "genie"
+required-features = ["wgpu"]
