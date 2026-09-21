@@ -33,7 +33,7 @@ pub use pager::{Pager, pager};
 pub use record::{Record, TextureRenderer};
 pub use renderer::{Backend, Renderer};
 pub use texture_cache::{TextureCache, TextureCacheId};
-pub use warp::{Corner, Genie, Warp};
+pub use warp::{Corner, Genie, GenieShape, MAX_STRETCH_POWER, Warp};
 
 // The halves are nameable because the aliases mention them, but they have
 // no public constructors: use `Renderer`/`Compositor`.

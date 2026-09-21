@@ -147,7 +147,9 @@ content travels along its axis toward the anchor, and an S-curved side
 profile argued by each row's position *along that travel path* draws the rows
 into a neck one after another, so the near edge necks down while the far edge
 still holds its width. The rows converge on a band of the width you give it,
-not on a point. The stretch and the travel overlap heavily, which is what
+not on a point, and each row's travel is lagged by its distance from the
+anchor — `stretch_power`, which keeps the wide end of the shape on screen
+instead of letting it leave as fast as the narrow end. The stretch and the travel overlap heavily, which is what
 stops it reading as two animations. What passes beyond the anchor is consumed
 by it.
 

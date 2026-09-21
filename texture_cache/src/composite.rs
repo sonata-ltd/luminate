@@ -34,42 +34,58 @@ struct Params {
     /// The width of the band the rows converge on, as a fraction of the
     /// content's own width.
     warp_target_width: f32,
+    /// How sharply a row's travel lags with its distance from the anchor.
+    warp_stretch_power: f32,
     /// Axis mirrors that put the genie's anchor corner at the origin, as
     /// `0.0` or `1.0`: WGSL uniforms carry no booleans.
     warp_flip_x: f32,
     warp_flip_y: f32,
-    _pad: f32,
 }
 
 const PARAMS_SIZE: u64 = std::mem::size_of::<Params>() as u64;
 const _: () = assert!(PARAMS_SIZE == 32, "the WGSL `Params` struct is 32 bytes");
 
+/// The warp's half of [`Params`], flattened for the uniform.
+///
+/// A struct rather than a six-tuple so the fields are named at the one place
+/// a `Warp::None` has to agree with a fully open genie.
+#[derive(Default)]
+struct WarpParams {
+    stretch: f32,
+    squash: f32,
+    target_width: f32,
+    stretch_power: f32,
+    flip_x: f32,
+    flip_y: f32,
+}
+
 impl Params {
     fn new(opacity: f32, filter: FilterQuality, warp: Warp) -> Self {
-        let (warp_stretch, warp_squash, warp_target_width, warp_flip_x, warp_flip_y) = match warp {
-            Warp::None => (0.0, 0.0, 0.0, 0.0, 0.0),
+        let warp = match warp {
+            Warp::None => WarpParams::default(),
             Warp::Genie(genie) => {
                 let (stretch, squash) = genie.phases();
                 let (flip_x, flip_y) = genie.flips();
-                (
+                WarpParams {
                     stretch,
                     squash,
-                    genie.target_width(),
-                    f32::from(u8::from(flip_x)),
-                    f32::from(u8::from(flip_y)),
-                )
+                    target_width: genie.target_width(),
+                    stretch_power: genie.shape().stretch_power,
+                    flip_x: f32::from(u8::from(flip_x)),
+                    flip_y: f32::from(u8::from(flip_y)),
+                }
             }
         };
 
         Self {
             opacity,
             mode: filter.shader_mode(),
-            warp_stretch,
-            warp_squash,
-            warp_target_width,
-            warp_flip_x,
-            warp_flip_y,
-            _pad: 0.0,
+            warp_stretch: warp.stretch,
+            warp_squash: warp.squash,
+            warp_target_width: warp.target_width,
+            warp_stretch_power: warp.stretch_power,
+            warp_flip_x: warp.flip_x,
+            warp_flip_y: warp.flip_y,
         }
     }
 }
@@ -403,7 +419,7 @@ impl Primitive for CompositePrimitive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::warp::{Corner, Genie};
+    use crate::warp::{Genie, GenieShape};
 
     #[test]
     fn an_absent_warp_takes_the_shaders_identity_path() {
@@ -421,7 +437,7 @@ mod tests {
         let open = Params::new(
             1.0,
             FilterQuality::Bilinear,
-            Warp::Genie(Genie::new(1.0, Corner::TopLeft, 0.12)),
+            Warp::Genie(Genie::new(1.0, GenieShape::default())),
         );
         assert_eq!(none.warp_stretch, open.warp_stretch);
         assert_eq!(none.warp_squash, open.warp_squash);

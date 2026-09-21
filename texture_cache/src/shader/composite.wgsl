@@ -16,10 +16,11 @@ struct Params {
     // The width of the band the rows converge on, as a fraction of the
     // content's own width.
     warp_target_width: f32,
+    // How sharply a row's travel lags with its distance from the anchor.
+    warp_stretch_power: f32,
     // Axis mirrors putting the anchor corner at the origin, 0.0 or 1.0.
     warp_flip_x: f32,
     warp_flip_y: f32,
-    pad0: f32,
 }
 @group(0) @binding(2) var<uniform> params: Params;
 
@@ -103,7 +104,7 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
     // therefore small. That is what keeps the wide end of the shape on
     // screen. `warp::STRETCH_POWER` is the same 2.0; keep the two in step.
     // Past the far edge there is nothing left to show.
-    let v = p.y + pow(s, 1.0 + 2.0 * k * p.y);
+    let v = p.y + pow(s, 1.0 + params.warp_stretch_power * k * p.y);
     if (v < 0.0 || v > 1.0) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }

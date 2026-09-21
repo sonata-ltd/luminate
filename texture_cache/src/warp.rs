@@ -24,18 +24,20 @@ const STRETCH_END: f32 = 0.4;
 /// which is the one calibrated against the real effect.
 const SQUASH_START: f32 = 0.15;
 
-/// How sharply a row's travel is delayed by its distance from the anchor.
+/// The largest lag the map stays invertible at.
 ///
-/// The shift is `squash^(1 + STRETCH_POWER * stretch * y)`, so the row at the
-/// anchor moves by the whole squash and the row at the far edge barely moves
-/// at all. That is what keeps the wide end of the S on screen: without it
-/// every row travels together, the far edge leaves as fast as the near one,
-/// and all that is left to see is the concave half — an inward arch.
-///
-/// `GenieWarpMesh`'s value. It must stay below `e`: see
-/// [`Genie::source`], whose inverse is only monotonic while
-/// `STRETCH_POWER * stretch < e`.
-const STRETCH_POWER: f32 = 2.0;
+/// `Genie::row` is monotonic — and so has an inverse for the shader to run —
+/// only while `stretch_power * stretch < e`. Past that it folds over itself,
+/// and a fragment shader has no way to report that: the image simply
+/// corrupts. So [`GenieShape::stretch_power`] is clamped to this on
+/// construction rather than trusted to the caller.
+pub const MAX_STRETCH_POWER: f32 = 2.7;
+
+/// The lag `GenieShape::default` uses: `GenieWarpMesh`'s value.
+const DEFAULT_STRETCH_POWER: f32 = 2.0;
+
+/// The target width `GenieShape::default` uses.
+const DEFAULT_TARGET_WIDTH: f32 = 0.12;
 
 /// A row narrower than this has closed. Dividing by it would turn rounding
 /// into a visible streak across the rest of the row.
@@ -94,13 +96,45 @@ impl Corner {
     }
 }
 
+/// Everything about a genie except how far along it is.
+///
+/// A struct rather than a row of arguments: the shape is tuned by eye, and
+/// this way another knob costs no signature change anywhere downstream.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GenieShape {
+    /// The corner the content collapses into.
+    pub anchor: Corner,
+    /// How wide the band it collapses into is, as a fraction of the
+    /// content's own width. Clamped to `0..=1`.
+    pub target_width: f32,
+    /// How sharply a row's travel is delayed by its distance from the
+    /// anchor, clamped to `0..=`[`MAX_STRETCH_POWER`].
+    ///
+    /// The shift is `squash^(1 + stretch_power * stretch * y)`, so the row at
+    /// the anchor moves by the whole squash and the row at the far edge
+    /// barely moves at all. That is what keeps the wide end of the S on
+    /// screen. At `0` every row travels together, the far edge leaves as
+    /// fast as the near one, and all that is left to see is the concave half
+    /// — an inward arch.
+    pub stretch_power: f32,
+}
+
+impl Default for GenieShape {
+    fn default() -> Self {
+        Self {
+            anchor: Corner::TopLeft,
+            target_width: DEFAULT_TARGET_WIDTH,
+            stretch_power: DEFAULT_STRETCH_POWER,
+        }
+    }
+}
+
 /// A collapse into one corner, in the manner of a window minimising into a
 /// dock icon.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Genie {
     progress: f32,
-    anchor: Corner,
-    target_width: f32,
+    shape: GenieShape,
 }
 
 impl Genie {
@@ -109,36 +143,47 @@ impl Genie {
     /// while it is, and a curve that overshoots would otherwise tear the
     /// image out of its texture. A non-finite progress is treated as open.
     ///
-    /// `target_width` is how wide the band the rows converge on is, as a
-    /// fraction of the content's own width. The references all collapse into
-    /// a target of real size — a dock icon — and converging on a point
-    /// instead reads as the content vanishing down a drain. `0.0` is that
-    /// point, and is what a non-finite width falls back to.
+    /// `shape` is clamped here rather than on the caller's behalf
+    /// elsewhere: `target_width` into `0..=1`, and `stretch_power` into
+    /// `0..=`[`MAX_STRETCH_POWER`], past which the map would fold over
+    /// itself and corrupt the image with nothing to report it. A non-finite
+    /// field falls back to its default.
     #[must_use]
-    pub fn new(progress: f32, anchor: Corner, target_width: f32) -> Self {
+    pub fn new(progress: f32, shape: GenieShape) -> Self {
         let progress = if progress.is_finite() {
             progress.clamp(0.0, 1.0)
         } else {
             1.0
         };
-        let target_width = if target_width.is_finite() {
-            target_width.clamp(0.0, 1.0)
-        } else {
-            0.0
+
+        let shape = GenieShape {
+            anchor: shape.anchor,
+            target_width: if shape.target_width.is_finite() {
+                shape.target_width.clamp(0.0, 1.0)
+            } else {
+                DEFAULT_TARGET_WIDTH
+            },
+            stretch_power: if shape.stretch_power.is_finite() {
+                shape.stretch_power.clamp(0.0, MAX_STRETCH_POWER)
+            } else {
+                DEFAULT_STRETCH_POWER
+            },
         };
 
-        Self {
-            progress,
-            anchor,
-            target_width,
-        }
+        Self { progress, shape }
+    }
+
+    /// The shape it collapses with, as clamped.
+    #[must_use]
+    pub const fn shape(self) -> GenieShape {
+        self.shape
     }
 
     /// The width of the band the rows converge on, as a fraction of the
     /// content's own width.
     #[must_use]
     pub const fn target_width(self) -> f32 {
-        self.target_width
+        self.shape.target_width
     }
 
     /// The clamped progress this genie will actually draw at.
@@ -150,7 +195,7 @@ impl Genie {
     /// The corner it collapses into.
     #[must_use]
     pub const fn anchor(self) -> Corner {
-        self.anchor
+        self.shape.anchor
     }
 
     /// Whether it is anywhere but fully open, and so has something to draw
@@ -172,7 +217,7 @@ impl Genie {
 
     /// The axis mirrors that put this genie's anchor at the origin.
     pub(crate) const fn flips(self) -> (bool, bool) {
-        self.anchor.flips()
+        self.shape.anchor.flips()
     }
 
     /// Where a source point lands, or `None` once it has been drawn through
@@ -213,7 +258,7 @@ impl Genie {
         }
         let y = f32::midpoint(lo, hi);
 
-        let w = width(y, k, self.target_width);
+        let w = width(y, k, self.shape.target_width);
         if w <= CLOSED {
             return None;
         }
@@ -229,7 +274,7 @@ impl Genie {
     fn row(self, y: f32) -> f32 {
         let (k, s) = self.phases();
 
-        y + s.powf(1.0 + STRETCH_POWER * k * y)
+        y + s.powf(1.0 + self.shape.stretch_power * k * y)
     }
 
     /// Which source point a destination point shows, or `None` where the
@@ -243,7 +288,7 @@ impl Genie {
 
         // The width comes straight from the destination row, which is what
         // keeps the inverse closed-form.
-        let w = width(y, k, self.target_width);
+        let w = width(y, k, self.shape.target_width);
         if w <= CLOSED {
             return None;
         }
@@ -331,13 +376,22 @@ mod tests {
     /// Every progress a test sweeps, including both ends.
     const PROGRESSES: [f32; 7] = [0.0, 0.05, 0.25, 0.5, 0.75, 0.95, 1.0];
 
+    /// A shape with the default lag, so a test says only what it is about.
+    fn shape(anchor: Corner, target_width: f32) -> GenieShape {
+        GenieShape {
+            anchor,
+            target_width,
+            ..GenieShape::default()
+        }
+    }
+
     fn grid() -> impl Iterator<Item = (f32, f32)> {
         (0..=10).flat_map(|i| (0..=10).map(move |j| (i as f32 / 10.0, j as f32 / 10.0)))
     }
 
     #[test]
     fn fully_open_is_the_identity() {
-        let genie = Genie::new(1.0, Corner::TopLeft, 0.0);
+        let genie = Genie::new(1.0, shape(Corner::TopLeft, 0.0));
         for (x, y) in grid() {
             let (u, v) = genie.source(x, y).expect("nothing is clipped when open");
             assert!((u - x).abs() < 1e-6, "u {u} != x {x}");
@@ -351,7 +405,7 @@ mod tests {
         // width, which magnifies error by `1 / w` and says nothing useful
         // about a row that has closed to a point.
         for t in PROGRESSES {
-            let genie = Genie::new(t, Corner::TopLeft, 0.0);
+            let genie = Genie::new(t, shape(Corner::TopLeft, 0.0));
             for (x, y) in grid() {
                 let Some((u, v)) = genie.source(x, y) else {
                     continue;
@@ -368,7 +422,7 @@ mod tests {
     #[test]
     fn the_map_never_leaves_the_source_rectangle() {
         for t in PROGRESSES {
-            let genie = Genie::new(t, Corner::TopLeft, 0.0);
+            let genie = Genie::new(t, shape(Corner::TopLeft, 0.0));
             for (u, v) in grid() {
                 // `None` is content drawn through the anchor: consumed, not
                 // drawn outside, which is the property under test.
@@ -386,7 +440,7 @@ mod tests {
     #[test]
     fn the_neck_sweeps_so_rows_nearer_the_anchor_are_narrower() {
         // The row's width is the destination of its far edge, `u = 1`.
-        let genie = Genie::new(0.5, Corner::TopLeft, 0.0);
+        let genie = Genie::new(0.5, shape(Corner::TopLeft, 0.0));
         let (near, _) = genie.destination(1.0, 0.5).expect("still drawn");
         let (far, _) = genie.destination(1.0, 1.0).expect("still drawn");
         assert!(near < far, "row at 0.5 is {near} wide, row at 1.0 is {far}");
@@ -415,7 +469,7 @@ mod tests {
         // The wide end of the S has to stay on screen, or all that is left
         // is its concave half and the silhouette reads as an inward arch.
         // Without the per-row lag this row was down to about 0.68 by here.
-        let genie = Genie::new(0.5, Corner::TopLeft, 0.12);
+        let genie = Genie::new(0.5, shape(Corner::TopLeft, 0.12));
         let (far, _) = genie
             .destination(1.0, 1.0)
             .expect("the far edge is still drawn half way through");
@@ -425,24 +479,78 @@ mod tests {
 
     #[test]
     // The bound is the point: asserting it is what stops a future edit of
-    // `STRETCH_POWER` from folding the map over itself silently.
+    // `MAX_STRETCH_POWER` from folding the map over itself silently.
     #[allow(clippy::assertions_on_constants)]
     fn the_lag_keeps_the_map_invertible() {
-        // `row` folds over itself once STRETCH_POWER * stretch reaches `e`,
-        // which would corrupt the image rather than fail loudly.
+        // `row` folds over itself once stretch_power * stretch reaches `e`,
+        // which would corrupt the image rather than fail loudly. The clamp
+        // is what keeps a caller on the right side of that.
         assert!(
-            STRETCH_POWER < std::f32::consts::E,
-            "STRETCH_POWER {STRETCH_POWER} is past the monotonic bound"
+            MAX_STRETCH_POWER < std::f32::consts::E,
+            "MAX_STRETCH_POWER {MAX_STRETCH_POWER} is past the monotonic bound"
         );
 
-        for step in 0u8..=20 {
-            let genie = Genie::new(f32::from(step) / 20.0, Corner::TopLeft, 0.0);
-            let mut previous = f32::NEG_INFINITY;
-            for row in 0u8..=20 {
-                let current = genie.row(f32::from(row) / 20.0);
-                assert!(current > previous, "row {row} went backwards at {genie:?}");
-                previous = current;
+        for power in [0.0, 1.0, DEFAULT_STRETCH_POWER, MAX_STRETCH_POWER] {
+            for step in 0u8..=20 {
+                let genie = Genie::new(
+                    f32::from(step) / 20.0,
+                    GenieShape {
+                        anchor: Corner::TopLeft,
+                        target_width: 0.0,
+                        stretch_power: power,
+                    },
+                );
+
+                let mut previous = f32::NEG_INFINITY;
+                for row in 0u8..=20 {
+                    let current = genie.row(f32::from(row) / 20.0);
+                    assert!(current > previous, "row {row} went backwards at {genie:?}");
+                    previous = current;
+                }
             }
+        }
+    }
+
+    #[test]
+    fn a_stretch_power_past_the_bound_is_clamped() {
+        let over = Genie::new(
+            0.5,
+            GenieShape {
+                stretch_power: 9.0,
+                ..GenieShape::default()
+            },
+        );
+        assert!((over.shape().stretch_power - MAX_STRETCH_POWER).abs() < f32::EPSILON);
+
+        let under = Genie::new(
+            0.5,
+            GenieShape {
+                stretch_power: -4.0,
+                ..GenieShape::default()
+            },
+        );
+        assert!(under.shape().stretch_power.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn no_lag_moves_every_row_together() {
+        // `stretch_power` of zero is the un-lagged map: one shift for all.
+        let genie = Genie::new(
+            0.5,
+            GenieShape {
+                anchor: Corner::TopLeft,
+                target_width: 0.0,
+                stretch_power: 0.0,
+            },
+        );
+        let (_, squash) = genie.phases();
+
+        for row in 0u8..=10 {
+            let y = f32::from(row) / 10.0;
+            assert!(
+                (genie.row(y) - (y + squash)).abs() < 1e-6,
+                "row {y} was lagged"
+            );
         }
     }
 
@@ -459,21 +567,24 @@ mod tests {
     #[test]
     fn the_phases_overlap_as_researched() {
         // Open: neither phase has started.
-        assert_eq!(Genie::new(1.0, Corner::TopLeft, 0.0).phases(), (0.0, 0.0));
+        assert_eq!(
+            Genie::new(1.0, shape(Corner::TopLeft, 0.0)).phases(),
+            (0.0, 0.0)
+        );
 
         // Stretch is complete by collapse 0.4...
-        let (stretch, _) = Genie::new(0.6, Corner::TopLeft, 0.0).phases();
+        let (stretch, _) = Genie::new(0.6, shape(Corner::TopLeft, 0.0)).phases();
         assert!(
             (stretch - 1.0).abs() < 1e-6,
             "stretch {stretch} != 1 at c = 0.4"
         );
 
         // ...and squash has not started at collapse 0.15.
-        let (_, squash) = Genie::new(0.85, Corner::TopLeft, 0.0).phases();
+        let (_, squash) = Genie::new(0.85, shape(Corner::TopLeft, 0.0)).phases();
         assert!(squash.abs() < 1e-6, "squash {squash} != 0 at c = 0.15");
 
         // Between the two they run together, which is the whole point.
-        let (stretch, squash) = Genie::new(0.7, Corner::TopLeft, 0.0).phases();
+        let (stretch, squash) = Genie::new(0.7, shape(Corner::TopLeft, 0.0)).phases();
         assert!(
             stretch > 0.0 && stretch < 1.0,
             "stretch {stretch} is not mid-flight"
@@ -483,26 +594,44 @@ mod tests {
 
     #[test]
     fn a_target_width_outside_the_unit_range_is_clamped() {
-        assert!((Genie::new(0.5, Corner::TopLeft, 3.0).target_width() - 1.0).abs() < f32::EPSILON);
-        assert!(Genie::new(0.5, Corner::TopLeft, -1.0).target_width().abs() < f32::EPSILON);
-        assert!(
-            Genie::new(0.5, Corner::TopLeft, f32::NAN)
-                .target_width()
-                .abs()
-                < f32::EPSILON
+        let over = Genie::new(0.5, shape(Corner::TopLeft, 3.0));
+        assert!((over.target_width() - 1.0).abs() < f32::EPSILON);
+
+        let under = Genie::new(0.5, shape(Corner::TopLeft, -1.0));
+        assert!(under.target_width().abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_non_finite_field_falls_back_to_its_default() {
+        // Not the same thing as clamping. A NaN is not a value out of range,
+        // it is the absence of one, and the crate's own default is a better
+        // answer to that than either end of the range. Zero in particular
+        // would be the wrong guess: it collapses to a point, which is the
+        // failure this shape exists to avoid. A caller who wants that still
+        // passes `0.0`, which is finite and survives the clamp untouched.
+        let width = Genie::new(0.5, shape(Corner::TopLeft, f32::NAN));
+        assert!((width.target_width() - DEFAULT_TARGET_WIDTH).abs() < f32::EPSILON);
+
+        let power = Genie::new(
+            0.5,
+            GenieShape {
+                stretch_power: f32::NAN,
+                ..GenieShape::default()
+            },
         );
+        assert!((power.shape().stretch_power - DEFAULT_STRETCH_POWER).abs() < f32::EPSILON);
     }
 
     #[test]
     fn a_point_outside_the_collapsed_shape_is_clipped() {
         // Half collapsed, the far corner of the destination shows nothing.
-        let genie = Genie::new(0.5, Corner::TopLeft, 0.0);
+        let genie = Genie::new(0.5, shape(Corner::TopLeft, 0.0));
         assert!(genie.source(0.99, 0.99).is_none());
     }
 
     #[test]
     fn a_collapsed_genie_shows_nothing() {
-        let genie = Genie::new(0.0, Corner::TopLeft, 0.0);
+        let genie = Genie::new(0.0, shape(Corner::TopLeft, 0.0));
         for (x, y) in grid() {
             assert!(genie.source(x, y).is_none(), "({x},{y}) survived collapse");
         }
@@ -516,7 +645,7 @@ mod tests {
             (Corner::BottomLeft, (0.0, 1.0)),
             (Corner::BottomRight, (1.0, 1.0)),
         ] {
-            let (x, y) = Genie::new(0.5, corner, 0.0)
+            let (x, y) = Genie::new(0.5, shape(corner, 0.0))
                 .destination(0.5, 0.5)
                 .expect("the centre is still drawn half way");
             let before = (0.5_f32 - toward.0).hypot(0.5 - toward.1);
@@ -533,10 +662,10 @@ mod tests {
         // Sampled well away from the anchor: by half collapsed the squash
         // has carried the nearer rows through it, and a row that is gone
         // has no mirror to compare.
-        let (x, y) = Genie::new(0.5, Corner::TopLeft, 0.0)
+        let (x, y) = Genie::new(0.5, shape(Corner::TopLeft, 0.0))
             .destination(0.7, 0.9)
             .expect("drawn");
-        let (mx, my) = Genie::new(0.5, Corner::TopRight, 0.0)
+        let (mx, my) = Genie::new(0.5, shape(Corner::TopRight, 0.0))
             .destination(0.3, 0.9)
             .expect("drawn");
         assert!(
@@ -548,32 +677,35 @@ mod tests {
 
     #[test]
     fn progress_is_clamped_so_a_bouncy_curve_cannot_expand_it() {
-        let over = Genie::new(1.4, Corner::TopLeft, 0.0);
+        let over = Genie::new(1.4, shape(Corner::TopLeft, 0.0));
         assert!((over.progress() - 1.0).abs() < f32::EPSILON);
-        let under = Genie::new(-0.3, Corner::TopLeft, 0.0);
+        let under = Genie::new(-0.3, shape(Corner::TopLeft, 0.0));
         assert!(under.progress().abs() < f32::EPSILON);
     }
 
     #[test]
     fn a_non_finite_progress_is_treated_as_open() {
-        assert!((Genie::new(f32::NAN, Corner::TopLeft, 0.0).progress() - 1.0).abs() < f32::EPSILON);
+        assert!(
+            (Genie::new(f32::NAN, shape(Corner::TopLeft, 0.0)).progress() - 1.0).abs()
+                < f32::EPSILON
+        );
     }
 
     #[test]
     fn only_a_running_genie_is_live() {
         assert!(!Warp::None.is_live());
-        assert!(!Warp::Genie(Genie::new(1.0, Corner::TopLeft, 0.0)).is_live());
-        assert!(Warp::Genie(Genie::new(0.4, Corner::TopLeft, 0.0)).is_live());
+        assert!(!Warp::Genie(Genie::new(1.0, shape(Corner::TopLeft, 0.0))).is_live());
+        assert!(Warp::Genie(Genie::new(0.4, shape(Corner::TopLeft, 0.0))).is_live());
     }
 
     #[test]
     fn the_affine_fallback_scales_toward_the_anchor() {
         // Fully open, the fallback is the identity.
-        let open = Warp::Genie(Genie::new(1.0, Corner::TopLeft, 0.0));
+        let open = Warp::Genie(Genie::new(1.0, shape(Corner::TopLeft, 0.0)));
         assert_eq!(open.affine_fallback(), Some((1.0, Corner::TopLeft)));
 
         // Half collapsed, it is a half scale about the same corner.
-        let half = Warp::Genie(Genie::new(0.5, Corner::BottomRight, 0.0));
+        let half = Warp::Genie(Genie::new(0.5, shape(Corner::BottomRight, 0.0)));
         assert_eq!(half.affine_fallback(), Some((0.5, Corner::BottomRight)));
 
         // No warp, nothing to apply.

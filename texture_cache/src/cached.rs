@@ -14,7 +14,7 @@ use crate::geometry;
 use crate::reaction::{Activity, observe};
 use crate::record::{Record, TextureRenderer};
 use crate::texture_cache::{TextureCache, TextureCacheId};
-use crate::warp::{Corner, Genie, Warp};
+use crate::warp::{Genie, GenieShape, Warp};
 
 /// Logical pixels of content padding recorded around the layout bounds, so
 /// bilinear filtering at the texture's edge does not clip anti-aliasing.
@@ -160,9 +160,8 @@ where
     supersample_in_motion: bool,
     /// `None` inherits the renderer's tier; see [`Cached::filter_quality`].
     filter: Option<FilterQuality>,
-    /// The corner a genie collapses into and the width of the band it
-    /// converges on, or `None` for no warp at all.
-    warp_target: Option<(Corner, f32)>,
+    /// The shape a genie collapses with, or `None` for no warp at all.
+    warp_shape: Option<GenieShape>,
     /// Genie progress. Meaningless without an anchor.
     warp_progress: Anim<f32>,
 }
@@ -219,7 +218,7 @@ where
             pixel_snap: PixelSnap::LayoutOnly,
             supersample_in_motion: false,
             filter: None,
-            warp_target: None,
+            warp_shape: None,
             warp_progress: Anim::constant(1.0),
         }
     }
@@ -351,21 +350,16 @@ where
     ///
     /// ```no_run
     /// use iced::widget::text;
-    /// use iced_texture_cache::{Corner, TextureCache, cached};
+    /// use iced_texture_cache::{GenieShape, TextureCache, cached};
     ///
     /// let cache = TextureCache::new();
     /// let _: iced_texture_cache::Element<'_, ()> = cached(cache, text("collapsing"))
-    ///     .genie(0.5, Corner::TopLeft, 0.12)
+    ///     .genie(0.5, GenieShape::default())
     ///     .into();
     /// ```
     #[must_use]
-    pub fn genie(
-        mut self,
-        progress: impl Into<Anim<f32>>,
-        anchor: Corner,
-        target_width: f32,
-    ) -> Self {
-        self.warp_target = Some((anchor, target_width));
+    pub fn genie(mut self, progress: impl Into<Anim<f32>>, shape: GenieShape) -> Self {
+        self.warp_shape = Some(shape);
         self.warp_progress = progress.into();
         self.warp_progress.mark_tier(Tier::Composite);
         self
@@ -374,11 +368,9 @@ where
     /// The warp composited this frame, built from the anchor and whatever
     /// progress has reached.
     fn warp(&self) -> Warp {
-        match self.warp_target {
+        match self.warp_shape {
             None => Warp::None,
-            Some((anchor, target_width)) => {
-                Warp::Genie(Genie::new(self.warp_progress.get(), anchor, target_width))
-            }
+            Some(shape) => Warp::Genie(Genie::new(self.warp_progress.get(), shape)),
         }
     }
 
