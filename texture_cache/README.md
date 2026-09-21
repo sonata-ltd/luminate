@@ -137,6 +137,33 @@ integer-phase fast path never fires and the full kernel runs on a minification
 it cannot fix; and at a `scale` well below 1 `CatmullRom`'s high-frequency
 boost makes the aliasing slightly more visible than `Bilinear` does.
 
+### Warping
+
+`Cached::genie` applies a non-affine collapse that `scale` cannot express.
+`Warp::Genie` draws the content into one of its own corners the way a window
+minimises into a dock icon: rows nearest the anchor are pinched into a neck
+while the rest keep their width, and the whole thing shortens toward the
+corner.
+
+It is evaluated per destination pixel in the fragment shader as an inverse
+map, so it costs no mesh, no extra draw call and no re-record — it binds at
+`Tier::Composite` like `translate`, `scale` and `opacity`.
+
+The map only ever shrinks the image inside its own rectangle, so nothing has
+to make room for it and no sibling moves. That holds because progress is
+clamped to `0..=1`; drive it with a curve that does not overshoot, such as
+`curves::QUICK` or `curves::SMOOTH`. A bouncy curve is not wrong so much as
+wasted — it flattens against the clamp.
+
+While a warp is live the composite drops to `FilterQuality::Bilinear`: the
+neck is severe minification, a cache texture has no mip chain, and
+`CatmullRom`'s high-frequency boost makes that worse. The configured tier
+returns at rest.
+
+The software backend has no shaders, so the genie degrades there to a scale
+about the same anchor at the same progress: the motion and its timing
+survive, the neck does not.
+
 ### Z-order
 
 Anything drawn *after* a `Cached` inside the same parent layer renders

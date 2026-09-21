@@ -35,7 +35,7 @@ pub enum FilterQuality {
     /// is exact at integer phase — with a mild high-frequency boost that keeps
     /// moving text and edges crisp. Costs up to 9 hardware-bilinear taps per
     /// fragment, 3 for an axis-aligned slide and 1 once the texture is at
-    /// integer phase. The default.
+    /// integer phase.
     CatmullRom,
     /// A single hardware-bilinear tap: the cheapest tier that still glides.
     ///
