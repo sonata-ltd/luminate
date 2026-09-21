@@ -114,6 +114,9 @@ pub trait TextureRenderer: iced_core::Renderer {
     /// invalidate a cache. [`FilterQuality::Snap`] expects `transform` to
     /// have been snapped by the caller (`Cached` and `Pager` do); the
     /// backends do not re-snap it.
+    // Every parameter is a distinct property of one composite; bundling
+    // them into a struct would only move the same list one level out.
+    #[allow(clippy::too_many_arguments)]
     fn draw_cached(
         &mut self,
         cache: &TextureCache,

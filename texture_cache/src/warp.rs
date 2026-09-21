@@ -41,6 +41,30 @@ impl Corner {
             Self::BottomRight => (true, true),
         }
     }
+
+    /// Where this corner sits in `bounds`: the point a scale about the
+    /// corner holds still.
+    pub(crate) fn fixed_point(self, bounds: iced_core::Rectangle) -> (f32, f32) {
+        let (right, bottom) = match self {
+            Self::TopLeft => (false, false),
+            Self::TopRight => (true, false),
+            Self::BottomLeft => (false, true),
+            Self::BottomRight => (true, true),
+        };
+
+        (
+            if right {
+                bounds.x + bounds.width
+            } else {
+                bounds.x
+            },
+            if bottom {
+                bounds.y + bounds.height
+            } else {
+                bounds.y
+            },
+        )
+    }
 }
 
 /// A collapse into one corner, in the manner of a window minimising into a
@@ -156,6 +180,18 @@ impl Warp {
             Self::Genie(genie) => genie.is_live(),
         }
     }
+
+    /// The affine approximation a backend without shaders composites
+    /// instead: a scale about the anchor corner, by the same progress. It
+    /// loses the neck and keeps the timing, which is the right trade on a
+    /// software renderer.
+    #[must_use]
+    pub(crate) fn affine_fallback(self) -> Option<(f32, Corner)> {
+        match self {
+            Self::None => None,
+            Self::Genie(genie) => Some((genie.progress(), genie.anchor())),
+        }
+    }
 }
 
 impl From<Genie> for Warp {
@@ -184,6 +220,35 @@ fn flip(value: f32, flip: bool) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_corner_fixes_its_own_position() {
+        let bounds = iced_core::Rectangle {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 50.0,
+        };
+
+        assert_eq!(Corner::TopLeft.fixed_point(bounds), (10.0, 20.0));
+        assert_eq!(Corner::TopRight.fixed_point(bounds), (110.0, 20.0));
+        assert_eq!(Corner::BottomLeft.fixed_point(bounds), (10.0, 70.0));
+        assert_eq!(Corner::BottomRight.fixed_point(bounds), (110.0, 70.0));
+    }
+
+    #[test]
+    fn the_affine_fallback_scales_toward_the_anchor() {
+        // Fully open, the fallback is the identity.
+        let open = Warp::Genie(Genie::new(1.0, Corner::TopLeft));
+        assert_eq!(open.affine_fallback(), Some((1.0, Corner::TopLeft)));
+
+        // Half collapsed, it is a half scale about the same corner.
+        let half = Warp::Genie(Genie::new(0.5, Corner::BottomRight));
+        assert_eq!(half.affine_fallback(), Some((0.5, Corner::BottomRight)));
+
+        // No warp, nothing to apply.
+        assert_eq!(Warp::None.affine_fallback(), None);
+    }
 
     /// Every `t` a test sweeps, including both ends.
     const PROGRESSES: [f32; 7] = [0.0, 0.05, 0.25, 0.5, 0.75, 0.95, 1.0];

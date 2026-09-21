@@ -515,6 +515,20 @@ impl TextureRenderer for TinySkiaRenderer {
             return;
         };
 
+        // No shaders here, so the genie's neck cannot be drawn. A scale
+        // about the same anchor, at the same progress, keeps the motion and
+        // its timing; see `Warp::affine_fallback`.
+        let transform = match warp.affine_fallback() {
+            None => transform,
+            Some((progress, anchor)) => {
+                let (fixed_x, fixed_y) = anchor.fixed_point(bounds);
+                transform
+                    * Transformation::translate(fixed_x, fixed_y)
+                    * Transformation::scale(progress)
+                    * Transformation::translate(-fixed_x, -fixed_y)
+            }
+        };
+
         // There is no bicubic kernel in iced's raster path, so `CatmullRom`
         // degrades to the same bilinear tap as `Bilinear`. `Snap` composites
         // on the pixel grid, where nearest is exact and cheapest; the caller
