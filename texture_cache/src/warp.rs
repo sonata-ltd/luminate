@@ -270,31 +270,17 @@ impl Genie {
         let (u, v) = (flip(u, flip_x), flip(v, flip_y));
         let (k, _) = self.phases();
 
-        // `row(y)` is strictly increasing, so a bisection converges on the
-        // one `y` that shows this row. Below `row(0)` the row has already
-        // been drawn through the anchor.
-        if v < self.row(0.0) {
-            return None;
-        }
+        let span = self.span()?;
 
-        let mut lo = 0.0_f32;
-        let mut hi = 1.0_f32;
-        for _ in 0..40 {
-            let mid = f32::midpoint(lo, hi);
-            if self.row(mid) < v {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        let y = f32::midpoint(lo, hi);
-
-        let w = width(y, k, self.shape);
+        // Both directions are closed form: the band position is the source
+        // row raised to the reciprocal of the gather exponent.
+        let t = v.powf(1.0 / self.gather());
+        let w = width(t, k, self.shape);
         if w <= CLOSED {
             return None;
         }
 
-        Some((flip(u * w, flip_x), flip(y, flip_y)))
+        Some((flip(u * w, flip_x), flip(t * span, flip_y)))
     }
 
     /// Which source row the row drawn at `y` shows, before the `0..=1` test.
@@ -302,10 +288,31 @@ impl Genie {
     /// The exponent is the lag: `1` at the anchor, rising with distance from
     /// it, so a far row's shift is a high power of a number below one and is
     /// therefore small.
-    fn row(self, y: f32) -> f32 {
+    /// How much of the travel axis the menu still occupies, or `None` once
+    /// it has been gathered into nothing.
+    ///
+    /// The menu is *compressed* into this band rather than slid through the
+    /// anchor. Sliding it through means its leading edge is eaten first, and
+    /// with it the rounded corner there, leaving a flat square-cornered cut
+    /// as the visible edge — right for a window disappearing into a dock,
+    /// wrong for a menu collapsing into a pointer with nothing to hide the
+    /// cut. Compressing keeps both corners for the whole animation.
+    fn span(self) -> Option<f32> {
+        let (_, s) = self.phases();
+        let span = 1.0 - s;
+
+        (span > CLOSED).then_some(span)
+    }
+
+    /// How strongly rows bunch toward the anchor as the band closes.
+    ///
+    /// `1` distributes them evenly. Above that the rows near the far edge
+    /// crowd together while the ones at the anchor keep their spacing, which
+    /// is the lag that keeps the shape reading as a suction.
+    fn gather(self) -> f32 {
         let (k, s) = self.phases();
 
-        y + s.powf(1.0 + self.shape.stretch_power * k * y)
+        1.0 + self.shape.stretch_power * k * s
     }
 
     /// Which source point a destination point shows, or `None` where the
@@ -317,9 +324,17 @@ impl Genie {
         let (x, y) = (flip(x, flip_x), flip(y, flip_y));
         let (k, _) = self.phases();
 
-        // The width comes straight from the destination row, which is what
-        // keeps the inverse closed-form.
-        let w = width(y, k, self.shape);
+        let span = self.span()?;
+
+        // Where this row sits inside the band the menu has been gathered
+        // into: `0` at the anchor, `1` at the far edge. Everything else is
+        // argued by it, which is what keeps both directions closed form.
+        let t = y / span;
+        if !(0.0..=1.0).contains(&t) {
+            return None;
+        }
+
+        let w = width(t, k, self.shape);
         if w <= CLOSED {
             return None;
         }
@@ -329,10 +344,7 @@ impl Genie {
             return None;
         }
 
-        let v = self.row(y);
-        if !(0.0..=1.0).contains(&v) {
-            return None;
-        }
+        let v = t.powf(self.gather());
 
         Some((flip(u, flip_x), flip(v, flip_y)))
     }
@@ -383,8 +395,12 @@ impl From<Genie> for Warp {
 ///
 /// `1 - y` is the row's position along the travel path, which is what makes
 /// the neck sweep.
-fn width(y: f32, k: f32, shape: GenieShape) -> f32 {
-    let along = (1.0 - y).clamp(0.0, 1.0);
+fn width(t: f32, k: f32, shape: GenieShape) -> f32 {
+    // `t` is the position inside the band, not on the original menu, so the
+    // far edge keeps its full width however far the band has closed. Argued
+    // by absolute position instead, the far edge narrows as the band shrinks
+    // and the side reads as an arch again.
+    let along = (1.0 - t).clamp(0.0, 1.0);
 
     1.0 - k * bend(along, shape.curve_in, shape.curve_out) * (1.0 - shape.target_width)
 }
@@ -518,18 +534,30 @@ mod tests {
     }
 
     #[test]
-    // The bound is the point: asserting it is what stops a future edit of
-    // `MAX_STRETCH_POWER` from folding the map over itself silently.
-    #[allow(clippy::assertions_on_constants)]
-    fn the_lag_keeps_the_map_invertible() {
-        // `row` folds over itself once stretch_power * stretch reaches `e`,
-        // which would corrupt the image rather than fail loudly. The clamp
-        // is what keeps a caller on the right side of that.
-        assert!(
-            MAX_STRETCH_POWER < std::f32::consts::E,
-            "MAX_STRETCH_POWER {MAX_STRETCH_POWER} is past the monotonic bound"
-        );
+    fn the_leading_edge_is_never_eaten() {
+        // The menu's own edge, and the rounded corner on it, stays at the
+        // anchor for the whole animation. The slide this replaced ate that
+        // edge first and left a flat square-cornered cut in its place.
+        for step in 0u8..=20 {
+            let genie = Genie::new(f32::from(step) / 20.0, shape(Corner::TopLeft, 0.12));
+            let Some((_, v)) = genie.source(0.0, 0.0) else {
+                continue;
+            };
 
+            assert!(
+                v.abs() < 1e-6,
+                "the anchor row shows source row {v}, not the menu's own edge"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lag_keeps_the_map_invertible() {
+        // The gather exponent is positive for any lag, so the row map is
+        // monotonic whatever `stretch_power` is. The slide this replaced
+        // folded over itself once `stretch_power * stretch` reached `e`;
+        // the compression has no such bound, so `MAX_STRETCH_POWER` is a
+        // sanity cap now rather than a mathematical one.
         for power in [0.0, 1.0, DEFAULT_STRETCH_POWER, MAX_STRETCH_POWER] {
             for step in 0u8..=20 {
                 let genie = Genie::new(
@@ -544,7 +572,9 @@ mod tests {
 
                 let mut previous = f32::NEG_INFINITY;
                 for row in 0u8..=20 {
-                    let current = genie.row(f32::from(row) / 20.0);
+                    let Some((_, current)) = genie.source(0.0, f32::from(row) / 20.0) else {
+                        continue;
+                    };
                     assert!(current > previous, "row {row} went backwards at {genie:?}");
                     previous = current;
                 }
@@ -653,25 +683,31 @@ mod tests {
     }
 
     #[test]
-    fn no_lag_moves_every_row_together() {
-        // `stretch_power` of zero is the un-lagged map: one shift for all.
+    fn no_lag_compresses_the_band_evenly() {
+        // `stretch_power` of zero is the un-lagged map: the menu is gathered
+        // into the band with no row crowding ahead of another.
         let genie = Genie::new(
             0.5,
             GenieShape {
                 anchor: Corner::TopLeft,
-                target_width: 0.0,
+                // A real target band, so the row at the anchor still has
+                // pixels: at zero width it collapses to a point and has no
+                // source row to report.
+                target_width: 0.25,
                 stretch_power: 0.0,
                 ..GenieShape::default()
             },
         );
-        let (_, squash) = genie.phases();
+        let span = genie.span().expect("still open half way");
 
-        for row in 0u8..=10 {
-            let y = f32::from(row) / 10.0;
-            assert!(
-                (genie.row(y) - (y + squash)).abs() < 1e-6,
-                "row {y} was lagged"
-            );
+        // Strictly inside the band: its far edge lands exactly on `span`,
+        // where the division can round a hair past one. No pixel samples
+        // that point — a fragment reads a texel centre — so it is the test
+        // that stays off the boundary rather than the map that loosens.
+        for row in 0u8..10 {
+            let y = f32::from(row) / 10.0 * span;
+            let (_, v) = genie.source(0.0, y).expect("inside the band");
+            assert!((v - y / span).abs() < 1e-5, "row {y} was not evenly placed");
         }
     }
 

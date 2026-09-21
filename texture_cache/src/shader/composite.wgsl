@@ -87,13 +87,29 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
     if (params.warp_flip_x > 0.5) { p.x = 1.0 - p.x; }
     if (params.warp_flip_y > 0.5) { p.y = 1.0 - p.y; }
 
-    // The row's width comes straight from the destination row. `1 - y` is
-    // how far along the travel path it sits, which is what makes the neck
-    // sweep. The cubic is the side curve — the Bézier through
-    // `(0, curve_in, curve_out, 1)`, which at its defaults is the smoothstep
-    // and so the reference's own curve. This is `warp::bend`; keep the two
-    // in step. Rows converge on `warp_target_width`, not on a point.
-    let along = clamp(1.0 - p.y, 0.0, 1.0);
+    // How much of the axis the menu still occupies. It is *compressed*
+    // into this band, not slid through the anchor: sliding eats its
+    // leading edge, and the rounded corner there with it, leaving a flat
+    // square-cornered cut on show. See `warp::span`.
+    let span = 1.0 - s;
+    if (span <= 1e-4) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+
+    // Position inside that band: 0 at the anchor, 1 at the far edge.
+    // Everything below is argued by it, which is what keeps the far edge
+    // full width however far the band has closed — argued by absolute
+    // position instead, it narrows and the side reads as an arch.
+    let t = p.y / span;
+    if (t < 0.0 || t > 1.0) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+
+    // The side curve: the Bézier through `(0, curve_in, curve_out, 1)`,
+    // which at its defaults is the smoothstep and so the reference's own
+    // curve. This is `warp::bend`; keep the two in step. Rows converge on
+    // `warp_target_width`, not on a point.
+    let along = clamp(1.0 - t, 0.0, 1.0);
     let u_along = 1.0 - along;
     let bend = 3.0 * u_along * u_along * along * params.warp_curve_in
              + 3.0 * u_along * along * along * params.warp_curve_out
@@ -108,16 +124,12 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
 
-    // Undo the travel to find which row this is showing. The exponent is
-    // the per-row lag: 1.0 at the anchor, rising with distance from it, so
-    // a far row's shift is a high power of a number below one and is
-    // therefore small. That is what keeps the wide end of the shape on
-    // screen. `warp::STRETCH_POWER` is the same 2.0; keep the two in step.
-    // Past the far edge there is nothing left to show.
-    let v = p.y + pow(s, 1.0 + params.warp_stretch_power * k * p.y);
-    if (v < 0.0 || v > 1.0) {
-        return vec3<f32>(0.0, 0.0, 0.0);
-    }
+    // Which source row this band position shows. The exponent is the lag:
+    // above one, rows near the far edge crowd together while the ones at
+    // the anchor keep their spacing. This is `warp::gather`; keep the two
+    // in step. `t` is in `0..=1` and the exponent is positive, so `v` is
+    // too and needs no range test.
+    let v = pow(t, 1.0 + params.warp_stretch_power * k * s);
 
     var src = vec2<f32>(u, v);
     if (params.warp_flip_x > 0.5) { src.x = 1.0 - src.x; }
