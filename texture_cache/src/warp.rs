@@ -24,6 +24,19 @@ const STRETCH_END: f32 = 0.4;
 /// which is the one calibrated against the real effect.
 const SQUASH_START: f32 = 0.15;
 
+/// How sharply a row's travel is delayed by its distance from the anchor.
+///
+/// The shift is `squash^(1 + STRETCH_POWER * stretch * y)`, so the row at the
+/// anchor moves by the whole squash and the row at the far edge barely moves
+/// at all. That is what keeps the wide end of the S on screen: without it
+/// every row travels together, the far edge leaves as fast as the near one,
+/// and all that is left to see is the concave half — an inward arch.
+///
+/// `GenieWarpMesh`'s value. It must stay below `e`: see
+/// [`Genie::source`], whose inverse is only monotonic while
+/// `STRETCH_POWER * stretch < e`.
+const STRETCH_POWER: f32 = 2.0;
+
 /// A row narrower than this has closed. Dividing by it would turn rounding
 /// into a visible streak across the rest of the row.
 const CLOSED: f32 = 1e-4;
@@ -166,6 +179,11 @@ impl Genie {
     /// the anchor. The shader never needs this — it runs
     /// [`source`](Self::source) — but the forward direction is what makes
     /// the inverse testable.
+    ///
+    /// Solved by bisection. Lagging each row by its *destination* position
+    /// is what keeps the inverse closed-form, and it is the inverse the
+    /// shader runs every frame; this direction is implicit as a result, and
+    /// nothing but a test ever calls it.
     #[must_use]
     #[allow(clippy::many_single_char_names)]
     pub fn destination(self, u: f32, v: f32) -> Option<(f32, f32)> {
@@ -174,12 +192,26 @@ impl Genie {
         // correspondence for no gain.
         let (flip_x, flip_y) = self.flips();
         let (u, v) = (flip(u, flip_x), flip(v, flip_y));
-        let (k, s) = self.phases();
+        let (k, _) = self.phases();
 
-        let y = v - s;
-        if y < 0.0 {
+        // `row(y)` is strictly increasing, so a bisection converges on the
+        // one `y` that shows this row. Below `row(0)` the row has already
+        // been drawn through the anchor.
+        if v < self.row(0.0) {
             return None;
         }
+
+        let mut lo = 0.0_f32;
+        let mut hi = 1.0_f32;
+        for _ in 0..40 {
+            let mid = f32::midpoint(lo, hi);
+            if self.row(mid) < v {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let y = f32::midpoint(lo, hi);
 
         let w = width(y, k, self.target_width);
         if w <= CLOSED {
@@ -189,6 +221,17 @@ impl Genie {
         Some((flip(u * w, flip_x), flip(y, flip_y)))
     }
 
+    /// Which source row the row drawn at `y` shows, before the `0..=1` test.
+    ///
+    /// The exponent is the lag: `1` at the anchor, rising with distance from
+    /// it, so a far row's shift is a high power of a number below one and is
+    /// therefore small.
+    fn row(self, y: f32) -> f32 {
+        let (k, s) = self.phases();
+
+        y + s.powf(1.0 + STRETCH_POWER * k * y)
+    }
+
     /// Which source point a destination point shows, or `None` where the
     /// collapsed shape does not reach.
     #[must_use]
@@ -196,7 +239,7 @@ impl Genie {
     pub fn source(self, x: f32, y: f32) -> Option<(f32, f32)> {
         let (flip_x, flip_y) = self.flips();
         let (x, y) = (flip(x, flip_x), flip(y, flip_y));
-        let (k, s) = self.phases();
+        let (k, _) = self.phases();
 
         // The width comes straight from the destination row, which is what
         // keeps the inverse closed-form.
@@ -210,7 +253,7 @@ impl Genie {
             return None;
         }
 
-        let v = y + s;
+        let v = self.row(y);
         if !(0.0..=1.0).contains(&v) {
             return None;
         }
@@ -365,6 +408,42 @@ mod tests {
             "middle {middle} vs anchor {at_anchor}"
         );
         assert!(middle > far * 4.0, "middle {middle} vs far {far}");
+    }
+
+    #[test]
+    fn the_far_edge_lingers_while_the_near_edge_travels() {
+        // The wide end of the S has to stay on screen, or all that is left
+        // is its concave half and the silhouette reads as an inward arch.
+        // Without the per-row lag this row was down to about 0.68 by here.
+        let genie = Genie::new(0.5, Corner::TopLeft, 0.12);
+        let (far, _) = genie
+            .destination(1.0, 1.0)
+            .expect("the far edge is still drawn half way through");
+
+        assert!(far > 0.9, "far edge is {far} wide, so the S has left frame");
+    }
+
+    #[test]
+    // The bound is the point: asserting it is what stops a future edit of
+    // `STRETCH_POWER` from folding the map over itself silently.
+    #[allow(clippy::assertions_on_constants)]
+    fn the_lag_keeps_the_map_invertible() {
+        // `row` folds over itself once STRETCH_POWER * stretch reaches `e`,
+        // which would corrupt the image rather than fail loudly.
+        assert!(
+            STRETCH_POWER < std::f32::consts::E,
+            "STRETCH_POWER {STRETCH_POWER} is past the monotonic bound"
+        );
+
+        for step in 0u8..=20 {
+            let genie = Genie::new(f32::from(step) / 20.0, Corner::TopLeft, 0.0);
+            let mut previous = f32::NEG_INFINITY;
+            for row in 0u8..=20 {
+                let current = genie.row(f32::from(row) / 20.0);
+                assert!(current > previous, "row {row} went backwards at {genie:?}");
+                previous = current;
+            }
+        }
     }
 
     #[test]

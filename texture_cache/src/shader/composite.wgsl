@@ -97,9 +97,13 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
 
-    // Undo the travel to find which row this is showing. Past the far edge
-    // there is nothing left to show.
-    let v = p.y + s;
+    // Undo the travel to find which row this is showing. The exponent is
+    // the per-row lag: 1.0 at the anchor, rising with distance from it, so
+    // a far row's shift is a high power of a number below one and is
+    // therefore small. That is what keeps the wide end of the shape on
+    // screen. `warp::STRETCH_POWER` is the same 2.0; keep the two in step.
+    // Past the far edge there is nothing left to show.
+    let v = p.y + pow(s, 1.0 + 2.0 * k * p.y);
     if (v < 0.0 || v > 1.0) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
