@@ -15,6 +15,7 @@ mod renderer;
 #[cfg(all(test, feature = "tiny-skia"))]
 mod test_support;
 mod texture_cache;
+mod warp;
 
 #[cfg(not(any(feature = "wgpu", feature = "tiny-skia")))]
 compile_error!(
@@ -32,6 +33,7 @@ pub use pager::{Pager, pager};
 pub use record::{Record, TextureRenderer};
 pub use renderer::{Backend, Renderer};
 pub use texture_cache::{TextureCache, TextureCacheId};
+pub use warp::{Corner, Genie, Warp};
 
 // The halves are nameable because the aliases mention them, but they have
 // no public constructors: use `Renderer`/`Compositor`.
