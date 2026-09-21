@@ -13,11 +13,13 @@ struct Params {
     warp_stretch: f32,
     // How far its squash has run: the travel along the axis.
     warp_squash: f32,
+    // The width of the band the rows converge on, as a fraction of the
+    // content's own width.
+    warp_target_width: f32,
     // Axis mirrors putting the anchor corner at the origin, 0.0 or 1.0.
     warp_flip_x: f32,
     warp_flip_y: f32,
     pad0: f32,
-    pad1: f32,
 }
 @group(0) @binding(2) var<uniform> params: Params;
 
@@ -78,11 +80,14 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
     if (params.warp_flip_x > 0.5) { p.x = 1.0 - p.x; }
     if (params.warp_flip_y > 0.5) { p.y = 1.0 - p.y; }
 
-    // The row's width comes straight from the destination row: `1 - y` is
-    // how far along the travel path it sits, and cubing it is the shape
-    // curve. Rows near the anchor are pinched; far rows keep their width.
+    // The row's width comes straight from the destination row. `1 - y` is
+    // how far along the travel path it sits, which is what makes the neck
+    // sweep, and the smoothstep is the side curve: flat at both ends,
+    // steepest in the middle, so the side reads as a wave rather than an
+    // arch. Rows converge on `warp_target_width`, not on a point.
     let along = clamp(1.0 - p.y, 0.0, 1.0);
-    let w = 1.0 - k * along * along * along;
+    let shape = along * along * (3.0 - 2.0 * along);
+    let w = 1.0 - k * shape * (1.0 - params.warp_target_width);
     if (w <= 1e-4) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }

@@ -31,11 +31,14 @@ struct Params {
     warp_stretch: f32,
     /// How far its squash has run: the travel along the axis.
     warp_squash: f32,
+    /// The width of the band the rows converge on, as a fraction of the
+    /// content's own width.
+    warp_target_width: f32,
     /// Axis mirrors that put the genie's anchor corner at the origin, as
     /// `0.0` or `1.0`: WGSL uniforms carry no booleans.
     warp_flip_x: f32,
     warp_flip_y: f32,
-    _pad: [f32; 2],
+    _pad: f32,
 }
 
 const PARAMS_SIZE: u64 = std::mem::size_of::<Params>() as u64;
@@ -43,14 +46,15 @@ const _: () = assert!(PARAMS_SIZE == 32, "the WGSL `Params` struct is 32 bytes")
 
 impl Params {
     fn new(opacity: f32, filter: FilterQuality, warp: Warp) -> Self {
-        let (warp_stretch, warp_squash, warp_flip_x, warp_flip_y) = match warp {
-            Warp::None => (0.0, 0.0, 0.0, 0.0),
+        let (warp_stretch, warp_squash, warp_target_width, warp_flip_x, warp_flip_y) = match warp {
+            Warp::None => (0.0, 0.0, 0.0, 0.0, 0.0),
             Warp::Genie(genie) => {
                 let (stretch, squash) = genie.phases();
                 let (flip_x, flip_y) = genie.flips();
                 (
                     stretch,
                     squash,
+                    genie.target_width(),
                     f32::from(u8::from(flip_x)),
                     f32::from(u8::from(flip_y)),
                 )
@@ -62,9 +66,10 @@ impl Params {
             mode: filter.shader_mode(),
             warp_stretch,
             warp_squash,
+            warp_target_width,
             warp_flip_x,
             warp_flip_y,
-            _pad: [0.0; 2],
+            _pad: 0.0,
         }
     }
 }
@@ -416,7 +421,7 @@ mod tests {
         let open = Params::new(
             1.0,
             FilterQuality::Bilinear,
-            Warp::Genie(Genie::new(1.0, Corner::TopLeft)),
+            Warp::Genie(Genie::new(1.0, Corner::TopLeft, 0.12)),
         );
         assert_eq!(none.warp_stretch, open.warp_stretch);
         assert_eq!(none.warp_squash, open.warp_squash);

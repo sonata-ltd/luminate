@@ -16,11 +16,13 @@
 //! enter the neck one after another instead of narrowing all together.
 
 /// Collapse at which the stretch is complete.
-const STRETCH_END: f32 = 0.5;
+const STRETCH_END: f32 = 0.4;
 
-/// Collapse at which the squash begins. Before [`STRETCH_END`], so the two
-/// overlap: run end to end they read as two animations rather than one.
-const SQUASH_START: f32 = 0.4;
+/// Collapse at which the squash begins. Well before [`STRETCH_END`], so the
+/// two overlap heavily: run end to end they read as two animations rather
+/// than one. The references disagree here and these are `GenieWarpMesh`'s,
+/// which is the one calibrated against the real effect.
+const SQUASH_START: f32 = 0.15;
 
 /// A row narrower than this has closed. Dividing by it would turn rounding
 /// into a visible streak across the rest of the row.
@@ -85,6 +87,7 @@ impl Corner {
 pub struct Genie {
     progress: f32,
     anchor: Corner,
+    target_width: f32,
 }
 
 impl Genie {
@@ -92,15 +95,37 @@ impl Genie {
     /// that range: the map only stays inside the content's own rectangle
     /// while it is, and a curve that overshoots would otherwise tear the
     /// image out of its texture. A non-finite progress is treated as open.
+    ///
+    /// `target_width` is how wide the band the rows converge on is, as a
+    /// fraction of the content's own width. The references all collapse into
+    /// a target of real size — a dock icon — and converging on a point
+    /// instead reads as the content vanishing down a drain. `0.0` is that
+    /// point, and is what a non-finite width falls back to.
     #[must_use]
-    pub fn new(progress: f32, anchor: Corner) -> Self {
+    pub fn new(progress: f32, anchor: Corner, target_width: f32) -> Self {
         let progress = if progress.is_finite() {
             progress.clamp(0.0, 1.0)
         } else {
             1.0
         };
+        let target_width = if target_width.is_finite() {
+            target_width.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
 
-        Self { progress, anchor }
+        Self {
+            progress,
+            anchor,
+            target_width,
+        }
+    }
+
+    /// The width of the band the rows converge on, as a fraction of the
+    /// content's own width.
+    #[must_use]
+    pub const fn target_width(self) -> f32 {
+        self.target_width
     }
 
     /// The clamped progress this genie will actually draw at.
@@ -156,7 +181,7 @@ impl Genie {
             return None;
         }
 
-        let w = width(y, k);
+        let w = width(y, k, self.target_width);
         if w <= CLOSED {
             return None;
         }
@@ -175,7 +200,7 @@ impl Genie {
 
         // The width comes straight from the destination row, which is what
         // keeps the inverse closed-form.
-        let w = width(y, k);
+        let w = width(y, k, self.target_width);
         if w <= CLOSED {
             return None;
         }
@@ -234,15 +259,21 @@ impl From<Genie> for Warp {
     }
 }
 
-/// The width of the row drawn at `y`, stretched by `k`.
+/// The width of the row drawn at `y`, stretched by `k`, converging on
+/// `target`.
 ///
-/// `1 - y` is the row's position along the travel path, and cubing it is the
-/// shape curve both reference implementations settled on. Rows near the
-/// anchor are pinched; rows still far from it keep their width.
-fn width(y: f32, k: f32) -> f32 {
+/// `1 - y` is the row's position along the travel path, which is what makes
+/// the neck sweep. The smoothstep is the side curve: `GenieWarpMesh` builds
+/// it as a cubic Bézier whose control points keep their endpoints' cross-axis
+/// coordinate, and the horizontal component of such a Bézier is
+/// `3t² - 2t³` exactly — so this is not an approximation of that curve, it is
+/// that curve. Its flat tangents at both ends are what make the side read as
+/// a wave; a profile steepest at the anchor reads as an arch.
+fn width(y: f32, k: f32, target: f32) -> f32 {
     let along = (1.0 - y).clamp(0.0, 1.0);
+    let shape = along * along * (3.0 - 2.0 * along);
 
-    1.0 - k * along * along * along
+    1.0 - k * shape * (1.0 - target)
 }
 
 /// Mirrors a normalised coordinate when the anchor is on the far side.
@@ -263,7 +294,7 @@ mod tests {
 
     #[test]
     fn fully_open_is_the_identity() {
-        let genie = Genie::new(1.0, Corner::TopLeft);
+        let genie = Genie::new(1.0, Corner::TopLeft, 0.0);
         for (x, y) in grid() {
             let (u, v) = genie.source(x, y).expect("nothing is clipped when open");
             assert!((u - x).abs() < 1e-6, "u {u} != x {x}");
@@ -277,7 +308,7 @@ mod tests {
         // width, which magnifies error by `1 / w` and says nothing useful
         // about a row that has closed to a point.
         for t in PROGRESSES {
-            let genie = Genie::new(t, Corner::TopLeft);
+            let genie = Genie::new(t, Corner::TopLeft, 0.0);
             for (x, y) in grid() {
                 let Some((u, v)) = genie.source(x, y) else {
                     continue;
@@ -294,7 +325,7 @@ mod tests {
     #[test]
     fn the_map_never_leaves_the_source_rectangle() {
         for t in PROGRESSES {
-            let genie = Genie::new(t, Corner::TopLeft);
+            let genie = Genie::new(t, Corner::TopLeft, 0.0);
             for (u, v) in grid() {
                 // `None` is content drawn through the anchor: consumed, not
                 // drawn outside, which is the property under test.
@@ -311,33 +342,59 @@ mod tests {
 
     #[test]
     fn the_neck_sweeps_so_rows_nearer_the_anchor_are_narrower() {
-        // The property the first version of this map failed, and the reason
-        // it read as a squeeze rather than a suction. The row's width is the
-        // destination of its far edge, `u = 1`.
-        let genie = Genie::new(0.5, Corner::TopLeft);
-        let (near, _) = genie.destination(1.0, 0.3).expect("still drawn");
+        // The row's width is the destination of its far edge, `u = 1`.
+        let genie = Genie::new(0.5, Corner::TopLeft, 0.0);
+        let (near, _) = genie.destination(1.0, 0.5).expect("still drawn");
         let (far, _) = genie.destination(1.0, 1.0).expect("still drawn");
-        assert!(near < far, "row at 0.3 is {near} wide, row at 1.0 is {far}");
+        assert!(near < far, "row at 0.5 is {near} wide, row at 1.0 is {far}");
+    }
+
+    #[test]
+    fn the_side_profile_is_a_wave_not_an_arch() {
+        // Flat at both ends, steepest in the middle. An arch is steepest at
+        // one end and passes every other test in this module, so this is
+        // asserted directly: it is the shape that was shipped and rejected.
+        let slope = |a: f32, b: f32| (width(b, 1.0, 0.0) - width(a, 1.0, 0.0)).abs() / (b - a);
+
+        let at_anchor = slope(0.0, 0.05);
+        let middle = slope(0.475, 0.525);
+        let far = slope(0.95, 1.0);
+
+        assert!(
+            middle > at_anchor * 4.0,
+            "middle {middle} vs anchor {at_anchor}"
+        );
+        assert!(middle > far * 4.0, "middle {middle} vs far {far}");
+    }
+
+    #[test]
+    fn the_rows_converge_on_a_band_not_a_point() {
+        // Fully stretched, the row at the anchor is the target width.
+        assert!((width(0.0, 1.0, 0.25) - 0.25).abs() < 1e-6);
+        // A target width of zero still collapses to a point.
+        assert!(width(0.0, 1.0, 0.0).abs() < 1e-6);
+        // The far row keeps its width whatever the target is.
+        assert!((width(1.0, 1.0, 0.25) - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn the_phases_overlap_as_researched() {
         // Open: neither phase has started.
-        assert_eq!(Genie::new(1.0, Corner::TopLeft).phases(), (0.0, 0.0));
+        assert_eq!(Genie::new(1.0, Corner::TopLeft, 0.0).phases(), (0.0, 0.0));
 
-        // Stretch is complete by half-collapsed...
-        let (stretch, _) = Genie::new(0.5, Corner::TopLeft).phases();
+        // Stretch is complete by collapse 0.4...
+        let (stretch, _) = Genie::new(0.6, Corner::TopLeft, 0.0).phases();
         assert!(
             (stretch - 1.0).abs() < 1e-6,
-            "stretch {stretch} != 1 at c = 0.5"
+            "stretch {stretch} != 1 at c = 0.4"
         );
 
-        // ...and squash has not started at c = 0.4.
-        let (_, squash) = Genie::new(0.6, Corner::TopLeft).phases();
-        assert!(squash.abs() < 1e-6, "squash {squash} != 0 at c = 0.4");
+        // ...and squash has not started at collapse 0.15.
+        let (_, squash) = Genie::new(0.85, Corner::TopLeft, 0.0).phases();
+        assert!(squash.abs() < 1e-6, "squash {squash} != 0 at c = 0.15");
 
         // Between the two they run together, which is the whole point.
-        let (stretch, squash) = Genie::new(0.55, Corner::TopLeft).phases();
+        let (stretch, squash) = Genie::new(0.7, Corner::TopLeft, 0.0).phases();
         assert!(
             stretch > 0.0 && stretch < 1.0,
             "stretch {stretch} is not mid-flight"
@@ -346,15 +403,27 @@ mod tests {
     }
 
     #[test]
+    fn a_target_width_outside_the_unit_range_is_clamped() {
+        assert!((Genie::new(0.5, Corner::TopLeft, 3.0).target_width() - 1.0).abs() < f32::EPSILON);
+        assert!(Genie::new(0.5, Corner::TopLeft, -1.0).target_width().abs() < f32::EPSILON);
+        assert!(
+            Genie::new(0.5, Corner::TopLeft, f32::NAN)
+                .target_width()
+                .abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
     fn a_point_outside_the_collapsed_shape_is_clipped() {
         // Half collapsed, the far corner of the destination shows nothing.
-        let genie = Genie::new(0.5, Corner::TopLeft);
+        let genie = Genie::new(0.5, Corner::TopLeft, 0.0);
         assert!(genie.source(0.99, 0.99).is_none());
     }
 
     #[test]
     fn a_collapsed_genie_shows_nothing() {
-        let genie = Genie::new(0.0, Corner::TopLeft);
+        let genie = Genie::new(0.0, Corner::TopLeft, 0.0);
         for (x, y) in grid() {
             assert!(genie.source(x, y).is_none(), "({x},{y}) survived collapse");
         }
@@ -368,7 +437,7 @@ mod tests {
             (Corner::BottomLeft, (0.0, 1.0)),
             (Corner::BottomRight, (1.0, 1.0)),
         ] {
-            let (x, y) = Genie::new(0.5, corner)
+            let (x, y) = Genie::new(0.5, corner, 0.0)
                 .destination(0.5, 0.5)
                 .expect("the centre is still drawn half way");
             let before = (0.5_f32 - toward.0).hypot(0.5 - toward.1);
@@ -382,11 +451,14 @@ mod tests {
 
     #[test]
     fn the_corners_are_mirror_images() {
-        let (x, y) = Genie::new(0.5, Corner::TopLeft)
-            .destination(0.7, 0.4)
+        // Sampled well away from the anchor: by half collapsed the squash
+        // has carried the nearer rows through it, and a row that is gone
+        // has no mirror to compare.
+        let (x, y) = Genie::new(0.5, Corner::TopLeft, 0.0)
+            .destination(0.7, 0.9)
             .expect("drawn");
-        let (mx, my) = Genie::new(0.5, Corner::TopRight)
-            .destination(0.3, 0.4)
+        let (mx, my) = Genie::new(0.5, Corner::TopRight, 0.0)
+            .destination(0.3, 0.9)
             .expect("drawn");
         assert!(
             (x - (1.0 - mx)).abs() < 1e-6,
@@ -397,32 +469,32 @@ mod tests {
 
     #[test]
     fn progress_is_clamped_so_a_bouncy_curve_cannot_expand_it() {
-        let over = Genie::new(1.4, Corner::TopLeft);
+        let over = Genie::new(1.4, Corner::TopLeft, 0.0);
         assert!((over.progress() - 1.0).abs() < f32::EPSILON);
-        let under = Genie::new(-0.3, Corner::TopLeft);
+        let under = Genie::new(-0.3, Corner::TopLeft, 0.0);
         assert!(under.progress().abs() < f32::EPSILON);
     }
 
     #[test]
     fn a_non_finite_progress_is_treated_as_open() {
-        assert!((Genie::new(f32::NAN, Corner::TopLeft).progress() - 1.0).abs() < f32::EPSILON);
+        assert!((Genie::new(f32::NAN, Corner::TopLeft, 0.0).progress() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn only_a_running_genie_is_live() {
         assert!(!Warp::None.is_live());
-        assert!(!Warp::Genie(Genie::new(1.0, Corner::TopLeft)).is_live());
-        assert!(Warp::Genie(Genie::new(0.4, Corner::TopLeft)).is_live());
+        assert!(!Warp::Genie(Genie::new(1.0, Corner::TopLeft, 0.0)).is_live());
+        assert!(Warp::Genie(Genie::new(0.4, Corner::TopLeft, 0.0)).is_live());
     }
 
     #[test]
     fn the_affine_fallback_scales_toward_the_anchor() {
         // Fully open, the fallback is the identity.
-        let open = Warp::Genie(Genie::new(1.0, Corner::TopLeft));
+        let open = Warp::Genie(Genie::new(1.0, Corner::TopLeft, 0.0));
         assert_eq!(open.affine_fallback(), Some((1.0, Corner::TopLeft)));
 
         // Half collapsed, it is a half scale about the same corner.
-        let half = Warp::Genie(Genie::new(0.5, Corner::BottomRight));
+        let half = Warp::Genie(Genie::new(0.5, Corner::BottomRight, 0.0));
         assert_eq!(half.affine_fallback(), Some((0.5, Corner::BottomRight)));
 
         // No warp, nothing to apply.

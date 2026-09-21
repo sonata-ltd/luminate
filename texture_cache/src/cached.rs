@@ -160,8 +160,9 @@ where
     supersample_in_motion: bool,
     /// `None` inherits the renderer's tier; see [`Cached::filter_quality`].
     filter: Option<FilterQuality>,
-    /// The corner a genie collapses into, or `None` for no warp at all.
-    warp_anchor: Option<Corner>,
+    /// The corner a genie collapses into and the width of the band it
+    /// converges on, or `None` for no warp at all.
+    warp_target: Option<(Corner, f32)>,
     /// Genie progress. Meaningless without an anchor.
     warp_progress: Anim<f32>,
 }
@@ -218,7 +219,7 @@ where
             pixel_snap: PixelSnap::LayoutOnly,
             supersample_in_motion: false,
             filter: None,
-            warp_anchor: None,
+            warp_target: None,
             warp_progress: Anim::constant(1.0),
         }
     }
@@ -354,12 +355,17 @@ where
     ///
     /// let cache = TextureCache::new();
     /// let _: iced_texture_cache::Element<'_, ()> = cached(cache, text("collapsing"))
-    ///     .genie(0.5, Corner::TopLeft)
+    ///     .genie(0.5, Corner::TopLeft, 0.12)
     ///     .into();
     /// ```
     #[must_use]
-    pub fn genie(mut self, progress: impl Into<Anim<f32>>, anchor: Corner) -> Self {
-        self.warp_anchor = Some(anchor);
+    pub fn genie(
+        mut self,
+        progress: impl Into<Anim<f32>>,
+        anchor: Corner,
+        target_width: f32,
+    ) -> Self {
+        self.warp_target = Some((anchor, target_width));
         self.warp_progress = progress.into();
         self.warp_progress.mark_tier(Tier::Composite);
         self
@@ -368,9 +374,11 @@ where
     /// The warp composited this frame, built from the anchor and whatever
     /// progress has reached.
     fn warp(&self) -> Warp {
-        match self.warp_anchor {
+        match self.warp_target {
             None => Warp::None,
-            Some(anchor) => Warp::Genie(Genie::new(self.warp_progress.get(), anchor)),
+            Some((anchor, target_width)) => {
+                Warp::Genie(Genie::new(self.warp_progress.get(), anchor, target_width))
+            }
         }
     }
 
