@@ -4,12 +4,20 @@
 // Four scalars (not a vec4, whose lanes would have to be unpacked, nor a vec3,
 // whose 16-byte alignment would make the struct 32 bytes) keep this at exactly
 // 16 bytes, matching the Rust side.
+// Eight scalars, exactly 32 bytes, matching the Rust side.
 struct Params {
     opacity: f32,
     // Reconstruction kernel: 0 = Catmull-Rom, 1 = a single bilinear tap.
     // `FilterQuality::Snap` shares the single-tap value; its crispness comes
     // from the snapped geometry, not from here.
     mode: f32,
+    // Genie progress. 1.0 means no warp and takes the fast path below.
+    warp_progress: f32,
+    // How much of the collapsed height is neck.
+    warp_neck: f32,
+    // Axis mirrors putting the anchor corner at the origin, 0.0 or 1.0.
+    warp_flip_x: f32,
+    warp_flip_y: f32,
     pad0: f32,
     pad1: f32,
 }
@@ -43,7 +51,53 @@ fn samp(uv: vec2<f32>) -> vec4<f32> {
 // reconstructed sample by the group opacity keeps it premultiplied.
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return reconstruct(in.uv) * params.opacity;
+    let source = warp_source(in.uv);
+    // `z` is the hit flag: the collapsed shape does not cover the whole
+    // destination rectangle, and the rest of it shows nothing.
+    if (source.z < 0.5) {
+        return vec4<f32>(0.0);
+    }
+    return reconstruct(source.xy) * params.opacity;
+}
+
+// The inverse genie: which source texel this destination pixel shows, with
+// `z` set when there is one. The Rust side of the same arithmetic is
+// `warp::Genie::source`, which is where it is tested.
+//
+// The row is found first because the row's width depends on it, which is
+// what keeps this closed-form: two divides and a smoothstep, no iteration.
+fn warp_source(uv: vec2<f32>) -> vec3<f32> {
+    let t = params.warp_progress;
+
+    // Fully open is the overwhelmingly common case and is exactly identity.
+    if (t >= 1.0) {
+        return vec3<f32>(uv, 1.0);
+    }
+    if (t <= 0.0) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+
+    // Into anchor space, where the corner it collapses into is the origin.
+    var p = uv;
+    if (params.warp_flip_x > 0.5) { p.x = 1.0 - p.x; }
+    if (params.warp_flip_y > 0.5) { p.y = 1.0 - p.y; }
+
+    let v = p.y / t;
+    if (v < 0.0 || v > 1.0) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+
+    // Pinched to `t` at the anchor, full width past the neck.
+    let w = t + (1.0 - t) * smoothstep(0.0, params.warp_neck, v);
+    let u = p.x / w;
+    if (u < 0.0 || u > 1.0) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+
+    var src = vec2<f32>(u, v);
+    if (params.warp_flip_x > 0.5) { src.x = 1.0 - src.x; }
+    if (params.warp_flip_y > 0.5) { src.y = 1.0 - src.y; }
+    return vec3<f32>(src, 1.0);
 }
 
 // Catmull-Rom reconstruction (B = 0, C = 1/2): an *interpolating* kernel that

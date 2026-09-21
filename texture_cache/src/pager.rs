@@ -16,6 +16,7 @@ use crate::geometry::{composite_geometry, lerp, pager_page_bounds, snap_to_grid}
 use crate::reaction::{Activity, observe};
 use crate::record::{Record, TextureRenderer};
 use crate::texture_cache::TextureCache;
+use crate::warp::Warp;
 
 /// Pages are recorded edge to edge: they are clipped to the pager anyway.
 const BLEED: u32 = 0;
@@ -838,6 +839,7 @@ where
                         Transformation::IDENTITY,
                         1.0,
                         filter,
+                        Warp::None,
                     ),
                     // Too large for a texture: the page is already laid out
                     // where it is drawn, so draw it there under the same clip.

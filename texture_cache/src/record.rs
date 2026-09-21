@@ -24,6 +24,7 @@ use iced_core::{Rectangle, Size, Transformation};
 use crate::filter::FilterQuality;
 use crate::renderer::Backend;
 use crate::texture_cache::{Inner, TextureCache, TextureCacheId as Id};
+use crate::warp::Warp;
 
 /// Outcome of [`TextureRenderer::record`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +122,7 @@ pub trait TextureRenderer: iced_core::Renderer {
         transform: Transformation,
         opacity: f32,
         filter: FilterQuality,
+        warp: Warp,
     );
 }
 

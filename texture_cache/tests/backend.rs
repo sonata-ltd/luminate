@@ -9,6 +9,7 @@
 use iced_core::Renderer as _;
 use iced_core::renderer::{Headless, Quad};
 use iced_core::{Color, Point, Rectangle, Size, Transformation};
+use iced_texture_cache::Warp;
 use iced_texture_cache::{Backend, FilterQuality, Record, Renderer, TextureCache, TextureRenderer};
 
 const CANVAS: Size<u32> = Size {
@@ -66,6 +67,7 @@ fn composite_with(
         Transformation::IDENTITY,
         opacity,
         filter,
+        Warp::None,
     );
     renderer.screenshot(CANVAS, 1.0, Color::WHITE)
 }
@@ -216,6 +218,7 @@ mod tiny_skia {
                 Transformation::IDENTITY,
                 1.0,
                 FilterQuality::Bilinear,
+                Warp::None,
             );
         });
         assert_eq!(record, Record::Fresh);
@@ -335,6 +338,7 @@ mod wgpu {
                 Transformation::IDENTITY,
                 1.0,
                 FilterQuality::Bilinear,
+                Warp::None,
             );
         });
         assert_eq!(record, Record::Fresh);
@@ -359,6 +363,7 @@ mod wgpu {
             Transformation::IDENTITY,
             1.0,
             FilterQuality::Bilinear,
+            Warp::None,
         );
 
         // Same cache, new size: a new texture, blue this time.
@@ -379,6 +384,7 @@ mod wgpu {
             Transformation::IDENTITY,
             1.0,
             FilterQuality::Bilinear,
+            Warp::None,
         );
 
         let shot = renderer.screenshot(CANVAS, 1.0, Color::WHITE);

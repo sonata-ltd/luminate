@@ -19,6 +19,7 @@ use iced_graphics::{compositor, mesh};
 use crate::filter::FilterQuality;
 use crate::record::{Record, TextureRenderer, normalize_opacity};
 use crate::texture_cache::TextureCache;
+use crate::warp::Warp;
 
 #[cfg(feature = "tiny-skia")]
 use crate::record::TinySkiaCacheStore;
@@ -413,6 +414,7 @@ impl TextureRenderer for WgpuRenderer {
         transform: Transformation,
         opacity: f32,
         filter: FilterQuality,
+        warp: Warp,
     ) {
         use iced_wgpu::primitive::Renderer as _;
 
@@ -427,7 +429,7 @@ impl TextureRenderer for WgpuRenderer {
             renderer.with_transformation(transform, |renderer| {
                 renderer.inner.draw_primitive(
                     bounds,
-                    crate::composite::CompositePrimitive::new(view, opacity, filter),
+                    crate::composite::CompositePrimitive::new(view, opacity, filter, warp),
                 );
             });
         });
@@ -504,6 +506,7 @@ impl TextureRenderer for TinySkiaRenderer {
         transform: Transformation,
         opacity: f32,
         filter: FilterQuality,
+        warp: Warp,
     ) {
         let Some(opacity) = normalize_opacity(opacity) else {
             return;
@@ -615,13 +618,14 @@ impl TextureRenderer for Renderer {
         transform: Transformation,
         opacity: f32,
         filter: FilterQuality,
+        warp: Warp,
     ) {
         match self {
             Self::Primary(renderer) => {
-                renderer.draw_cached(cache, bounds, clip, transform, opacity, filter);
+                renderer.draw_cached(cache, bounds, clip, transform, opacity, filter, warp);
             }
             Self::Secondary(renderer) => {
-                renderer.draw_cached(cache, bounds, clip, transform, opacity, filter);
+                renderer.draw_cached(cache, bounds, clip, transform, opacity, filter, warp);
             }
         }
     }

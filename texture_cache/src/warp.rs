@@ -12,7 +12,7 @@
 /// the row keeps its full width. This is the number that makes the effect
 /// read as a genie rather than as a scale, and it is tuned in
 /// `examples/genie.rs`.
-const NECK: f32 = 0.6;
+pub(crate) const NECK: f32 = 0.6;
 
 /// The corner a [`Genie`] collapses into.
 ///
@@ -77,6 +77,11 @@ impl Genie {
     #[must_use]
     pub const fn anchor(self) -> Corner {
         self.anchor
+    }
+
+    /// The axis mirrors that put this genie's anchor at the origin.
+    pub(crate) const fn flips(self) -> (bool, bool) {
+        self.anchor.flips()
     }
 
     /// Whether it is anywhere but fully open, and so has something to draw

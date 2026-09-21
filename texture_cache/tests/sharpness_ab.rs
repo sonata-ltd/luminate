@@ -10,6 +10,7 @@ use iced_core::Renderer as _;
 use iced_core::renderer::Headless;
 use iced_core::text::{Alignment, LineHeight, Renderer as _, Shaping, Text, Wrapping};
 use iced_core::{Color, Font, Pixels, Point, Rectangle, Size, Transformation, alignment};
+use iced_texture_cache::Warp;
 use iced_texture_cache::{FilterQuality, Record, Renderer, TextureCache, TextureRenderer};
 
 fn headless_wgpu() -> Renderer {
@@ -136,6 +137,7 @@ fn a_resting_cached_composite_is_as_sharp_as_drawing_in_place() {
             Transformation::IDENTITY,
             1.0,
             filter,
+            Warp::None,
         );
         let shot = renderer.screenshot(CANVAS, scale, Color::WHITE);
         let cached = report(&format!("cached ({filter:?})"), &shot);
@@ -222,6 +224,7 @@ fn a_fractional_vertical_offset_costs_far_more_than_a_horizontal_one() {
                 Transformation::IDENTITY,
                 1.0,
                 filter,
+                Warp::None,
             );
             let s = spread(&renderer.screenshot(CANVAS, scale, Color::WHITE));
             println!(
@@ -301,6 +304,7 @@ fn the_pager_policy_recovers_the_axis_aligned_sharpness() {
             Transformation::IDENTITY,
             1.0,
             FilterQuality::CatmullRom,
+            Warp::None,
         );
         let s = spread(&renderer.screenshot(CANVAS, scale, Color::WHITE));
         println!(

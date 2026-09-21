@@ -747,6 +747,7 @@ where
                     transform,
                     opacity,
                     filter,
+                    warp,
                 );
             }
             Record::Uncacheable => {
