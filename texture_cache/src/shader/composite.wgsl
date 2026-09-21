@@ -2,7 +2,7 @@
 @group(0) @binding(1) var cache_sampler: sampler;
 
 // Eight scalars, exactly 32 bytes, matching the Rust side.
-// Twelve scalars, exactly 48 bytes, matching the Rust side.
+// Sixteen scalars, exactly 64 bytes, matching the Rust side.
 struct Params {
     opacity: f32,
     // Reconstruction kernel: 0 = Catmull-Rom, 1 = a single bilinear tap.
@@ -25,8 +25,16 @@ struct Params {
     // Axis mirrors putting the anchor corner at the origin, 0.0 or 1.0.
     warp_flip_x: f32,
     warp_flip_y: f32,
+    // The radius the collapsing shape's corners keep, in device pixels, and
+    // the destination rectangle's size in the same units. Real pixels, not
+    // `uv`: a radius in `uv` would squeeze with the shape, which is the
+    // whole thing this exists to avoid.
+    warp_corner_radius: f32,
+    warp_rect_width: f32,
+    warp_rect_height: f32,
     pad0: f32,
     pad1: f32,
+    pad2: f32,
 }
 @group(0) @binding(2) var<uniform> params: Params;
 
@@ -59,12 +67,36 @@ fn samp(uv: vec2<f32>) -> vec4<f32> {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let source = warp_source(in.uv);
-    // `z` is the hit flag: the collapsed shape does not cover the whole
-    // destination rectangle, and the rest of it shows nothing.
-    if (source.z < 0.5) {
+    // `z` is coverage: zero where the collapsed shape does not reach, and
+    // fractional inside a rounded corner. The texture holds premultiplied
+    // colour, so scaling every channel keeps it premultiplied.
+    if (source.z <= 0.0) {
         return vec4<f32>(0.0);
     }
-    return reconstruct(source.xy) * params.opacity;
+    return reconstruct(source.xy) * params.opacity * source.z;
+}
+
+// How much of this pixel survives the corner mask: `1` away from a corner,
+// the circle's coverage inside one. `warp::corner_alpha` is the same
+// arithmetic; keep the two in step.
+//
+// The distances are to the shape's four edges rather than to a rectangle's
+// corners, which is what lets it follow a right edge that curves: every row
+// is rounded against its own width.
+fn corner_alpha(dl: f32, dr: f32, dt: f32, db: f32, r: f32) -> f32 {
+    if (r <= 0.0) {
+        return 1.0;
+    }
+
+    let dx = min(dl, dr);
+    let dy = min(dt, db);
+    if (dx >= r || dy >= r) {
+        return 1.0;
+    }
+
+    let reach = length(vec2<f32>(r - dx, r - dy));
+
+    return clamp(r - reach + 0.5, 0.0, 1.0);
 }
 
 // The inverse genie: which source texel this destination pixel shows, with
@@ -81,6 +113,7 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
     if (k <= 0.0 && s <= 0.0) {
         return vec3<f32>(uv, 1.0);
     }
+
 
     // Into anchor space, where the corner it collapses into is the origin.
     var p = uv;
@@ -119,10 +152,31 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
 
+    // Round the shape's own corners at a radius that does not squeeze with
+    // it. The row spans `0..w` across and the shape reaches from the anchor
+    // edge to wherever the content runs out, which `1 - v` measures. The
+    // radius is clamped to half the row so a narrow end becomes a stadium
+    // rather than growing corners larger than itself.
+    let width_px = w * params.warp_rect_width;
+    let radius = min(
+        params.warp_corner_radius,
+        0.5 * min(width_px, params.warp_rect_height)
+    );
+    let alpha = corner_alpha(
+        p.x * params.warp_rect_width,
+        (w - p.x) * params.warp_rect_width,
+        p.y * params.warp_rect_height,
+        (1.0 - v) * params.warp_rect_height,
+        radius
+    );
+    if (alpha <= 0.0) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+
     var src = vec2<f32>(u, v);
     if (params.warp_flip_x > 0.5) { src.x = 1.0 - src.x; }
     if (params.warp_flip_y > 0.5) { src.y = 1.0 - src.y; }
-    return vec3<f32>(src, 1.0);
+    return vec3<f32>(src, alpha);
 }
 
 // Catmull-Rom reconstruction (B = 0, C = 1/2): an *interpolating* kernel that

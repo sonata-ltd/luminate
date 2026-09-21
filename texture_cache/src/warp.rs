@@ -44,6 +44,11 @@ const DEFAULT_TARGET_WIDTH: f32 = 0.12;
 const DEFAULT_CURVE_IN: f32 = 0.0;
 const DEFAULT_CURVE_OUT: f32 = 1.0;
 
+/// How far the corner mask's edge is spread, in device pixels, so it is not
+/// a hard staircase.
+#[cfg(test)]
+const CORNER_FEATHER: f32 = 1.0;
+
 /// A row narrower than this has closed. Dividing by it would turn rounding
 /// into a visible streak across the rest of the row.
 const CLOSED: f32 = 1e-4;
@@ -133,6 +138,21 @@ pub struct GenieShape {
     /// `bend`'s slope there is `3 * (1 - curve_out)`, so `1` arrives
     /// parallel to the travel and lowering it bends the side later.
     pub curve_out: f32,
+    /// The radius, in logical pixels, that the collapsing shape's corners
+    /// keep however far it has been squeezed. `0` leaves them alone.
+    ///
+    /// A rounded corner recorded into the texture is *pixels*, so squeezing
+    /// a row to `target_width` squeezes its corner with it: an 8px radius at
+    /// a target of 0.12 is drawn about 1px wide and reads as a straight cut.
+    /// Rounding here instead, in destination space, keeps the radius on
+    /// screen whatever the row's width. Clamped per row to half the shape,
+    /// so a narrow end becomes a stadium rather than growing corners bigger
+    /// than itself.
+    ///
+    /// Only applied while the warp is live. At rest the content's own
+    /// rounding is left exactly as recorded, and the handover is continuous
+    /// because the warp starts at full width.
+    pub corner_radius: f32,
 }
 
 impl Default for GenieShape {
@@ -143,6 +163,7 @@ impl Default for GenieShape {
             stretch_power: DEFAULT_STRETCH_POWER,
             curve_in: DEFAULT_CURVE_IN,
             curve_out: DEFAULT_CURVE_OUT,
+            corner_radius: 0.0,
         }
     }
 }
@@ -199,6 +220,11 @@ impl Genie {
             } else {
                 DEFAULT_CURVE_OUT
             },
+            corner_radius: if shape.corner_radius.is_finite() {
+                shape.corner_radius.max(0.0)
+            } else {
+                0.0
+            },
         };
 
         Self { progress, shape }
@@ -215,6 +241,12 @@ impl Genie {
     #[must_use]
     pub const fn target_width(self) -> f32 {
         self.shape.target_width
+    }
+
+    /// The radius its corners keep however far it is squeezed.
+    #[must_use]
+    pub const fn corner_radius(self) -> f32 {
+        self.shape.corner_radius
     }
 
     /// The clamped progress this genie will actually draw at.
@@ -401,6 +433,37 @@ fn bend(t: f32, c_in: f32, c_out: f32) -> f32 {
     let u = 1.0 - t;
 
     3.0 * u * u * t * c_in + 3.0 * u * t * t * c_out + t * t * t
+}
+
+/// How much of a pixel survives the corner mask.
+///
+/// `dl`, `dr`, `dt`, `db` are its distances to the shape's four edges and
+/// `r` the corner radius, all in device pixels. Away from a corner this is
+/// `1`; inside one it is the coverage of a circle of radius `r` centred `r`
+/// in from both edges, feathered over [`CORNER_FEATHER`].
+///
+/// Measuring from the edges rather than from a rectangle's corners is what
+/// lets it follow a shape whose right edge is curved: each row is rounded
+/// against its own width.
+///
+/// The mask that actually runs is `corner_alpha` in `composite.wgsl`; this
+/// is its mirror, and exists so the arithmetic can be tested without a GPU.
+/// Nothing but the tests calls it, and the two must be kept in step by hand.
+#[cfg(test)]
+pub(crate) fn corner_alpha(dl: f32, dr: f32, dt: f32, db: f32, r: f32) -> f32 {
+    if r <= 0.0 {
+        return 1.0;
+    }
+
+    let dx = dl.min(dr);
+    let dy = dt.min(db);
+    if dx >= r || dy >= r {
+        return 1.0;
+    }
+
+    let reach = ((r - dx).powi(2) + (r - dy).powi(2)).sqrt();
+
+    ((r - reach) / CORNER_FEATHER + 0.5).clamp(0.0, 1.0)
 }
 
 /// Mirrors a normalised coordinate when the anchor is on the far side.
@@ -803,6 +866,57 @@ mod tests {
         assert!((over.progress() - 1.0).abs() < f32::EPSILON);
         let under = Genie::new(-0.3, shape(Corner::TopLeft, 0.0));
         assert!(under.progress().abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_corner_radius_of_zero_masks_nothing() {
+        assert!((corner_alpha(0.0, 0.0, 0.0, 0.0, 0.0) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_mask_only_touches_the_corners() {
+        // Further than the radius from either pair of edges is nowhere near
+        // a corner and must be left alone.
+        assert!((corner_alpha(40.0, 40.0, 2.0, 400.0, 8.0) - 1.0).abs() < f32::EPSILON);
+        assert!((corner_alpha(2.0, 400.0, 40.0, 40.0, 8.0) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_masked_corner_is_round() {
+        let r = 8.0;
+
+        // The very corner falls outside the circle entirely.
+        assert!(corner_alpha(0.0, 500.0, 0.0, 500.0, r) < f32::EPSILON);
+        // Its centre is well inside.
+        assert!((corner_alpha(r, 500.0, r, 500.0, r) - 1.0).abs() < f32::EPSILON);
+        // And a point on the arc is partly covered, which is the curve.
+        let on_arc = r - r / 2.0_f32.sqrt();
+        let alpha = corner_alpha(on_arc, 500.0, on_arc, 500.0, r);
+        assert!((0.2..=0.8).contains(&alpha), "arc coverage was {alpha}");
+    }
+
+    #[test]
+    fn the_mask_does_not_care_which_corner() {
+        // Distances are to the nearest edge on each axis, so all four
+        // corners are masked alike.
+        let a = corner_alpha(1.0, 90.0, 2.0, 90.0, 8.0);
+        let b = corner_alpha(90.0, 1.0, 90.0, 2.0, 8.0);
+        assert!((a - b).abs() < f32::EPSILON, "{a} != {b}");
+    }
+
+    #[test]
+    fn a_non_finite_corner_radius_is_ignored() {
+        let nan = GenieShape {
+            corner_radius: f32::NAN,
+            ..GenieShape::default()
+        };
+        assert!(Genie::new(0.5, nan).corner_radius().abs() < f32::EPSILON);
+
+        let negative = GenieShape {
+            corner_radius: -4.0,
+            ..GenieShape::default()
+        };
+        assert!(Genie::new(0.5, negative).corner_radius().abs() < f32::EPSILON);
     }
 
     #[test]

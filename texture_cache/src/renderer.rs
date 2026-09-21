@@ -425,11 +425,16 @@ impl TextureRenderer for WgpuRenderer {
             return;
         };
 
+        // The corner mask rounds in real pixels, so it needs the
+        // destination rectangle in the same units.
+        let scale = self.scale_factor();
+        let rect = (bounds.width * scale, bounds.height * scale);
+
         self.with_layer(clip, |renderer| {
             renderer.with_transformation(transform, |renderer| {
                 renderer.inner.draw_primitive(
                     bounds,
-                    crate::composite::CompositePrimitive::new(view, opacity, filter, warp),
+                    crate::composite::CompositePrimitive::new(view, opacity, filter, warp, rect),
                 );
             });
         });

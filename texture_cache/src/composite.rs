@@ -43,13 +43,20 @@ struct Params {
     /// `0.0` or `1.0`: WGSL uniforms carry no booleans.
     warp_flip_x: f32,
     warp_flip_y: f32,
-    /// Ten floats is forty bytes, and a uniform struct is rounded up to a
-    /// multiple of sixteen.
-    _pad: [f32; 2],
+    /// The radius the collapsing shape's corners keep, in device pixels, and
+    /// the destination rectangle's size in the same units. The mask needs
+    /// real pixels: a radius in `uv` would squeeze along with the shape,
+    /// which is the whole thing it exists to avoid.
+    warp_corner_radius: f32,
+    warp_rect_width: f32,
+    warp_rect_height: f32,
+    /// Thirteen floats is fifty-two bytes, and a uniform struct is rounded
+    /// up to a multiple of sixteen.
+    _pad: [f32; 3],
 }
 
 const PARAMS_SIZE: u64 = std::mem::size_of::<Params>() as u64;
-const _: () = assert!(PARAMS_SIZE == 48, "the WGSL `Params` struct is 48 bytes");
+const _: () = assert!(PARAMS_SIZE == 64, "the WGSL `Params` struct is 64 bytes");
 
 /// The warp's half of [`Params`], flattened for the uniform.
 ///
@@ -65,10 +72,11 @@ struct WarpParams {
     curve_out: f32,
     flip_x: f32,
     flip_y: f32,
+    corner_radius: f32,
 }
 
 impl Params {
-    fn new(opacity: f32, filter: FilterQuality, warp: Warp) -> Self {
+    fn new(opacity: f32, filter: FilterQuality, warp: Warp, rect: (f32, f32)) -> Self {
         let warp = match warp {
             Warp::None => WarpParams::default(),
             Warp::Genie(genie) => {
@@ -84,6 +92,7 @@ impl Params {
                     curve_out: shape.curve_out,
                     flip_x: f32::from(u8::from(flip_x)),
                     flip_y: f32::from(u8::from(flip_y)),
+                    corner_radius: shape.corner_radius,
                 }
             }
         };
@@ -99,7 +108,10 @@ impl Params {
             warp_curve_out: warp.curve_out,
             warp_flip_x: warp.flip_x,
             warp_flip_y: warp.flip_y,
-            _pad: [0.0; 2],
+            warp_corner_radius: warp.corner_radius,
+            warp_rect_width: rect.0,
+            warp_rect_height: rect.1,
+            _pad: [0.0; 3],
         }
     }
 }
@@ -117,6 +129,9 @@ pub(crate) struct CompositePrimitive {
     /// The warp this composite applies. Per instance, like `opacity` and
     /// `filter`: two widgets may share a texture and warp differently.
     warp: Warp,
+    /// The destination rectangle in device pixels, which the corner mask
+    /// needs to keep its radius in real pixels rather than in `uv`.
+    rect: (f32, f32),
     /// The instance `prepare` assigned, read back by `draw`. Stored on the
     /// primitive so `draw` does not depend on being called in preparation
     /// order.
@@ -129,6 +144,7 @@ impl CompositePrimitive {
         opacity: f32,
         filter: FilterQuality,
         warp: Warp,
+        rect: (f32, f32),
     ) -> Self {
         debug_assert!(
             (0.0..=1.0).contains(&opacity),
@@ -140,6 +156,7 @@ impl CompositePrimitive {
             opacity,
             filter,
             warp,
+            rect,
             instance: AtomicU32::new(0),
         }
     }
@@ -173,8 +190,9 @@ fn assign_instance(
     opacity: f32,
     filter: FilterQuality,
     warp: Warp,
+    rect: (f32, f32),
 ) -> u32 {
-    shadow.push(Params::new(opacity, filter, warp));
+    shadow.push(Params::new(opacity, filter, warp, rect));
     u32::try_from(shadow.len() - 1).expect("fewer than u32::MAX composites per frame")
 }
 
@@ -401,7 +419,13 @@ impl Primitive for CompositePrimitive {
             return;
         };
 
-        let index = assign_instance(&mut binding.shadow, self.opacity, self.filter, self.warp);
+        let index = assign_instance(
+            &mut binding.shadow,
+            self.opacity,
+            self.filter,
+            self.warp,
+            self.rect,
+        );
         queue.write_buffer(
             &binding.params,
             pipeline.stride * u64::from(index),
@@ -435,9 +459,13 @@ mod tests {
     use super::*;
     use crate::warp::{Genie, GenieShape};
 
+    /// A nominal destination rectangle in device pixels. No test here
+    /// exercises the corner mask, which is tested in `warp`.
+    const RECT: (f32, f32) = (100.0, 200.0);
+
     #[test]
     fn an_absent_warp_takes_the_shaders_identity_path() {
-        let params = Params::new(1.0, FilterQuality::Bilinear, Warp::None);
+        let params = Params::new(1.0, FilterQuality::Bilinear, Warp::None, RECT);
         assert_eq!(
             (params.warp_stretch, params.warp_squash),
             (0.0, 0.0),
@@ -447,11 +475,12 @@ mod tests {
 
     #[test]
     fn a_fully_open_genie_is_indistinguishable_from_no_warp() {
-        let none = Params::new(1.0, FilterQuality::Bilinear, Warp::None);
+        let none = Params::new(1.0, FilterQuality::Bilinear, Warp::None, RECT);
         let open = Params::new(
             1.0,
             FilterQuality::Bilinear,
             Warp::Genie(Genie::new(1.0, GenieShape::default())),
+            RECT,
         );
         assert_eq!(none.warp_stretch, open.warp_stretch);
         assert_eq!(none.warp_squash, open.warp_squash);
@@ -461,12 +490,12 @@ mod tests {
     fn instances_keep_their_slot_and_opacity_across_growth() {
         let filter = FilterQuality::CatmullRom;
         let mut shadow = Vec::new();
-        let a = assign_instance(&mut shadow, 0.25, filter, Warp::None);
-        let b = assign_instance(&mut shadow, 0.5, filter, Warp::None);
+        let a = assign_instance(&mut shadow, 0.25, filter, Warp::None, RECT);
+        let b = assign_instance(&mut shadow, 0.5, filter, Warp::None, RECT);
         // "Growth": the shadow moves to a new binding unchanged.
         let moved = shadow;
         let mut grown = moved.clone();
-        let c = assign_instance(&mut grown, 1.0, filter, Warp::None);
+        let c = assign_instance(&mut grown, 1.0, filter, Warp::None, RECT);
         assert_eq!((a, b, c), (0, 1, 2));
         assert_eq!(moved[a as usize].opacity, 0.25);
         assert_eq!(moved[b as usize].opacity, 0.5);
@@ -477,9 +506,15 @@ mod tests {
         // The same cache composited twice in a frame at two tiers: each
         // instance's uniform block must keep the tier it was assigned.
         let mut shadow = Vec::new();
-        let sharp = assign_instance(&mut shadow, 1.0, FilterQuality::CatmullRom, Warp::None);
-        let cheap = assign_instance(&mut shadow, 1.0, FilterQuality::Bilinear, Warp::None);
-        let snapped = assign_instance(&mut shadow, 1.0, FilterQuality::Snap, Warp::None);
+        let sharp = assign_instance(
+            &mut shadow,
+            1.0,
+            FilterQuality::CatmullRom,
+            Warp::None,
+            RECT,
+        );
+        let cheap = assign_instance(&mut shadow, 1.0, FilterQuality::Bilinear, Warp::None, RECT);
+        let snapped = assign_instance(&mut shadow, 1.0, FilterQuality::Snap, Warp::None, RECT);
 
         assert_eq!(shadow[sharp as usize].mode, 0.0);
         assert_eq!(shadow[cheap as usize].mode, 1.0);

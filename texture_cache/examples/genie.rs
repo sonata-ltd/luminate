@@ -1,10 +1,12 @@
-//! Collapses twelve panels at once, one per combination of the side curve's
-//! two control values, so `curve_in` and `curve_out` can be judged against
-//! each other rather than one at a time from memory.
+//! Collapses twelve panels at once, one per `target_width`, so how much of
+//! the rounded corner survives at the narrow end can be judged against the
+//! motion it costs.
 //!
-//! Six per row, two rows: `curve_out` groups the columns and `curve_in`
-//! varies within each group. The first panel — `in 0.00 / out 1.00` — is the
-//! reference's own curve, so everything else is read against it.
+//! The panel is deliberately the same width and corner radius as a real
+//! context menu — 240px and `radius_s`, 8px — because that ratio is the
+//! whole question: the narrow end squeezes the corner horizontally by
+//! `target_width`, so at 0.12 an 8px radius is drawn as a 1px sliver and
+//! reads as a straight edge.
 //!
 //! The panels are filled, bordered and striped on purpose. A genie is a shape
 //! being deformed, so there has to be a shape: bare text on the window's own
@@ -23,21 +25,20 @@ fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view).run()
 }
 
-/// The wide-end bends on show. `0.0` leaves the side parallel to the travel.
-const CURVE_INS: [f32; 3] = [0.0, 0.35, 0.7];
-
-/// The neck-end bends on show. `1.0` arrives parallel to the travel.
-const CURVE_OUTS: [f32; 4] = [1.0, 0.65, 0.3, 0.0];
+/// The target widths on show. `0.12` is the current default.
+const TARGETS: [f32; 12] = [
+    0.08, 0.12, 0.16, 0.20, 0.25, 0.30, 0.36, 0.42, 0.50, 0.58, 0.68, 0.80,
+];
 
 /// Panels per row. Twelve combinations, six across, two rows.
 const PER_ROW: usize = 6;
 
-/// How wide the band the rows collapse into is, as a fraction of a panel's
-/// width. A genie ends in a dock icon, not a drain.
-const TARGET_WIDTH: f32 = 0.12;
+/// A real context menu's width, so the corner is judged at the ratio it
+/// will actually be drawn at.
+const PANEL_WIDTH: f32 = 240.0;
 
-/// Narrow enough that six fit across, wide enough that the neck is legible.
-const PANEL_WIDTH: f32 = 168.0;
+/// `radius_s` in the application this is for: the radius a real menu uses.
+const PANEL_RADIUS: f32 = 8.0;
 
 /// Room for a panel to collapse into, so the travel has somewhere to go.
 const PANEL_SLOT: f32 = 300.0;
@@ -69,10 +70,8 @@ enum Message {
 }
 
 /// Every combination on show, in the order they are laid out.
-fn combinations() -> impl Iterator<Item = (f32, f32)> {
-    CURVE_OUTS
-        .into_iter()
-        .flat_map(|out| CURVE_INS.into_iter().map(move |into| (into, out)))
+fn combinations() -> impl Iterator<Item = f32> {
+    TARGETS.into_iter()
 }
 
 impl App {
@@ -105,17 +104,18 @@ impl App {
         let panels: Vec<Element<'_, Message, iced::Theme, iced_texture_cache::Renderer>> =
             combinations()
                 .zip(&self.caches)
-                .map(|((curve_in, curve_out), cache)| {
+                .map(|(target_width, cache)| {
                     let shape = GenieShape {
                         anchor: self.anchor,
-                        target_width: TARGET_WIDTH,
-                        curve_in,
-                        curve_out,
+                        target_width,
+                        // The corner the shape keeps while it is squeezed,
+                        // matching the panel's own so the two agree at rest.
+                        corner_radius: PANEL_RADIUS,
                         ..GenieShape::default()
                     };
 
                     column![
-                        text(format!("in {curve_in:.2}  out {curve_out:.2}")).size(13),
+                        text(format!("target {target_width:.2}")).size(13),
                         // `progress` is cloned rather than copied: `Anim<f32>`
                         // is not `Copy` and this closure is `FnMut`.
                         container(cached(cache.clone(), panel()).genie(progress.clone(), shape))
@@ -190,7 +190,7 @@ fn panel<'a>() -> Element<'a, Message, iced::Theme, iced_texture_cache::Renderer
             border: Border {
                 color: EDGE,
                 width: 2.0,
-                radius: 10.0.into(),
+                radius: PANEL_RADIUS.into(),
             },
             ..container::Style::default()
         })
