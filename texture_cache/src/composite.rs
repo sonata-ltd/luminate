@@ -26,10 +26,11 @@ struct Params {
     opacity: f32,
     /// The reconstruction kernel; see [`FilterQuality::shader_mode`].
     mode: f32,
-    /// Genie progress: `1.0` is no warp, and the shader's fast path.
-    warp_progress: f32,
-    /// How much of the collapsed height is neck.
-    warp_neck: f32,
+    /// How far the genie's stretch has run. `0.0` is no warp, and the
+    /// shader's fast path.
+    warp_stretch: f32,
+    /// How far its squash has run: the travel along the axis.
+    warp_squash: f32,
     /// Axis mirrors that put the genie's anchor corner at the origin, as
     /// `0.0` or `1.0`: WGSL uniforms carry no booleans.
     warp_flip_x: f32,
@@ -42,13 +43,14 @@ const _: () = assert!(PARAMS_SIZE == 32, "the WGSL `Params` struct is 32 bytes")
 
 impl Params {
     fn new(opacity: f32, filter: FilterQuality, warp: Warp) -> Self {
-        let (warp_progress, warp_neck, warp_flip_x, warp_flip_y) = match warp {
-            Warp::None => (1.0, 0.0, 0.0, 0.0),
+        let (warp_stretch, warp_squash, warp_flip_x, warp_flip_y) = match warp {
+            Warp::None => (0.0, 0.0, 0.0, 0.0),
             Warp::Genie(genie) => {
+                let (stretch, squash) = genie.phases();
                 let (flip_x, flip_y) = genie.flips();
                 (
-                    genie.progress(),
-                    crate::warp::NECK,
+                    stretch,
+                    squash,
                     f32::from(u8::from(flip_x)),
                     f32::from(u8::from(flip_y)),
                 )
@@ -58,8 +60,8 @@ impl Params {
         Self {
             opacity,
             mode: filter.shader_mode(),
-            warp_progress,
-            warp_neck,
+            warp_stretch,
+            warp_squash,
             warp_flip_x,
             warp_flip_y,
             _pad: [0.0; 2],
@@ -401,9 +403,10 @@ mod tests {
     #[test]
     fn an_absent_warp_takes_the_shaders_identity_path() {
         let params = Params::new(1.0, FilterQuality::Bilinear, Warp::None);
-        assert!(
-            params.warp_progress >= 1.0,
-            "the shader treats anything below 1.0 as a live warp"
+        assert_eq!(
+            (params.warp_stretch, params.warp_squash),
+            (0.0, 0.0),
+            "the shader's identity path needs both phases at zero"
         );
     }
 
@@ -415,7 +418,8 @@ mod tests {
             FilterQuality::Bilinear,
             Warp::Genie(Genie::new(1.0, Corner::TopLeft)),
         );
-        assert_eq!(none.warp_progress, open.warp_progress);
+        assert_eq!(none.warp_stretch, open.warp_stretch);
+        assert_eq!(none.warp_squash, open.warp_squash);
     }
 
     #[test]

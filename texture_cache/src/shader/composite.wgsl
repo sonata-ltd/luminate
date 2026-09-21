@@ -1,9 +1,6 @@
 @group(0) @binding(0) var cache_texture: texture_2d<f32>;
 @group(0) @binding(1) var cache_sampler: sampler;
 
-// Four scalars (not a vec4, whose lanes would have to be unpacked, nor a vec3,
-// whose 16-byte alignment would make the struct 32 bytes) keep this at exactly
-// 16 bytes, matching the Rust side.
 // Eight scalars, exactly 32 bytes, matching the Rust side.
 struct Params {
     opacity: f32,
@@ -11,10 +8,11 @@ struct Params {
     // `FilterQuality::Snap` shares the single-tap value; its crispness comes
     // from the snapped geometry, not from here.
     mode: f32,
-    // Genie progress. 1.0 means no warp and takes the fast path below.
-    warp_progress: f32,
-    // How much of the collapsed height is neck.
-    warp_neck: f32,
+    // How far the genie's stretch has run. 0.0 means no warp and takes
+    // the fast path below.
+    warp_stretch: f32,
+    // How far its squash has run: the travel along the axis.
+    warp_squash: f32,
     // Axis mirrors putting the anchor corner at the origin, 0.0 or 1.0.
     warp_flip_x: f32,
     warp_flip_y: f32,
@@ -65,16 +63,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 // `warp::Genie::source`, which is where it is tested.
 //
 // The row is found first because the row's width depends on it, which is
-// what keeps this closed-form: two divides and a smoothstep, no iteration.
+// what keeps this closed-form: one cube and two divides, no iteration.
 fn warp_source(uv: vec2<f32>) -> vec3<f32> {
-    let t = params.warp_progress;
+    let k = params.warp_stretch;
+    let s = params.warp_squash;
 
     // Fully open is the overwhelmingly common case and is exactly identity.
-    if (t >= 1.0) {
+    if (k <= 0.0 && s <= 0.0) {
         return vec3<f32>(uv, 1.0);
-    }
-    if (t <= 0.0) {
-        return vec3<f32>(0.0, 0.0, 0.0);
     }
 
     // Into anchor space, where the corner it collapses into is the origin.
@@ -82,15 +78,24 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
     if (params.warp_flip_x > 0.5) { p.x = 1.0 - p.x; }
     if (params.warp_flip_y > 0.5) { p.y = 1.0 - p.y; }
 
-    let v = p.y / t;
-    if (v < 0.0 || v > 1.0) {
+    // The row's width comes straight from the destination row: `1 - y` is
+    // how far along the travel path it sits, and cubing it is the shape
+    // curve. Rows near the anchor are pinched; far rows keep their width.
+    let along = clamp(1.0 - p.y, 0.0, 1.0);
+    let w = 1.0 - k * along * along * along;
+    if (w <= 1e-4) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
 
-    // Pinched to `t` at the anchor, full width past the neck.
-    let w = t + (1.0 - t) * smoothstep(0.0, params.warp_neck, v);
     let u = p.x / w;
     if (u < 0.0 || u > 1.0) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+
+    // Undo the travel to find which row this is showing. Past the far edge
+    // there is nothing left to show.
+    let v = p.y + s;
+    if (v < 0.0 || v > 1.0) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
 

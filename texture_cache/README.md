@@ -141,9 +141,13 @@ boost makes the aliasing slightly more visible than `Bilinear` does.
 
 `Cached::genie` applies a non-affine collapse that `scale` cannot express.
 `Warp::Genie` draws the content into one of its own corners the way a window
-minimises into a dock icon: rows nearest the anchor are pinched into a neck
-while the rest keep their width, and the whole thing shortens toward the
-corner.
+minimises into a dock icon. Its shape is taken from `KWin`'s magic lamp effects
+and a published recreation of the macOS original: the content travels along
+its axis toward the anchor, and a cubic shape curve argued by each row's
+position *along that travel path* draws the rows into a neck one after
+another, so the near edge necks to a point while the far edge still holds its
+width. The stretch and the travel overlap, which is what stops it reading as
+two animations. What passes beyond the anchor is consumed by it.
 
 It is evaluated per destination pixel in the fragment shader as an inverse
 map, so it costs no mesh, no extra draw call and no re-record — it binds at
