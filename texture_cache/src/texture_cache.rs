@@ -27,6 +27,10 @@ pub(crate) struct Inner {
     /// they last propagated to their ancestors.
     generation: AtomicU64,
     records: AtomicU64,
+    /// The last record was refused as too large, so the widget is drawing
+    /// its content in place, without the warp a texture would carry; its
+    /// hit-testing has to know. Cleared by the next record that succeeds.
+    uncacheable: AtomicBool,
 }
 
 /// A handle to a cached texture. Cloning shares the same cache.
@@ -88,6 +92,7 @@ impl TextureCache {
                 invalidated: AtomicBool::new(true),
                 generation: AtomicU64::new(1),
                 records: AtomicU64::new(0),
+                uncacheable: AtomicBool::new(false),
             }),
         }
     }
@@ -144,6 +149,20 @@ impl TextureCache {
     /// call it once per `Record::Fresh`.
     pub fn note_record(&self) {
         let _ = self.inner.records.fetch_add(1, Ordering::Relaxed);
+        self.inner.uncacheable.store(false, Ordering::Relaxed);
+    }
+
+    /// Whether the last record was refused as too large for a texture, so
+    /// the content is being drawn in place; see [`Record::Uncacheable`].
+    ///
+    /// [`Record::Uncacheable`]: crate::Record::Uncacheable
+    pub(crate) fn is_uncacheable(&self) -> bool {
+        self.inner.uncacheable.load(Ordering::Relaxed)
+    }
+
+    /// Notes that a record was refused as too large.
+    pub(crate) fn note_uncacheable(&self) {
+        self.inner.uncacheable.store(true, Ordering::Relaxed);
     }
 
     pub(crate) fn liveness(&self) -> Weak<Inner> {

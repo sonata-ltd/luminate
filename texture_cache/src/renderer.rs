@@ -410,6 +410,7 @@ impl TextureRenderer for WgpuRenderer {
         &mut self,
         cache: &TextureCache,
         bounds: Rectangle,
+        content: Rectangle,
         clip: Rectangle,
         transform: Transformation,
         opacity: f32,
@@ -425,16 +426,15 @@ impl TextureRenderer for WgpuRenderer {
             return;
         };
 
-        // The corner mask rounds in real pixels, so it needs the
-        // destination rectangle in the same units.
-        let scale = self.scale_factor();
-        let rect = (bounds.width * scale, bounds.height * scale);
+        // The warp is defined on the content, which sits inside the padded
+        // texture, and its corner mask rounds in real pixels.
+        let frame = crate::composite::Frame::new(bounds, content, self.scale_factor());
 
         self.with_layer(clip, |renderer| {
             renderer.with_transformation(transform, |renderer| {
                 renderer.inner.draw_primitive(
                     bounds,
-                    crate::composite::CompositePrimitive::new(view, opacity, filter, warp, rect),
+                    crate::composite::CompositePrimitive::new(view, opacity, filter, warp, frame),
                 );
             });
         });
@@ -507,6 +507,7 @@ impl TextureRenderer for TinySkiaRenderer {
         &mut self,
         cache: &TextureCache,
         bounds: Rectangle,
+        content: Rectangle,
         clip: Rectangle,
         transform: Transformation,
         opacity: f32,
@@ -522,17 +523,12 @@ impl TextureRenderer for TinySkiaRenderer {
 
         // No shaders here, so the genie's neck cannot be drawn. A scale
         // about the same anchor, at the same progress, keeps the motion and
-        // its timing; see `Warp::affine_fallback`.
-        let transform = match warp.affine_fallback() {
-            None => transform,
-            Some((progress, anchor)) => {
-                let (fixed_x, fixed_y) = anchor.fixed_point(bounds);
-                transform
-                    * Transformation::translate(fixed_x, fixed_y)
-                    * Transformation::scale(progress)
-                    * Transformation::translate(-fixed_x, -fixed_y)
-            }
+        // its timing; see `Warp::affine_fallback`. The anchor is a corner
+        // of the content, not of the padding around it.
+        let Some(fallback) = warp.affine_transform(content) else {
+            return;
         };
+        let transform = transform * fallback;
 
         // There is no bicubic kernel in iced's raster path, so `CatmullRom`
         // degrades to the same bilinear tap as `Bilinear`. `Snap` composites
@@ -633,6 +629,7 @@ impl TextureRenderer for Renderer {
         &mut self,
         cache: &TextureCache,
         bounds: Rectangle,
+        content: Rectangle,
         clip: Rectangle,
         transform: Transformation,
         opacity: f32,
@@ -641,10 +638,14 @@ impl TextureRenderer for Renderer {
     ) {
         match self {
             Self::Primary(renderer) => {
-                renderer.draw_cached(cache, bounds, clip, transform, opacity, filter, warp);
+                renderer.draw_cached(
+                    cache, bounds, content, clip, transform, opacity, filter, warp,
+                );
             }
             Self::Secondary(renderer) => {
-                renderer.draw_cached(cache, bounds, clip, transform, opacity, filter, warp);
+                renderer.draw_cached(
+                    cache, bounds, content, clip, transform, opacity, filter, warp,
+                );
             }
         }
     }

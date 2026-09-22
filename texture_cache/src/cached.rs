@@ -13,6 +13,7 @@ use crate::filter::FilterQuality;
 use crate::geometry;
 use crate::reaction::{Activity, observe};
 use crate::record::{Record, TextureRenderer};
+use crate::renderer::Backend;
 use crate::texture_cache::{TextureCache, TextureCacheId};
 use crate::warp::{Genie, GenieShape, Warp};
 
@@ -346,6 +347,10 @@ where
     /// are zero-bounce springs — since progress is clamped to `0..=1` and a
     /// bouncy curve would simply flatten against that ceiling.
     ///
+    /// The pointer follows the picture: a press lands on the content it is
+    /// drawn over, and where the collapsed shape does not reach — all of
+    /// it, at progress `0` — the content sees no cursor at all.
+    ///
     /// # Examples
     ///
     /// ```no_run
@@ -385,6 +390,24 @@ where
     /// The transform actually composited this frame.
     fn transform(&self, bounds: Rectangle) -> Transformation {
         geometry::effective_transform(self.translate.get(), self.scale.get(), bounds)
+    }
+
+    /// The cursor as the content sees it: back through the affine
+    /// transform, then through whatever warp is actually being drawn, so a
+    /// press lands on the pixel it was aimed at and collapsed content is
+    /// not clickable where it used to be. The shader draws the genie
+    /// itself; the software backend, and content too large for a texture
+    /// on either, draw the affine approximation.
+    fn content_cursor(
+        &self,
+        cursor: mouse::Cursor,
+        bounds: Rectangle,
+        transform: Transformation,
+        renderer: &Renderer,
+    ) -> mouse::Cursor {
+        let cursor = geometry::translate_cursor(cursor, transform);
+        let exact = renderer.backend() == Backend::Wgpu && !self.cache.is_uncacheable();
+        self.warp().map_cursor(exact, bounds, cursor)
     }
 }
 
@@ -505,7 +528,7 @@ where
     ) {
         let bounds = layout.bounds();
         let user_transform = self.transform(bounds);
-        let cursor = geometry::translate_cursor(cursor, user_transform);
+        let cursor = self.content_cursor(cursor, bounds, user_transform, renderer);
 
         let redraw_now = match event {
             Event::Window(window::Event::RedrawRequested(now)) => Some(*now),
@@ -600,7 +623,8 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        let cursor = geometry::translate_cursor(cursor, self.transform(layout.bounds()));
+        let bounds = layout.bounds();
+        let cursor = self.content_cursor(cursor, bounds, self.transform(bounds), renderer);
 
         self.content.as_widget().mouse_interaction(
             &tree.children[0],
@@ -703,7 +727,7 @@ where
             return;
         };
 
-        let cursor = geometry::translate_cursor(cursor, user_transform);
+        let cursor = self.content_cursor(cursor, bounds, user_transform, renderer);
         let content = &self.content;
         let content_tree = &tree.children[0];
         // The content's layout origin lands `BLEED` texels into the texture,
@@ -743,6 +767,7 @@ where
                 renderer.draw_cached(
                     &self.cache,
                     composite.cache_bounds,
+                    composite.content_bounds,
                     clip,
                     transform,
                     opacity,
@@ -755,8 +780,15 @@ where
                 // (opened in the enclosing layout space, outside the user
                 // transform, because iced's clip layers do not intersect with
                 // their parent) and the same transform. Group opacity cannot
-                // be applied without a texture. The viewport is that clip in
+                // be applied without a texture, and neither can the genie:
+                // the software backend's affine approximation stands in, so
+                // the content still collapses and the pointer mapping above
+                // agrees with what is drawn. The viewport is that clip in
                 // the content's space, so huge content still culls.
+                let Some(fallback) = warp.affine_transform(bounds) else {
+                    return;
+                };
+                let transform = transform * fallback;
                 let content_viewport = clip * transform.inverse();
                 renderer.with_layer(clip, |r| {
                     r.with_transformation(transform, |r| {
@@ -989,6 +1021,53 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_content_is_not_clickable_where_it_used_to_be() {
+        use iced::widget::container;
+
+        let cache = TextureCache::new();
+        let build = |progress: f32| -> crate::Element<'_, Message> {
+            container(
+                cached(cache.clone(), button("go").on_press(Message::Go))
+                    .genie(progress, GenieShape::default()),
+            )
+            .padding(20.0)
+            .into()
+        };
+
+        // Fully collapsed into its top-left corner: the button is gone,
+        // and so is its hit box.
+        let mut harness = Harness::new(Size::new(200.0, 100.0), build(0.0));
+        let now = Instant::now();
+        harness.frame(now);
+        harness.click("go");
+        assert_eq!(harness.into_messages(), vec![]);
+
+        // Half way, the software backend draws the button at half size
+        // about its top-left corner: its old centre is outside the picture,
+        // and the picture's centre is the button's.
+        let mut harness = Harness::new(Size::new(200.0, 100.0), build(0.5));
+        harness.frame(now);
+        let mut find = iced_test::selector::Selector::find("go");
+        harness.operate(&mut find);
+        let iced_core::widget::operation::Outcome::Some(Some(target)) = find.finish() else {
+            panic!("no button on screen")
+        };
+        let bounds = target.visible_bounds().expect("the text is visible");
+        harness.click_at(bounds.center());
+        harness.click_at(Point::new(
+            bounds.x + bounds.width * 0.25,
+            bounds.y + bounds.height * 0.25,
+        ));
+        assert_eq!(harness.into_messages(), vec![Message::Go]);
+
+        // Open, everything is where it was.
+        let mut harness = Harness::new(Size::new(200.0, 100.0), build(1.0));
+        harness.frame(now);
+        harness.click("go");
+        assert_eq!(harness.into_messages(), vec![Message::Go]);
+    }
+
+    #[test]
     fn a_dpi_change_re_records_once() {
         let cache = TextureCache::new();
         let mut harness = Harness::new(
@@ -1194,6 +1273,73 @@ mod tests {
             &[255, 255, 255],
             "nothing left of the layout origin"
         );
+    }
+
+    #[test]
+    fn uncacheable_content_collapses_and_takes_clicks_where_it_is_drawn() {
+        // Too large for a texture, the content is drawn in place and no
+        // shader can warp it: the affine approximation stands in, and the
+        // pointer follows it rather than the genie the shader would draw.
+        let cache = TextureCache::new();
+        let build = |progress: f32| -> crate::Element<'_, Message> {
+            let wide = row![
+                button("go").on_press(Message::Go),
+                shape()
+                    .width(17_000.0)
+                    .height(40.0)
+                    .fill(Color::from_rgb(1.0, 0.0, 0.0))
+            ];
+            let content = row![
+                space().width(100.0),
+                cached(cache.clone(), wide).genie(progress, GenieShape::default())
+            ];
+            scrollable(content)
+                .direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::default(),
+                ))
+                .width(300.0)
+                .height(60.0)
+                .into()
+        };
+
+        let now = Instant::now();
+        // Fully collapsed: nothing is drawn, and nothing is clickable.
+        let mut harness = Harness::new(Size::new(300.0, 60.0), build(0.0));
+        harness.frame(now);
+        assert_eq!(cache.record_count(), 0, "nothing was recorded");
+        let shot = harness.screenshot(1.0);
+        assert_eq!(&shot.pixel(250, 20)[..3], &[255, 255, 255], "gone");
+        harness.click("go");
+        assert_eq!(harness.into_messages(), vec![]);
+
+        // Half way, scaled about the content's top-left corner at x = 100:
+        // the red covers half the height it did, and the button is drawn
+        // at half size from that corner, so its old centre is past its
+        // picture while the picture's centre is the button's own.
+        let mut harness = Harness::new(Size::new(300.0, 60.0), build(0.5));
+        harness.frame(now);
+        let mut find = iced_test::selector::Selector::find("go");
+        harness.operate(&mut find);
+        let iced_core::widget::operation::Outcome::Some(Some(target)) = find.finish() else {
+            panic!("no button on screen")
+        };
+        let bounds = target.visible_bounds().expect("the text is visible");
+        let shot = harness.screenshot(1.0);
+        assert_eq!(&shot.pixel(250, 10)[..3], &[255, 0, 0], "half height");
+        assert_eq!(&shot.pixel(250, 45)[..3], &[255, 255, 255], "not full");
+        harness.click_at(Point::new(
+            bounds.x + bounds.width * 0.9,
+            bounds.y + bounds.height * 0.9,
+        ));
+        assert_eq!(harness.into_messages(), vec![]);
+
+        let mut harness = Harness::new(Size::new(300.0, 60.0), build(0.5));
+        harness.frame(now);
+        harness.click_at(Point::new(
+            100.0 + (bounds.center_x() - 100.0) * 0.5,
+            bounds.center_y() * 0.5,
+        ));
+        assert_eq!(harness.into_messages(), vec![Message::Go]);
     }
 
     #[test]

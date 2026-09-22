@@ -737,6 +737,7 @@ where
                     Record::Fresh | Record::Reused => renderer.draw_cached(
                         &state.pages[i].cache,
                         composite.cache_bounds,
+                        composite.cache_bounds,
                         clip,
                         Transformation::translate(-offset_x, 0.0),
                         1.0,

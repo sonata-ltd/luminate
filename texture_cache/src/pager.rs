@@ -835,6 +835,7 @@ where
                     Record::Fresh | Record::Reused => renderer.draw_cached(
                         &page.cache,
                         composite.cache_bounds,
+                        composite.cache_bounds,
                         clip,
                         Transformation::IDENTITY,
                         1.0,

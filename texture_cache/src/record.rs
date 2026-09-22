@@ -109,6 +109,12 @@ pub trait TextureRenderer: iced_core::Renderer {
     /// `<= 0` draws nothing. No-op if the cache was never recorded or is
     /// uncacheable.
     ///
+    /// `content` is the rectangle `warp` is defined on, in the same space
+    /// as `bounds`: the content's own bounds, where `bounds` may carry
+    /// padding recorded around them. A genie collapses into a corner of
+    /// `content`, not of the texture. With [`Warp::None`] it is unused;
+    /// pass `bounds`.
+    ///
     /// `filter` selects the reconstruction kernel. It only affects the
     /// composite, never the recorded texture, so switching it does not
     /// invalidate a cache. [`FilterQuality::Snap`] expects `transform` to
@@ -121,6 +127,7 @@ pub trait TextureRenderer: iced_core::Renderer {
         &mut self,
         cache: &TextureCache,
         bounds: Rectangle,
+        content: Rectangle,
         clip: Rectangle,
         transform: Transformation,
         opacity: f32,
@@ -236,6 +243,7 @@ impl<T: Texture> Entries<T> {
     /// Records that `cache` cannot be cached at `size` (any stale texture is
     /// dropped) and logs once per cache.
     fn mark_uncacheable(&self, cache: &TextureCache, size: Size<u32>, limit: fmt::Arguments<'_>) {
+        cache.note_uncacheable();
         let mut map = self.lock();
 
         if !matches!(map.get(&cache.id()), Some(Entry::Uncacheable { .. })) {

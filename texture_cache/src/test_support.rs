@@ -98,6 +98,12 @@ impl<'a, Message> Harness<'a, Message> {
         self.update(&events);
     }
 
+    /// Runs `operation` over the tree.
+    pub(crate) fn operate<T>(&mut self, operation: &mut dyn Operation<T>) {
+        self.ui
+            .operate(&self.renderer, &mut operation::black_box(operation));
+    }
+
     /// Clicks the centre of the first text widget reading `label`.
     ///
     /// # Panics

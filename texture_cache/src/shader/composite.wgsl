@@ -1,8 +1,7 @@
 @group(0) @binding(0) var cache_texture: texture_2d<f32>;
 @group(0) @binding(1) var cache_sampler: sampler;
 
-// Eight scalars, exactly 32 bytes, matching the Rust side.
-// Sixteen scalars, exactly 64 bytes, matching the Rust side.
+// Twenty scalars, exactly 80 bytes, matching the Rust side.
 struct Params {
     opacity: f32,
     // Reconstruction kernel: 0 = Catmull-Rom, 1 = a single bilinear tap.
@@ -26,15 +25,26 @@ struct Params {
     warp_flip_x: f32,
     warp_flip_y: f32,
     // The radius the collapsing shape's corners keep, in device pixels, and
-    // the destination rectangle's size in the same units. Real pixels, not
+    // the content rectangle's size in the same units. Real pixels, not
     // `uv`: a radius in `uv` would squeeze with the shape, which is the
     // whole thing this exists to avoid.
     warp_corner_radius: f32,
     warp_rect_width: f32,
     warp_rect_height: f32,
+    // How far from the anchor the last row is drawn, as a fraction of the
+    // content's height. Solved once on the CPU (`warp::Genie::far_edge`):
+    // it is the same for every column.
+    warp_far_edge: f32,
+    // Where the content sits inside the texture, in `uv`: its origin and
+    // its size. The texture carries bleed padding around the content and
+    // the warp is defined on the content, so the map runs in the content's
+    // own frame and steps back out to sample.
+    warp_inset_x: f32,
+    warp_inset_y: f32,
+    warp_span_x: f32,
+    warp_span_y: f32,
     pad0: f32,
     pad1: f32,
-    pad2: f32,
 }
 @group(0) @binding(2) var<uniform> params: Params;
 
@@ -113,10 +123,20 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
     if (k <= 0.0 && s <= 0.0) {
         return vec3<f32>(uv, 1.0);
     }
+    // Fully collapsed, everything has been drawn through the anchor. The
+    // map still admits the one row *at* the anchor, a line of no height
+    // that a pixel centre in the padding can land on exactly.
+    if (s >= 1.0) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
 
 
-    // Into anchor space, where the corner it collapses into is the origin.
-    var p = uv;
+    // Into the content's frame, then into anchor space, where the corner
+    // it collapses into is the origin. The frame is the content's own
+    // rectangle, not the padded texture: that is the corner the API names.
+    let inset = vec2<f32>(params.warp_inset_x, params.warp_inset_y);
+    let span = vec2<f32>(params.warp_span_x, params.warp_span_y);
+    var p = (uv - inset) / span;
     if (params.warp_flip_x > 0.5) { p.x = 1.0 - p.x; }
     if (params.warp_flip_y > 0.5) { p.y = 1.0 - p.y; }
 
@@ -137,45 +157,58 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
     }
 
     let u = p.x / w;
-    if (u < 0.0 || u > 1.0) {
-        return vec3<f32>(0.0, 0.0, 0.0);
-    }
 
     // Undo the travel to find which row this is showing. The exponent is
     // the per-row lag: 1.0 at the anchor, rising with distance from it, so
     // a far row's shift is a high power of a number below one and is
     // therefore small. That is what keeps the wide end of the shape on
     // screen. `warp::STRETCH_POWER` is the same 2.0; keep the two in step.
-    // Past the far edge there is nothing left to show.
     let v = p.y + pow(s, 1.0 + params.warp_stretch_power * k * p.y);
-    if (v < 0.0 || v > 1.0) {
+    // The padding before the anchor is where the rows go once they have
+    // travelled through it. A row drawn there that still shows content has
+    // been consumed, not displaced; only the content's own bleed, `v < 0`,
+    // may show past the anchor, and only while nothing has travelled.
+    if (p.y < 0.0 && v >= 0.0) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
 
     // Round the shape's own corners at a radius that does not squeeze with
     // it. The row spans `0..w` across and the shape reaches from the anchor
-    // edge to wherever the content runs out, which `1 - v` measures. The
-    // radius is clamped to half the row so a narrow end becomes a stadium
+    // edge to the far edge, both measured here in destination pixels: the
+    // squash makes a source row longer than the destination row showing
+    // it, so a distance taken in source rows (`1 - v`) would round the far
+    // corners to a radius that shrinks as the collapse runs. The radius is
+    // clamped to half the visible shape so a narrow end becomes a stadium
     // rather than growing corners larger than itself.
+    let far = params.warp_far_edge;
     let width_px = w * params.warp_rect_width;
     let radius = min(
         params.warp_corner_radius,
-        0.5 * min(width_px, params.warp_rect_height)
+        0.5 * min(width_px, far * params.warp_rect_height)
     );
     let alpha = corner_alpha(
         p.x * params.warp_rect_width,
         (w - p.x) * params.warp_rect_width,
         p.y * params.warp_rect_height,
-        (1.0 - v) * params.warp_rect_height,
+        (far - p.y) * params.warp_rect_height,
         radius
     );
     if (alpha <= 0.0) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
 
+    // Back out of anchor space and the content's frame. The bounds test is
+    // taken on the texture rather than on the content, so the bleed around
+    // the content — its own anti-aliased edge — is shown exactly as it is
+    // at rest; `warp::Genie::source` tests the content, as a pointer must.
+    // Past the texture there is nothing left to show.
     var src = vec2<f32>(u, v);
     if (params.warp_flip_x > 0.5) { src.x = 1.0 - src.x; }
     if (params.warp_flip_y > 0.5) { src.y = 1.0 - src.y; }
+    src = src * span + inset;
+    if (any(src < vec2<f32>(0.0)) || any(src > vec2<f32>(1.0))) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
     return vec3<f32>(src, alpha);
 }
 

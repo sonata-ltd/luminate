@@ -133,6 +133,7 @@ fn a_resting_cached_composite_is_as_sharp_as_drawing_in_place() {
         renderer.draw_cached(
             &cache,
             cache_bounds,
+            cache_bounds,
             Rectangle::with_size(Size::new(CANVAS.width as f32, CANVAS.height as f32)),
             Transformation::IDENTITY,
             1.0,
@@ -212,14 +213,16 @@ fn a_fractional_vertical_offset_costs_far_more_than_a_horizontal_one() {
     ] {
         for filter in [FilterQuality::CatmullRom, FilterQuality::Bilinear] {
             renderer.reset(canvas);
+            let bounds = Rectangle {
+                x: AT.x.round() - BLEED + dx,
+                y: AT.y.round() - BLEED + dy,
+                width: physical.width as f32 / scale,
+                height: physical.height as f32 / scale,
+            };
             renderer.draw_cached(
                 &cache,
-                Rectangle {
-                    x: AT.x.round() - BLEED + dx,
-                    y: AT.y.round() - BLEED + dy,
-                    width: physical.width as f32 / scale,
-                    height: physical.height as f32 / scale,
-                },
+                bounds,
+                bounds,
                 canvas,
                 Transformation::IDENTITY,
                 1.0,
@@ -292,14 +295,16 @@ fn the_pager_policy_recovers_the_axis_aligned_sharpness() {
             scale,
         );
         renderer.reset(canvas);
+        let bounds = Rectangle {
+            x: placed.x - BLEED,
+            y: placed.y - BLEED,
+            width: physical.width as f32 / scale,
+            height: physical.height as f32 / scale,
+        };
         renderer.draw_cached(
             &cache,
-            Rectangle {
-                x: placed.x - BLEED,
-                y: placed.y - BLEED,
-                width: physical.width as f32 / scale,
-                height: physical.height as f32 / scale,
-            },
+            bounds,
+            bounds,
             canvas,
             Transformation::IDENTITY,
             1.0,

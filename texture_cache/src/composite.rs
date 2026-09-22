@@ -44,25 +44,77 @@ struct Params {
     warp_flip_x: f32,
     warp_flip_y: f32,
     /// The radius the collapsing shape's corners keep, in device pixels, and
-    /// the destination rectangle's size in the same units. The mask needs
-    /// real pixels: a radius in `uv` would squeeze along with the shape,
-    /// which is the whole thing it exists to avoid.
+    /// the content rectangle's size in the same units. The mask needs real
+    /// pixels: a radius in `uv` would squeeze along with the shape, which is
+    /// the whole thing it exists to avoid.
     warp_corner_radius: f32,
     warp_rect_width: f32,
     warp_rect_height: f32,
-    /// Thirteen floats is fifty-two bytes, and a uniform struct is rounded
-    /// up to a multiple of sixteen.
-    _pad: [f32; 3],
+    /// How far from the anchor the last row is drawn, as a fraction of the
+    /// content's height; see [`Genie::far_edge`](crate::Genie::far_edge).
+    warp_far_edge: f32,
+    /// Where the content rectangle sits inside the texture, in `uv`: its
+    /// origin and its size. The texture carries padding around the content
+    /// and the warp is defined on the content, so the shader maps into this
+    /// frame before it warps and back out to sample.
+    warp_inset_x: f32,
+    warp_inset_y: f32,
+    warp_span_x: f32,
+    warp_span_y: f32,
+    /// Eighteen floats is seventy-two bytes, and a uniform struct is
+    /// rounded up to a multiple of sixteen.
+    _pad: [f32; 2],
 }
 
 const PARAMS_SIZE: u64 = std::mem::size_of::<Params>() as u64;
-const _: () = assert!(PARAMS_SIZE == 64, "the WGSL `Params` struct is 64 bytes");
+const _: () = assert!(PARAMS_SIZE == 80, "the WGSL `Params` struct is 80 bytes");
+
+/// The rectangle a warp is defined on, as the shader needs it: the
+/// content's size in device pixels and where it sits inside the texture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Frame {
+    /// The content's size in device pixels.
+    width: f32,
+    height: f32,
+    /// Device pixels per logical pixel, for a radius given in logical ones.
+    scale: f32,
+    /// The content's origin and size inside the texture, in `uv`.
+    inset: (f32, f32),
+    span: (f32, f32),
+}
+
+impl Frame {
+    /// The frame for `content` composited inside `bounds`, both in logical
+    /// pixels of the same space, on a renderer at `scale`.
+    pub(crate) fn new(bounds: Rectangle, content: Rectangle, scale: f32) -> Self {
+        // A degenerate texture has nothing to warp; the identity frame
+        // keeps the shader's arithmetic finite.
+        let (inset, span) = if bounds.width > 0.0 && bounds.height > 0.0 {
+            (
+                (
+                    (content.x - bounds.x) / bounds.width,
+                    (content.y - bounds.y) / bounds.height,
+                ),
+                (content.width / bounds.width, content.height / bounds.height),
+            )
+        } else {
+            ((0.0, 0.0), (1.0, 1.0))
+        };
+
+        Self {
+            width: content.width * scale,
+            height: content.height * scale,
+            scale,
+            inset,
+            span,
+        }
+    }
+}
 
 /// The warp's half of [`Params`], flattened for the uniform.
 ///
-/// A struct rather than a six-tuple so the fields are named at the one place
+/// A struct rather than a ten-tuple so the fields are named at the one place
 /// a `Warp::None` has to agree with a fully open genie.
-#[derive(Default)]
 struct WarpParams {
     stretch: f32,
     squash: f32,
@@ -73,10 +125,29 @@ struct WarpParams {
     flip_x: f32,
     flip_y: f32,
     corner_radius: f32,
+    far_edge: f32,
+}
+
+impl Default for WarpParams {
+    fn default() -> Self {
+        Self {
+            stretch: 0.0,
+            squash: 0.0,
+            target_width: 0.0,
+            stretch_power: 0.0,
+            curve_in: 0.0,
+            curve_out: 0.0,
+            flip_x: 0.0,
+            flip_y: 0.0,
+            corner_radius: 0.0,
+            // Fully open, every row is drawn: the far edge is the content's.
+            far_edge: 1.0,
+        }
+    }
 }
 
 impl Params {
-    fn new(opacity: f32, filter: FilterQuality, warp: Warp, rect: (f32, f32)) -> Self {
+    fn new(opacity: f32, filter: FilterQuality, warp: Warp, frame: Frame) -> Self {
         let warp = match warp {
             Warp::None => WarpParams::default(),
             Warp::Genie(genie) => {
@@ -92,7 +163,10 @@ impl Params {
                     curve_out: shape.curve_out,
                     flip_x: f32::from(u8::from(flip_x)),
                     flip_y: f32::from(u8::from(flip_y)),
-                    corner_radius: shape.corner_radius,
+                    // Documented in logical pixels; the mask works in
+                    // device pixels, like the rectangle it rounds.
+                    corner_radius: shape.corner_radius * frame.scale,
+                    far_edge: genie.far_edge(),
                 }
             }
         };
@@ -109,9 +183,14 @@ impl Params {
             warp_flip_x: warp.flip_x,
             warp_flip_y: warp.flip_y,
             warp_corner_radius: warp.corner_radius,
-            warp_rect_width: rect.0,
-            warp_rect_height: rect.1,
-            _pad: [0.0; 3],
+            warp_rect_width: frame.width,
+            warp_rect_height: frame.height,
+            warp_far_edge: warp.far_edge,
+            warp_inset_x: frame.inset.0,
+            warp_inset_y: frame.inset.1,
+            warp_span_x: frame.span.0,
+            warp_span_y: frame.span.1,
+            _pad: [0.0; 2],
         }
     }
 }
@@ -129,9 +208,10 @@ pub(crate) struct CompositePrimitive {
     /// The warp this composite applies. Per instance, like `opacity` and
     /// `filter`: two widgets may share a texture and warp differently.
     warp: Warp,
-    /// The destination rectangle in device pixels, which the corner mask
-    /// needs to keep its radius in real pixels rather than in `uv`.
-    rect: (f32, f32),
+    /// The content rectangle the warp is defined on: its size in device
+    /// pixels, which the corner mask needs to keep its radius in real pixels
+    /// rather than in `uv`, and where it sits inside the padded texture.
+    frame: Frame,
     /// The instance `prepare` assigned, read back by `draw`. Stored on the
     /// primitive so `draw` does not depend on being called in preparation
     /// order.
@@ -144,7 +224,7 @@ impl CompositePrimitive {
         opacity: f32,
         filter: FilterQuality,
         warp: Warp,
-        rect: (f32, f32),
+        frame: Frame,
     ) -> Self {
         debug_assert!(
             (0.0..=1.0).contains(&opacity),
@@ -156,7 +236,7 @@ impl CompositePrimitive {
             opacity,
             filter,
             warp,
-            rect,
+            frame,
             instance: AtomicU32::new(0),
         }
     }
@@ -190,9 +270,9 @@ fn assign_instance(
     opacity: f32,
     filter: FilterQuality,
     warp: Warp,
-    rect: (f32, f32),
+    frame: Frame,
 ) -> u32 {
-    shadow.push(Params::new(opacity, filter, warp, rect));
+    shadow.push(Params::new(opacity, filter, warp, frame));
     u32::try_from(shadow.len() - 1).expect("fewer than u32::MAX composites per frame")
 }
 
@@ -424,7 +504,7 @@ impl Primitive for CompositePrimitive {
             self.opacity,
             self.filter,
             self.warp,
-            self.rect,
+            self.frame,
         );
         queue.write_buffer(
             &binding.params,
@@ -458,10 +538,62 @@ impl Primitive for CompositePrimitive {
 mod tests {
     use super::*;
     use crate::warp::{Genie, GenieShape};
+    use iced_core::{Point, Size};
 
-    /// A nominal destination rectangle in device pixels. No test here
-    /// exercises the corner mask, which is tested in `warp`.
-    const RECT: (f32, f32) = (100.0, 200.0);
+    /// A nominal content rectangle at 1:1, alone in its texture. No test
+    /// here exercises the corner mask itself, which is tested in `warp`.
+    const RECT: Frame = Frame {
+        width: 100.0,
+        height: 200.0,
+        scale: 1.0,
+        inset: (0.0, 0.0),
+        span: (1.0, 1.0),
+    };
+
+    #[test]
+    fn the_corner_radius_is_uploaded_in_device_pixels() {
+        // Documented in logical pixels, like every other size in the API;
+        // the mask rounds in device pixels, like the rectangle it is given.
+        let shape = GenieShape {
+            corner_radius: 8.0,
+            ..GenieShape::default()
+        };
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(100.0, 200.0));
+        let at_2x = Params::new(
+            1.0,
+            FilterQuality::Bilinear,
+            Warp::Genie(Genie::new(0.5, shape)),
+            Frame::new(bounds, bounds, 2.0),
+        );
+        assert!((at_2x.warp_corner_radius - 16.0).abs() < f32::EPSILON);
+        assert!((at_2x.warp_rect_width - 200.0).abs() < f32::EPSILON);
+        assert!((at_2x.warp_rect_height - 400.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_frame_places_the_content_inside_its_padded_texture() {
+        // Two logical pixels of bleed on every side of a 10x20 content, on
+        // a texture one pixel wider than that on the right.
+        let bounds = Rectangle::new(Point::new(8.0, 18.0), Size::new(15.0, 24.0));
+        let content = Rectangle::new(Point::new(10.0, 20.0), Size::new(10.0, 20.0));
+        let frame = Frame::new(bounds, content, 1.0);
+        assert!((frame.inset.0 - 2.0 / 15.0).abs() < 1e-6);
+        assert!((frame.inset.1 - 2.0 / 24.0).abs() < 1e-6);
+        assert!((frame.span.0 - 10.0 / 15.0).abs() < 1e-6);
+        assert!((frame.span.1 - 20.0 / 24.0).abs() < 1e-6);
+        assert!((frame.width - 10.0).abs() < f32::EPSILON);
+        assert!((frame.height - 20.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_far_edge_is_uploaded_and_open_where_there_is_no_warp() {
+        let none = Params::new(1.0, FilterQuality::Bilinear, Warp::None, RECT);
+        assert!((none.warp_far_edge - 1.0).abs() < f32::EPSILON);
+        let genie = Genie::new(0.25, GenieShape::default());
+        let live = Params::new(1.0, FilterQuality::Bilinear, Warp::Genie(genie), RECT);
+        assert!((live.warp_far_edge - genie.far_edge()).abs() < f32::EPSILON);
+        assert!(live.warp_far_edge < 1.0);
+    }
 
     #[test]
     fn an_absent_warp_takes_the_shaders_identity_path() {

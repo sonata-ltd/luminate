@@ -15,6 +15,8 @@
 //! position along that travel path rather than within the content, so rows
 //! enter the neck one after another instead of narrowing all together.
 
+use iced_core::{Point, Rectangle, Transformation, mouse};
+
 /// Collapse at which the stretch is complete.
 const STRETCH_END: f32 = 0.4;
 
@@ -268,6 +270,42 @@ impl Genie {
         self.progress < 1.0
     }
 
+    /// How far from the anchor the last row is drawn, as a fraction of the
+    /// content's height: the shape's visible far edge in destination space.
+    /// `1.0` until the squash begins, falling to `0.0` when the whole
+    /// content has been drawn through the anchor.
+    ///
+    /// The corner mask measures a pixel's distance to this edge, and the
+    /// distance has to be taken here, in the space the pixel is drawn in.
+    /// `1 - v` is the same distance in *source* rows, and the squash makes
+    /// a source row longer than the destination row that shows it, so a
+    /// mask that used it would round the far corners to a radius that
+    /// shrinks as the collapse runs.
+    ///
+    /// The edge is the same for every column, so it is solved once here
+    /// rather than per pixel in the shader.
+    #[must_use]
+    pub fn far_edge(self) -> f32 {
+        let (_, s) = self.phases();
+        if s <= 0.0 {
+            return 1.0;
+        }
+
+        // `row` is strictly increasing, `row(0) = s <= 1` and `row(1) > 1`,
+        // so a bisection finds the one `y` whose row is the last one.
+        let mut lo = 0.0_f32;
+        let mut hi = 1.0_f32;
+        for _ in 0..40 {
+            let mid = f32::midpoint(lo, hi);
+            if self.row(mid) < 1.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        f32::midpoint(lo, hi)
+    }
+
     /// How far the stretch and the squash have each run, derived from one
     /// animated progress so a caller has one number to drive.
     pub(crate) fn phases(self) -> (f32, f32) {
@@ -347,7 +385,14 @@ impl Genie {
     pub fn source(self, x: f32, y: f32) -> Option<(f32, f32)> {
         let (flip_x, flip_y) = self.flips();
         let (x, y) = (flip(x, flip_x), flip(y, flip_y));
-        let (k, _) = self.phases();
+        let (k, s) = self.phases();
+
+        // Fully collapsed, everything has been drawn through the anchor;
+        // the one row the arithmetic still admits, at `y = 0`, is a line of
+        // no height. The shader makes the same cut.
+        if s >= 1.0 {
+            return None;
+        }
 
         // The width comes straight from the destination row, which is what
         // keeps the inverse closed-form.
@@ -391,6 +436,28 @@ impl Warp {
         }
     }
 
+    /// The affine approximation as a transform of `content`, the rectangle
+    /// the warp is defined on: a scale about its anchor corner by the
+    /// progress, composed *after* whatever transform the content is drawn
+    /// under. `None` once the content has closed to nothing, which a scale
+    /// of zero cannot express (its inverse is not finite) and which draws
+    /// nothing anyway.
+    #[must_use]
+    pub(crate) fn affine_transform(self, content: Rectangle) -> Option<Transformation> {
+        let Some((progress, anchor)) = self.affine_fallback() else {
+            return Some(Transformation::IDENTITY);
+        };
+        if progress <= CLOSED {
+            return None;
+        }
+        let (fixed_x, fixed_y) = anchor.fixed_point(content);
+        Some(
+            Transformation::translate(fixed_x, fixed_y)
+                * Transformation::scale(progress)
+                * Transformation::translate(-fixed_x, -fixed_y),
+        )
+    }
+
     /// The affine approximation a backend without shaders composites
     /// instead: a scale about the anchor corner, by the same progress. It
     /// loses the neck and keeps the timing, which is the right trade on a
@@ -400,6 +467,80 @@ impl Warp {
         match self {
             Self::None => None,
             Self::Genie(genie) => Some((genie.progress(), genie.anchor())),
+        }
+    }
+}
+
+impl Warp {
+    /// Which point of the content a pointer at `point` is over, or `None`
+    /// where the warped image does not reach: the inverse of what the
+    /// backend draws, so a widget's hit-testing agrees with its pixels.
+    ///
+    /// `bounds` is the content's rectangle, the one the warp is defined on.
+    /// `exact` says the shader is drawing the genie itself, so the inverse
+    /// is [`Genie::source`]; otherwise what is drawn is the affine
+    /// approximation of [`affine_fallback`](Self::affine_fallback) — on the
+    /// software backend, or for content too large for a texture — and its
+    /// inverse is a scale about the same anchor.
+    pub(crate) fn source_point(
+        self,
+        exact: bool,
+        bounds: Rectangle,
+        point: Point,
+    ) -> Option<Point> {
+        let Self::Genie(genie) = self else {
+            return Some(point);
+        };
+        if !genie.is_live() {
+            return Some(point);
+        }
+        // Fully collapsed there is nothing on screen. The inverse map still
+        // admits the one row drawn *at* the anchor, a line of no height
+        // that no pixel centre ever lands on; a pointer must not either.
+        if genie.progress() <= CLOSED || bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return None;
+        }
+
+        if exact {
+            let x = (point.x - bounds.x) / bounds.width;
+            let y = (point.y - bounds.y) / bounds.height;
+            if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                return None;
+            }
+            let (u, v) = genie.source(x, y)?;
+            Some(Point::new(
+                bounds.x + u * bounds.width,
+                bounds.y + v * bounds.height,
+            ))
+        } else {
+            let (progress, anchor) = self.affine_fallback()?;
+            let (fixed_x, fixed_y) = anchor.fixed_point(bounds);
+            let source = Point::new(
+                fixed_x + (point.x - fixed_x) / progress,
+                fixed_y + (point.y - fixed_y) / progress,
+            );
+            bounds.contains(source).then_some(source)
+        }
+    }
+
+    /// [`source_point`](Self::source_point) applied to a cursor: a cursor
+    /// over nothing becomes [`mouse::Cursor::Unavailable`], so collapsed
+    /// content is neither clickable nor hovered where it no longer is.
+    pub(crate) fn map_cursor(
+        self,
+        exact: bool,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Cursor {
+        let map = |point| self.source_point(exact, bounds, point);
+        match cursor {
+            mouse::Cursor::Available(point) => {
+                map(point).map_or(mouse::Cursor::Unavailable, mouse::Cursor::Available)
+            }
+            mouse::Cursor::Levitating(point) => {
+                map(point).map_or(mouse::Cursor::Unavailable, mouse::Cursor::Levitating)
+            }
+            mouse::Cursor::Unavailable => mouse::Cursor::Unavailable,
         }
     }
 }
@@ -474,6 +615,7 @@ fn flip(value: f32, flip: bool) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced_core::Size;
 
     /// Every progress a test sweeps, including both ends.
     const PROGRESSES: [f32; 7] = [0.0, 0.05, 0.25, 0.5, 0.75, 0.95, 1.0];
@@ -565,6 +707,167 @@ mod tests {
             "middle {middle} vs anchor {at_anchor}"
         );
         assert!(middle > far * 4.0, "middle {middle} vs far {far}");
+    }
+
+    #[test]
+    fn the_far_edge_is_where_the_last_row_is_drawn() {
+        for t in PROGRESSES {
+            let genie = Genie::new(t, shape(Corner::TopLeft, 0.12));
+            let far = genie.far_edge();
+            assert!((0.0..=1.0).contains(&far), "t {t}: far edge {far}");
+            let (_, s) = genie.phases();
+            if s <= 0.0 {
+                assert!((far - 1.0).abs() < f32::EPSILON, "t {t}: no squash yet");
+            } else {
+                // The last source row, `v = 1`, is the one drawn there.
+                let v = genie.row(far);
+                assert!((v - 1.0).abs() < 1e-5, "t {t}: row({far}) = {v}");
+            }
+            // Nothing is drawn past it.
+            assert!(
+                genie.source(0.0, (far + 1e-3).min(1.0)).is_none() || far >= 1.0 - 1e-3,
+                "t {t}: something is drawn beyond the far edge {far}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_far_edge_is_measured_in_destination_rows() {
+        // The reviewer's case: a quarter of the way in, a point eight
+        // pixels short of the visible far edge is eight pixels short of it,
+        // not the five that `1 - v` (in source rows) would say.
+        let genie = Genie::new(0.25, GenieShape::default());
+        let height = 200.0;
+        let far = genie.far_edge();
+        let y = far - 8.0 / height;
+        let (_, v) = genie.source(0.0, y).expect("still drawn");
+        let in_source = (1.0 - v) * height;
+        let in_destination = (far - y) * height;
+        assert!((in_destination - 8.0).abs() < 1e-3, "{in_destination}");
+        assert!(in_source < 6.0, "source rows are longer: {in_source}");
+    }
+
+    #[test]
+    fn a_pointer_follows_the_shader_on_wgpu() {
+        let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(100.0, 50.0));
+        let open = Warp::Genie(Genie::new(1.0, GenieShape::default()));
+        let point = Point::new(60.0, 45.0);
+        assert_eq!(open.source_point(true, bounds, point), Some(point));
+
+        // Half way in, the rows past the visible far edge have been drawn
+        // through a top-left anchor: nothing is there to click.
+        let genie = Genie::new(0.5, GenieShape::default());
+        let half = Warp::Genie(genie);
+        let far = genie.far_edge();
+        assert!(far < 1.0, "the squash has begun by half way");
+        assert_eq!(
+            half.source_point(true, bounds, Point::new(20.0, 20.0 + (far + 0.01) * 50.0)),
+            None
+        );
+        assert!(
+            half.source_point(true, bounds, Point::new(20.0, 20.0 + (far - 0.01) * 50.0))
+                .is_some()
+        );
+        // What is drawn maps back onto the content, exactly as the shader
+        // samples it.
+        let (u, v) = genie.source(0.1, 0.1).expect("drawn");
+        assert_eq!(
+            half.source_point(true, bounds, Point::new(20.0, 25.0)),
+            Some(Point::new(10.0 + u * 100.0, 20.0 + v * 50.0))
+        );
+        // Outside the content there is nothing, whatever the map would say.
+        assert_eq!(half.source_point(true, bounds, Point::new(5.0, 25.0)), None);
+    }
+
+    #[test]
+    fn a_pointer_follows_the_affine_fallback_on_tiny_skia() {
+        let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(100.0, 50.0));
+        let half = Warp::Genie(Genie::new(0.5, GenieShape::default()));
+        // The software backend scales about the anchor, so the content's
+        // centre is drawn a quarter of the way in from the top-left.
+        assert_eq!(
+            half.source_point(false, bounds, Point::new(35.0, 32.5)),
+            Some(Point::new(60.0, 45.0))
+        );
+        // Where the content used to be, and is no longer drawn.
+        assert_eq!(
+            half.source_point(false, bounds, Point::new(90.0, 60.0)),
+            None
+        );
+        // The anchor is the content's corner, not a padded one.
+        let bottom_right = Warp::Genie(Genie::new(
+            0.5,
+            GenieShape {
+                anchor: Corner::BottomRight,
+                ..GenieShape::default()
+            },
+        ));
+        assert_eq!(
+            bottom_right.source_point(false, bounds, Point::new(109.0, 69.0)),
+            Some(Point::new(108.0, 68.0))
+        );
+    }
+
+    #[test]
+    fn a_collapsed_genie_draws_nothing_not_even_the_anchor_row() {
+        // At progress 0 the arithmetic still admits `y = 0`, whose source
+        // is the last row: a line of no height that a pixel centre in the
+        // texture's padding can land on exactly.
+        let gone = Genie::new(0.0, GenieShape::default());
+        assert_eq!(gone.source(0.0, 0.0), None);
+        assert_eq!(gone.source(0.05, 0.0), None);
+    }
+
+    #[test]
+    fn the_affine_transform_scales_about_the_contents_anchor() {
+        let content = Rectangle::new(Point::new(10.0, 20.0), Size::new(100.0, 50.0));
+        let open = Warp::Genie(Genie::new(1.0, GenieShape::default()));
+        assert_eq!(
+            open.affine_transform(content),
+            Some(Transformation::IDENTITY)
+        );
+        assert_eq!(
+            Warp::None.affine_transform(content),
+            Some(Transformation::IDENTITY)
+        );
+
+        let half = Warp::Genie(Genie::new(
+            0.5,
+            GenieShape {
+                anchor: Corner::BottomRight,
+                ..GenieShape::default()
+            },
+        ));
+        let transform = half.affine_transform(content).expect("still drawn");
+        // The anchor corner holds still; the opposite corner travels half
+        // way towards it.
+        let corner = Point::new(110.0, 70.0);
+        let far = Point::new(10.0, 20.0);
+        assert_eq!(corner * transform, corner);
+        assert_eq!(far * transform, Point::new(60.0, 45.0));
+
+        let gone = Warp::Genie(Genie::new(0.0, GenieShape::default()));
+        assert_eq!(gone.affine_transform(content), None);
+    }
+
+    #[test]
+    fn a_collapsed_genie_takes_no_pointer_at_all() {
+        let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(100.0, 50.0));
+        let gone = Warp::Genie(Genie::new(0.0, GenieShape::default()));
+        for exact in [true, false] {
+            for (x, y) in grid() {
+                let point = Point::new(x * 100.0, y * 50.0);
+                assert_eq!(
+                    gone.map_cursor(exact, bounds, mouse::Cursor::Available(point)),
+                    mouse::Cursor::Unavailable,
+                    "exact {exact}: {point:?}"
+                );
+            }
+        }
+        assert_eq!(
+            Warp::None.map_cursor(true, bounds, mouse::Cursor::Available(Point::ORIGIN)),
+            mouse::Cursor::Available(Point::ORIGIN)
+        );
     }
 
     #[test]

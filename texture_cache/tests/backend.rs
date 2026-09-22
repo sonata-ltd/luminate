@@ -60,9 +60,11 @@ fn composite_with(
     offset: f32,
 ) -> Vec<u8> {
     renderer.reset(canvas());
+    let bounds = Rectangle::new(Point::new(2.0 + offset, 2.0 + offset), Size::new(4.0, 4.0));
     renderer.draw_cached(
         cache,
-        Rectangle::new(Point::new(2.0 + offset, 2.0 + offset), Size::new(4.0, 4.0)),
+        bounds,
+        bounds,
         canvas(),
         Transformation::IDENTITY,
         opacity,
@@ -215,6 +217,7 @@ mod tiny_skia {
                 &inner,
                 quad,
                 quad,
+                quad,
                 Transformation::IDENTITY,
                 1.0,
                 FilterQuality::Bilinear,
@@ -335,6 +338,7 @@ mod wgpu {
                 &inner,
                 quad,
                 quad,
+                quad,
                 Transformation::IDENTITY,
                 1.0,
                 FilterQuality::Bilinear,
@@ -356,9 +360,11 @@ mod wgpu {
         renderer.reset(canvas());
 
         assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
+        let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(4.0, 4.0));
         renderer.draw_cached(
             &cache,
-            Rectangle::new(Point::new(0.0, 0.0), Size::new(4.0, 4.0)),
+            bounds,
+            bounds,
             canvas(),
             Transformation::IDENTITY,
             1.0,
@@ -377,9 +383,11 @@ mod wgpu {
             );
         });
         assert_eq!(record, Record::Fresh);
+        let bounds = Rectangle::new(Point::new(6.0, 6.0), Size::new(2.0, 2.0));
         renderer.draw_cached(
             &cache,
-            Rectangle::new(Point::new(6.0, 6.0), Size::new(2.0, 2.0)),
+            bounds,
+            bounds,
             canvas(),
             Transformation::IDENTITY,
             1.0,
@@ -394,6 +402,61 @@ mod wgpu {
             blue[2] >= 250 && blue[0] <= 3 && blue[1] <= 3,
             "blue: {blue:?}"
         );
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn a_genie_draws_nothing_past_its_anchor() {
+        use iced_texture_cache::{Genie, GenieShape};
+
+        // The 4 x 4 texture stands for a 2 x 2 content with a pixel of
+        // bleed on every side, composited at (2, 2): the content's top-left
+        // corner, the anchor, is at (3, 3) and the padding above it is row
+        // 2. Rows that have travelled through the anchor must not be drawn
+        // there, and fully collapsed nothing must be drawn at all.
+        let mut renderer = headless_wgpu();
+        let cache = TextureCache::new();
+        assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
+        let bounds = Rectangle::new(Point::new(2.0, 2.0), Size::new(4.0, 4.0));
+        let content = Rectangle::new(Point::new(3.0, 3.0), Size::new(2.0, 2.0));
+        let mut composite = |progress: f32, corner_radius: f32| {
+            renderer.reset(canvas());
+            renderer.draw_cached(
+                &cache,
+                bounds,
+                content,
+                canvas(),
+                Transformation::IDENTITY,
+                1.0,
+                FilterQuality::Bilinear,
+                Warp::Genie(Genie::new(
+                    progress,
+                    GenieShape {
+                        corner_radius,
+                        ..GenieShape::default()
+                    },
+                )),
+            );
+            renderer.screenshot(CANVAS, 1.0, Color::WHITE)
+        };
+
+        for corner_radius in [0.0, 8.0] {
+            let gone = composite(0.0, corner_radius);
+            for y in 0..CANVAS.height {
+                for x in 0..CANVAS.width {
+                    assert_eq!(
+                        pixel(&gone, x, y),
+                        WHITE,
+                        "radius {corner_radius}: collapsed content at ({x}, {y})"
+                    );
+                }
+            }
+        }
+
+        let half = composite(0.5, 0.0);
+        assert_red(pixel(&half, 3, 3));
+        assert_eq!(pixel(&half, 3, 2), WHITE, "a consumed row past the anchor");
+        assert_eq!(pixel(&half, 2, 3), WHITE, "the padding beside the anchor");
     }
 
     #[test]

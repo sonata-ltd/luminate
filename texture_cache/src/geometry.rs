@@ -111,6 +111,10 @@ pub(crate) struct CompositeGeometry {
     /// before the user transform. Its origin is also the point the record
     /// translates by, so texture and viewport always agree.
     pub cache_bounds: Rectangle,
+    /// Where the content itself lands inside that: `bleed` in from the
+    /// texture's origin, at the layout's own size. A warp is defined on
+    /// this rectangle, not on the padded one.
+    pub content_bounds: Rectangle,
 }
 
 /// Sizes the texture for `bounds` padded by `bleed` logical pixels on every
@@ -164,10 +168,18 @@ pub(crate) fn composite_geometry(
         height: physical.height as f32 / texture_scale,
     };
 
+    let content_bounds = Rectangle {
+        x: origin_x,
+        y: origin_y,
+        width: bounds.width,
+        height: bounds.height,
+    };
+
     CompositeGeometry {
         physical,
         texture_scale,
         cache_bounds,
+        content_bounds,
     }
 }
 
@@ -805,6 +817,19 @@ mod tests {
         assert_eq!(record_supersample(1.0, true, true), 1.0);
         assert_eq!(record_supersample(1.0, true, false), 1.5);
         assert_eq!(record_supersample(2.0, true, false), 2.0);
+    }
+
+    #[test]
+    fn the_content_sits_bleed_inside_the_padded_texture() {
+        let geometry = composite_geometry(2, rect(10.0, 20.0, 30.5, 40.0), 1.0, 1.0, None);
+        assert_eq!(geometry.content_bounds, rect(10.0, 20.0, 30.5, 40.0));
+        assert_eq!(
+            (geometry.cache_bounds.x, geometry.cache_bounds.y),
+            (8.0, 18.0)
+        );
+        // The texture rounds up to whole pixels; the content does not grow
+        // with it.
+        assert!(geometry.cache_bounds.width >= 34.5);
     }
 
     #[test]
