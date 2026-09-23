@@ -78,6 +78,12 @@ The first release. What each crate provides:
   sub-pixel and then land on the grid in a single frame at the end of the
   transition. `Auto` keeps the smoother motion and pays for it with that
   frame.
+- `Cached::live_at_rest`: draws the content live, in place, whenever nothing
+  needs a texture, and records only while the layer moves. It lets an
+  animation wrapper stay in the tree permanently, so the content keeps its
+  scroll offsets and focus, for no record at rest. Leaving live drawing
+  invalidates the texture, so content that changed at rest is never shown
+  stale when the next movement starts.
 - `FilterQuality::{CatmullRom, Bilinear, Snap}`: the reconstruction kernel used
   when a texture is composited between device pixels. Chosen from the graphics
   adapter by default (`CatmullRom` discrete, `Bilinear` integrated, `Snap`
