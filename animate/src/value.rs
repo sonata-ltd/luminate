@@ -506,6 +506,21 @@ mod tests {
     }
 
     #[test]
+    fn an_entrance_targets_where_it_is_going_not_where_it_starts() {
+        let m = Motion::new();
+        let key = key!();
+
+        let value = m.enter(key, FAST, 400.0_f32, 0.0_f32);
+
+        assert_eq!(value.get(), 400.0, "an entrance starts at `from`");
+        assert_eq!(
+            value.target(),
+            0.0,
+            "and is known to be headed for `to` from the start"
+        );
+    }
+
+    #[test]
     fn a_settled_track_targets_where_it_rests() {
         let m = Motion::new();
         let mut clock = FrameClock::new(&m);

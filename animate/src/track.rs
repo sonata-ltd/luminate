@@ -530,6 +530,12 @@ impl Track {
         state.delay_left = curve.delay.as_secs_f32();
         state.solver = Solver::new(curve, &start);
 
+        // Mirrored for `Anim::target`, as `retarget` does; without it an
+        // entrance reports its starting pose as its target.
+        for (slot, component) in self.target.iter().zip(goal.iter()) {
+            slot.store(component.to_bits(), Ordering::Relaxed);
+        }
+
         let goals = state.target;
 
         if let Solver::Spring { springs, .. } = &mut state.solver {
