@@ -615,7 +615,7 @@ where
     /// reached `update` still has the flag from its live spell, and a texture
     /// that predates it.
     fn leave_live(&self, state: &State) {
-        if self.live_at_rest && state.live {
+        if state.live {
             self.cache.invalidate();
         }
     }
@@ -804,13 +804,13 @@ where
             }
             // Leaving live drawing: whatever the texture holds predates what
             // was drawn live, so the first moving frame must record afresh.
-            if self.live_at_rest {
-                let live = self.draws_live();
-                if state.live && !live {
-                    self.cache.invalidate();
-                }
-                state.live = live;
+            // Tracked whatever the option says now: switching it off leaves
+            // live drawing as well.
+            let live = self.draws_live();
+            if state.live && !live {
+                self.cache.invalidate();
             }
+            state.live = live;
         }
 
         let mut local_messages = Vec::new();
@@ -1341,6 +1341,30 @@ mod tests {
         assert!(second.is_animating(), "the second slide is under way");
         let shot = harness.screenshot(1.0);
         assert_eq!(&shot.pixel(20, 10)[..3], &[0, 0, 255], "the new content");
+    }
+
+    #[test]
+    fn turning_live_at_rest_off_records_what_it_shows_now() {
+        // One retained tree: recorded red, then drawn live while the content
+        // turned blue, then live drawing switched off. Switching the option
+        // off leaves live drawing too, so the red texture must not return.
+        let cache = TextureCache::new();
+        let build = |color: Color, live: bool| -> crate::Element<'_, ()> {
+            cached(cache.clone(), square::<()>(color))
+                .live_at_rest(live)
+                .into()
+        };
+        let mut harness = Harness::new(Size::new(100.0, 40.0), build(RED, false));
+        let mut clock = Instant::now();
+        run(&mut harness, &mut clock, 2);
+        assert_eq!(cache.record_count(), 1, "the red content is recorded");
+
+        let mut harness = harness.rebuild(build(BLUE, true));
+        run(&mut harness, &mut clock, 2);
+        let mut harness = harness.rebuild(build(BLUE, false));
+        run(&mut harness, &mut clock, 2);
+        let shot = harness.screenshot(1.0);
+        assert_eq!(&shot.pixel(10, 10)[..3], &[0, 0, 255], "the new content");
     }
 
     #[test]
