@@ -110,7 +110,10 @@ impl Default for SpringParams {
 pub struct Spring {
     omega: f32,
     zeta: f32,
-    position: f32,
+    // Displacement from `target`, which is what the oscillator integrates:
+    // an absolute position far from zero rounds every frame's step to its
+    // ulp, and a slow approach stops advancing short of the target.
+    offset: f32,
     velocity: f32,
     target: f32,
 }
@@ -124,7 +127,7 @@ impl Spring {
         Self {
             omega,
             zeta,
-            position: initial,
+            offset: 0.0,
             velocity: 0.0,
             target: initial,
         }
@@ -140,8 +143,8 @@ impl Spring {
 
     /// Current position.
     #[must_use]
-    pub const fn position(&self) -> f32 {
-        self.position
+    pub fn position(&self) -> f32 {
+        self.target + self.offset
     }
 
     /// Where the spring is headed.
@@ -158,7 +161,8 @@ impl Spring {
 
     /// Retargets the spring, preserving its velocity so a change of direction
     /// mid-flight reads as momentum rather than a restart.
-    pub const fn set_target(&mut self, target: f32) {
+    pub fn set_target(&mut self, target: f32) {
+        self.offset = self.position() - target;
         self.target = target;
     }
 
@@ -187,7 +191,7 @@ impl Spring {
             return;
         }
 
-        let x0 = self.position - self.target;
+        let x0 = self.offset;
         let v0 = self.velocity;
 
         // Just below critical damping `ω_d → 0` and `b = (v0 + ζωx0) / ω_d`
@@ -212,7 +216,7 @@ impl Spring {
             (x, v)
         };
 
-        self.position = self.target + x;
+        self.offset = x;
         self.velocity = v;
     }
 
@@ -230,7 +234,7 @@ impl Spring {
     #[allow(clippy::many_single_char_names)] // the oscillator's own symbols
     fn peak_excursion(&self) -> f32 {
         let (w, z) = (self.omega, self.zeta);
-        let x0 = self.position - self.target;
+        let x0 = self.offset;
         let v0 = self.velocity;
 
         if w <= 0.0 || !x0.is_finite() || !v0.is_finite() {
@@ -297,7 +301,7 @@ impl Spring {
     /// ahead, stop when nothing does.
     #[must_use]
     pub fn is_settled(&self) -> bool {
-        let scale = self.target.abs().max(self.position.abs()).max(1.0);
+        let scale = self.target.abs().max(self.position().abs()).max(1.0);
 
         self.is_settled_within(5e-4 * scale)
     }
@@ -316,7 +320,7 @@ impl Spring {
 
     /// Places the spring exactly at its target and stops it.
     pub const fn snap(&mut self) {
-        self.position = self.target;
+        self.offset = 0.0;
         self.velocity = 0.0;
     }
 }
@@ -352,6 +356,22 @@ mod tests {
         s.set_target(20_004.0);
         assert!(s.is_settled(), "relative tolerance is 10 units here");
         assert!(!s.is_settled_within(0.5));
+    }
+
+    #[test]
+    fn a_spring_far_from_zero_still_settles_at_a_high_frame_rate() {
+        let mut s = Spring::new(SpringParams::new(0.0, Duration::from_secs(1)), 1_000_000.0);
+        s.set_target(1_001_000.0);
+        let settled = (0..1_000).any(|_| {
+            s.tick(1.0 / 240.0);
+            s.is_settled_within(0.5)
+        });
+        assert!(
+            settled,
+            "stuck at {} moving at {}",
+            s.position(),
+            s.velocity()
+        );
     }
 
     #[test]

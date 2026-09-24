@@ -12,7 +12,10 @@
 /// `x₀ + v₀/k`, which is known from the start.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Decay {
-    position: f32,
+    // Kept apart so the travel keeps its own precision: summed into a large
+    // position every frame, the late sub-ulp steps would round away.
+    origin: f32,
+    travelled: f32,
     velocity: f32,
     rate: f32,
 }
@@ -39,7 +42,8 @@ impl Decay {
         let velocity = if velocity.is_finite() { velocity } else { 0.0 };
 
         Self {
-            position,
+            origin: position,
+            travelled: 0.0,
             velocity,
             rate,
         }
@@ -47,8 +51,8 @@ impl Decay {
 
     /// Current position.
     #[must_use]
-    pub const fn position(&self) -> f32 {
-        self.position
+    pub fn position(&self) -> f32 {
+        self.origin + self.travelled
     }
 
     /// Current velocity, in units per second.
@@ -60,7 +64,7 @@ impl Decay {
     /// Where the value comes to rest.
     #[must_use]
     pub fn rest(&self) -> f32 {
-        self.position + self.velocity / self.rate
+        self.origin + (self.travelled + self.velocity / self.rate)
     }
 
     /// Advances by `dt` seconds. Non-positive or non-finite `dt` is ignored.
@@ -69,12 +73,20 @@ impl Decay {
             return;
         }
 
-        let rest = self.rest();
-        let e = (-self.rate * dt).exp();
+        // The travel this step is `v₀ · dt · (1 - e^{-kdt}) / kdt`. Taken as
+        // the difference of two positions near a distant rest point it
+        // cancels to nothing, and at a tiny `k` the rest point itself
+        // overflows; `exp_m1` keeps the fraction exact down to `kdt → 0`,
+        // where the glide is a constant velocity.
+        let kdt = self.rate * dt;
+        let fraction = if kdt < 1e-6 {
+            1.0
+        } else {
+            -(-kdt).exp_m1() / kdt
+        };
 
-        // Measured from the rest point, the travel left shrinks by `e` too.
-        self.position = rest - (rest - self.position) * e;
-        self.velocity *= e;
+        self.travelled += self.velocity * dt * fraction;
+        self.velocity *= (-kdt).exp();
     }
 
     /// Returns `true` once less than `tolerance` of travel is left.
@@ -85,7 +97,7 @@ impl Decay {
 
     /// Places the value at its rest point and stops it.
     pub fn snap(&mut self) {
-        self.position = self.rest();
+        self.travelled += self.velocity / self.rate;
         self.velocity = 0.0;
     }
 }
@@ -130,6 +142,31 @@ mod tests {
         d.tick(-1.0);
         assert_eq!(d.position(), 5.0);
         assert!(d.is_settled_within(0.5));
+    }
+
+    #[test]
+    fn a_slow_rate_far_from_its_rest_point_still_moves_forward() {
+        let mut d = Decay::new(10.0, 1000.0, 1e-6);
+        d.tick(1.0 / 60.0);
+        assert!((d.position() - 26.666_666).abs() < 1e-3, "{}", d.position());
+    }
+
+    #[test]
+    fn a_vanishing_rate_is_a_constant_velocity() {
+        let mut d = Decay::new(0.0, 1000.0, 1e-38);
+        d.tick(0.5);
+        assert_eq!(d.position(), 500.0);
+        assert_eq!(d.velocity(), 1000.0);
+    }
+
+    #[test]
+    fn a_long_glide_far_from_zero_does_not_drift() {
+        let mut d = Decay::new(1_000_000.0, 4000.0, Decay::NORMAL_RATE);
+        let rest = d.rest();
+        for _ in 0..2400 {
+            d.tick(1.0 / 240.0);
+        }
+        assert!((d.position() - rest).abs() <= 0.125, "{} vs {rest}", d.position());
     }
 
     #[test]
