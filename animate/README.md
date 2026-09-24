@@ -126,6 +126,16 @@ pointer-driven interface reads the same motion as unhurried at these lengths.
 1.6× brisker again, for interfaces that want to feel immediate. Switch a whole
 interface, not half of one.
 
+### Widget-owned values
+
+`Motion` is for values that outlive the widget tree. A value that lives in a
+widget's own state — a scroll offset — can hold a `Spring` or a `Decay`
+directly and `tick(dt)` it on every frame, with no host involved. `Decay` is
+exponential friction for a fling: it keeps the velocity it was given, loses
+`Decay::NORMAL_RATE` of it per second, and comes to rest at `rest()`. Both
+take an absolute tolerance (`is_settled_within`), since a tolerance relative
+to the value is too loose on a long axis.
+
 ### Widgets
 
 `widget::Shape` (`shape()`): a rectangle whose fill, radius and border are

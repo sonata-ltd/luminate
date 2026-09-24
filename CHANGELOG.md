@@ -22,6 +22,10 @@ The first release. What each crate provides:
 - `Motion`: a tree-external animation engine with keyed tracks (`MotionKey`,
   `key!`), `to`, `to_set`, `play`, `enter`, `retire`, `presence`, `get`,
   `end_build`, `collect`, `track_count`.
+- `Spring` and `Decay`: widget-owned animated values, ticked by the widget
+  itself. `Spring::with_velocity`, `Spring::is_settled_within` and
+  `Decay::{rest, is_settled_within, NORMAL_RATE}` suit a scroll offset:
+  a glide that keeps its momentum, and a fling that coasts to a stop.
 - `Anim::target()`: where a track is headed, read without a lock like
   `Anim::get()`, for a widget that needs the end of an animation before the
   animation gets there — laying text out at its final font weight, say.

@@ -101,9 +101,13 @@ impl Default for SpringParams {
     }
 }
 
-/// A one-dimensional spring.
+/// A one-dimensional spring, for a widget that owns its animated value.
+///
+/// [`Motion`](crate::Motion) runs these behind its keyed tracks. A widget
+/// whose value lives in its own tree state — a scroll offset, say — can hold
+/// one directly and [`tick`](Self::tick) it on every frame instead.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Spring {
+pub struct Spring {
     omega: f32,
     zeta: f32,
     position: f32,
@@ -113,7 +117,8 @@ pub(crate) struct Spring {
 
 impl Spring {
     /// Creates a spring resting at `initial`.
-    pub(crate) fn new(params: SpringParams, initial: f32) -> Self {
+    #[must_use]
+    pub fn new(params: SpringParams, initial: f32) -> Self {
         let (omega, zeta) = params.coefficients();
 
         Self {
@@ -125,20 +130,35 @@ impl Spring {
         }
     }
 
+    /// Starts the spring moving at `velocity` units per second, for motion
+    /// that takes over from another one without a jolt.
+    #[must_use]
+    pub const fn with_velocity(mut self, velocity: f32) -> Self {
+        self.velocity = velocity;
+        self
+    }
+
     /// Current position.
-    pub(crate) fn position(&self) -> f32 {
+    #[must_use]
+    pub const fn position(&self) -> f32 {
         self.position
     }
 
+    /// Where the spring is headed.
+    #[must_use]
+    pub const fn target(&self) -> f32 {
+        self.target
+    }
+
     /// Current velocity, in units per second.
-    #[cfg(test)]
-    pub(crate) fn velocity(&self) -> f32 {
+    #[must_use]
+    pub const fn velocity(&self) -> f32 {
         self.velocity
     }
 
     /// Retargets the spring, preserving its velocity so a change of direction
     /// mid-flight reads as momentum rather than a restart.
-    pub(crate) fn set_target(&mut self, target: f32) {
+    pub const fn set_target(&mut self, target: f32) {
         self.target = target;
     }
 
@@ -153,7 +173,7 @@ impl Spring {
     /// `x″ + 2ζω x′ + ω² x = 0` about the target. Non-positive or non-finite
     /// `dt` is ignored.
     #[allow(clippy::many_single_char_names)] // the oscillator's own symbols
-    pub(crate) fn tick(&mut self, dt: f32) {
+    pub fn tick(&mut self, dt: f32) {
         if !dt.is_finite() || dt <= 0.0 {
             return;
         }
@@ -264,7 +284,7 @@ impl Spring {
     /// allows is erased by [`snap`](Self::snap).
     ///
     /// The question asked is about the *excursion still ahead*
-    /// ([`peak_excursion`](Self::peak_excursion)), not the speed right now.
+    /// (`peak_excursion`), not the speed right now.
     /// Those differ exactly where it matters. A fast spring crossing its
     /// target is close in position but has a large excursion ahead, so it
     /// keeps running — the case a bare position test would snap mid-flight.
@@ -275,14 +295,27 @@ impl Spring {
     /// size in a frame the eye has just been told the motion is over. Asking
     /// about the excursion covers both: run while something visible remains
     /// ahead, stop when nothing does.
-    pub(crate) fn is_settled(&self) -> bool {
+    #[must_use]
+    pub fn is_settled(&self) -> bool {
         let scale = self.target.abs().max(self.position.abs()).max(1.0);
 
-        self.peak_excursion() < 5e-4 * scale
+        self.is_settled_within(5e-4 * scale)
+    }
+
+    /// Returns `true` once the spring will never again be `tolerance` or more
+    /// from its target.
+    ///
+    /// [`is_settled`](Self::is_settled) scales its tolerance with the value,
+    /// which suits sizes and colours but not a position on a long axis: a
+    /// scroll offset of 20 000 px would settle 10 px early. Such a value
+    /// states its own tolerance in its own units here.
+    #[must_use]
+    pub fn is_settled_within(&self, tolerance: f32) -> bool {
+        self.peak_excursion() < tolerance
     }
 
     /// Places the spring exactly at its target and stops it.
-    pub(crate) fn snap(&mut self) {
+    pub const fn snap(&mut self) {
         self.position = self.target;
         self.velocity = 0.0;
     }
@@ -302,6 +335,23 @@ mod tests {
             }
         }
         (s, max_frames)
+    }
+
+    #[test]
+    fn a_spring_given_a_velocity_keeps_it_through_a_retarget() {
+        let mut s = Spring::new(SpringParams::default(), 0.0).with_velocity(500.0);
+        s.set_target(0.0);
+        s.tick(1.0 / 60.0);
+        assert!(s.position() > 0.0, "carried on the way it was going");
+        assert!(!s.is_settled_within(0.5));
+    }
+
+    #[test]
+    fn an_absolute_tolerance_does_not_grow_with_the_value() {
+        let mut s = Spring::new(SpringParams::default(), 20_000.0);
+        s.set_target(20_004.0);
+        assert!(s.is_settled(), "relative tolerance is 10 units here");
+        assert!(!s.is_settled_within(0.5));
     }
 
     #[test]
