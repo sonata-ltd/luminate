@@ -73,19 +73,16 @@ impl Decay {
             return;
         }
 
-        // The travel this step is `v₀ · dt · (1 - e^{-kdt}) / kdt`. Taken as
-        // the difference of two positions near a distant rest point it
-        // cancels to nothing, and at a tiny `k` the rest point itself
-        // overflows; `exp_m1` keeps the fraction exact down to `kdt → 0`,
-        // where the glide is a constant velocity.
+        // The travel this step is `v₀/k · (1 - e^{-kdt})`. Taken as the
+        // difference of two positions near a distant rest point it cancels
+        // to nothing; `exp_m1` keeps it exact instead. Below `kdt ≈ 1e-6` the
+        // glide is a constant velocity, and `v₀/k` alone could overflow.
         let kdt = self.rate * dt;
-        let fraction = if kdt < 1e-6 {
-            1.0
+        self.travelled += if kdt < 1e-6 {
+            self.velocity * dt
         } else {
-            -(-kdt).exp_m1() / kdt
+            self.velocity / self.rate * -(-kdt).exp_m1()
         };
-
-        self.travelled += self.velocity * dt * fraction;
         self.velocity *= (-kdt).exp();
     }
 
@@ -167,6 +164,15 @@ mod tests {
             d.tick(1.0 / 240.0);
         }
         assert!((d.position() - rest).abs() <= 0.125, "{} vs {rest}", d.position());
+    }
+
+    #[test]
+    fn an_enormous_step_lands_on_the_rest_point() {
+        let mut d = Decay::new(0.0, 400.0, 2.0);
+        d.tick(f32::MAX);
+        assert_eq!(d.position(), 200.0);
+        assert_eq!(d.velocity(), 0.0);
+        assert!(d.is_settled_within(0.5));
     }
 
     #[test]

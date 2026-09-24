@@ -162,7 +162,10 @@ impl Spring {
     /// Retargets the spring, preserving its velocity so a change of direction
     /// mid-flight reads as momentum rather than a restart.
     pub fn set_target(&mut self, target: f32) {
-        self.offset = self.position() - target;
+        // Shifted by the change alone: rebuilt from the rounded absolute
+        // position, the offset would lose the precision it exists to keep,
+        // and a target restated every frame would stall the spring again.
+        self.offset += self.target - target;
         self.target = target;
     }
 
@@ -363,6 +366,22 @@ mod tests {
         let mut s = Spring::new(SpringParams::new(0.0, Duration::from_secs(1)), 1_000_000.0);
         s.set_target(1_001_000.0);
         let settled = (0..1_000).any(|_| {
+            s.tick(1.0 / 240.0);
+            s.is_settled_within(0.5)
+        });
+        assert!(
+            settled,
+            "stuck at {} moving at {}",
+            s.position(),
+            s.velocity()
+        );
+    }
+
+    #[test]
+    fn restating_the_target_every_frame_does_not_stall_it() {
+        let mut s = Spring::new(SpringParams::new(0.0, Duration::from_secs(1)), 1_000_000.0);
+        let settled = (0..1_000).any(|_| {
+            s.set_target(1_001_000.0);
             s.tick(1.0 / 240.0);
             s.is_settled_within(0.5)
         });
