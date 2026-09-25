@@ -25,7 +25,7 @@ use iced::theme::Mode;
 use iced::{Color, Padding, Shadow, Vector};
 
 use crate::descriptor::{Axis, ButtonContent, ButtonHierarchy, ButtonSize};
-use crate::theme::metrics::padding_vh;
+use crate::theme::metrics::{Radius, Spacing, Width, padding_vh};
 use crate::theme::palette::{Palette, mix, with_alpha};
 use crate::theme::typography::{TextStyle, TypographyTheme};
 
@@ -301,6 +301,33 @@ pub struct ScrollableTheme {
     pub radius: f32,
 }
 
+/// Everything a fading scrollable's bars are drawn with.
+///
+/// Separate from [`ScrollableTheme`] because the two bars are different
+/// objects: a stock `scrollable` sits in the layout and is always there,
+/// while a fading one floats over the content and is usually not, so it
+/// wants its own rail and its own contrast.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FadingScrollableTheme {
+    /// Fill of the rail behind the pill while the cursor is elsewhere.
+    /// `None` leaves it unpainted, which is what a bar floating over the
+    /// content usually wants.
+    pub rail: Option<Color>,
+    /// Fill of the rail while the cursor is in the bar's gutter. `None`
+    /// holds [`rail`](Self::rail) however the cursor moves; setting this
+    /// with `rail` at `None` gives a background that arrives with the
+    /// cursor and nothing at all the rest of the time.
+    pub rail_hover: Option<Color>,
+    /// Fill of the pill while the cursor is elsewhere.
+    pub scroller: Color,
+    /// Fill of the pill while the cursor is in its gutter.
+    pub scroller_hover: Color,
+    /// Fill of the pill while it is dragged.
+    pub scroller_dragged: Color,
+    /// Corner radius of rail and pill.
+    pub radius: f32,
+}
+
 /// The values Luminate draws with. This is also an iced theme: it implements
 /// `iced::theme::Base` and a `Catalog` for every widget the kit uses. See
 /// [`theme`](crate::theme).
@@ -316,6 +343,12 @@ pub struct Theme {
     pub mode: Mode,
     /// The application surface (`Base::base().background_color`).
     pub background: Color,
+    /// Spacing definition
+    pub spacing: Spacing,
+    /// Radius definition
+    pub radius: Radius,
+    /// Width definition
+    pub width: Width,
     /// Colour of `Rule`s.
     pub divider: Color,
     /// The colours everything below is derived from.
@@ -334,6 +367,8 @@ pub struct Theme {
     pub error_bubble: ErrorBubbleTheme,
     /// Scrollable tokens.
     pub scrollable: ScrollableTheme,
+    /// Fading-scrollable tokens.
+    pub fading_scrollable: FadingScrollableTheme,
 }
 
 /// The light look's `button` tokens; see [`Theme::light`].
@@ -387,19 +422,23 @@ const fn light_button(p: &Palette, typography: &TypographyTheme) -> ButtonTheme 
             p.red.s100,
             None,
         ),
+        // The icon padding is square, and its vertical matches the text
+        // one: `icon_size` equals the label's line height, so equal
+        // verticals are what make an icon-only button the same height as
+        // a text one standing next to it.
         small: ButtonPadding {
             text: padding_vh(7.0, 15.0),
-            icon: padding_vh(5.0, 5.0),
+            icon: padding_vh(7.0, 7.0),
             icon_and_text: padding_vh(7.0, 10.0),
         },
         medium: ButtonPadding {
             text: padding_vh(9.0, 17.0),
-            icon: padding_vh(7.0, 7.0),
+            icon: padding_vh(9.0, 9.0),
             icon_and_text: padding_vh(9.0, 7.0),
         },
         large: ButtonPadding {
             text: padding_vh(11.0, 19.0),
-            icon: padding_vh(9.0, 9.0),
+            icon: padding_vh(11.0, 11.0),
             icon_and_text: padding_vh(11.0, 11.0),
         },
         radius: 10.0,
@@ -515,6 +554,22 @@ const fn light_scrollable(p: &Palette) -> ScrollableTheme {
         scroller_hover: p.gray.s400,
         scroller_dragged: p.accent,
         radius: 2.0,
+    }
+}
+
+/// The light look's `fading_scrollable` tokens; see [`Theme::light`].
+///
+/// Nothing at rest and a faint track under the cursor: the bar is an
+/// overlay, so a rail that were always painted would be a band across the
+/// content that never goes away.
+const fn light_fading_scrollable(p: &Palette) -> FadingScrollableTheme {
+    FadingScrollableTheme {
+        rail: None,
+        rail_hover: Some(p.gray.s50),
+        scroller: p.gray.s100,
+        scroller_hover: p.gray.s400,
+        scroller_dragged: p.gray.s400,
+        radius: 9999.0,
     }
 }
 
@@ -668,12 +723,16 @@ impl Theme {
             divider: p.gray.s100,
             palette: p,
             typography,
+            spacing: Spacing::new(),
+            radius: Radius::new(),
+            width: Width::new(),
             button: light_button(&p, &typography),
             input: light_input(&p, &typography),
             sidebar: light_sidebar(&p),
             card: light_card(&p, &typography),
             error_bubble: light_error_bubble(&p, &typography),
             scrollable: light_scrollable(&p),
+            fading_scrollable: light_fading_scrollable(&p),
         }
     }
 
@@ -714,6 +773,14 @@ impl Theme {
                 scroller_hover: p.gray.s500,
                 scroller_dragged: p.accent,
                 radius: 2.0,
+            },
+            fading_scrollable: FadingScrollableTheme {
+                rail: None,
+                rail_hover: Some(p.gray.s800),
+                scroller: p.gray.s600,
+                scroller_hover: p.gray.s500,
+                scroller_dragged: p.gray.s400,
+                ..light.fading_scrollable
             },
             ..light
         }
@@ -932,6 +999,20 @@ mod tests {
         let t = Theme::LIGHT;
         assert_eq!(t.button.secondary.disabled.text, t.palette.text_disabled);
         assert_eq!(t.button.tertiary.disabled.text, t.palette.text_disabled);
+    }
+
+    #[test]
+    fn icon_only_buttons_are_as_tall_as_text_ones() {
+        let t = Theme::LIGHT.button;
+        for size in [ButtonSize::Small, ButtonSize::Medium, ButtonSize::Large] {
+            let p = t.padding(size);
+            let text = t.label.line_height + p.text.top + p.text.bottom;
+            let icon = t.icon_size + p.icon.top + p.icon.bottom;
+            let combined = t.label.line_height + p.icon_and_text.top + p.icon_and_text.bottom;
+            assert_eq!(icon, text, "{size:?}: icon-only height");
+            assert_eq!(combined, text, "{size:?}: icon-and-text height");
+            assert_eq!(p.icon.top, p.icon.left, "{size:?}: icon padding is square");
+        }
     }
 
     #[test]

@@ -25,7 +25,7 @@ use iced::{Background, Border, Color, Shadow, Vector, border};
 use crate::descriptor::ButtonHierarchy;
 use crate::theme::Theme;
 use crate::theme::palette::mix;
-use crate::widget::{error_bubble, multi_border, sidebar};
+use crate::widget::{error_bubble, fading_scrollable, multi_border, sidebar};
 
 // --- Base ---------------------------------------------------------------
 
@@ -1048,6 +1048,29 @@ impl sidebar::Catalog for Theme {
     }
 
     fn style(&self, class: &Self::Class<'_>) -> sidebar::Style {
+        class(self)
+    }
+}
+
+impl fading_scrollable::Catalog for Theme {
+    type Class<'a> = fading_scrollable::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme: &Theme| {
+            let tokens = theme.fading_scrollable;
+
+            fading_scrollable::Style {
+                rail: tokens.rail,
+                rail_hover: tokens.rail_hover,
+                scroller: tokens.scroller,
+                scroller_hover: tokens.scroller_hover,
+                scroller_dragged: tokens.scroller_dragged,
+                radius: Radius::from(tokens.radius),
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> fading_scrollable::Style {
         class(self)
     }
 }
