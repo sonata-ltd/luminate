@@ -73,7 +73,7 @@ impl Page for MotionPage {
     }
 
     fn subscription(&self) -> iced::Subscription<Self::Message> {
-        iced::time::every(Duration::from_millis(1000)).map(|_| Message::Tick)
+        iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick)
     }
 
     fn update(&mut self, message: Message) -> Action<Message> {
