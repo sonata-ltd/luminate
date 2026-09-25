@@ -922,11 +922,13 @@ mod cpu {
         size: Size<u32>,
         /// The source epoch this was built from.
         epoch: u64,
-        /// The last crop, the corners and the pane shape (in the cut's own
-        /// pixels) its mask was built for, and the handle cut from it. The
-        /// shape is part of the key: two panes can share one crop and one
-        /// radius yet round different corners, when one overhangs the
-        /// source and the other does not.
+        /// The last crop, the radii and the pane shape its mask was built
+        /// for — both in the cut's own pixels — and the handle cut from it.
+        /// Both are part of the key, and both in those pixels: two panes can
+        /// share one crop and one radius yet round different corners, when
+        /// one overhangs the source and the other does not, or when the
+        /// source is drawn at a different size, so a logical radius covers a
+        /// different number of texels.
         ///
         /// On the GPU the sub-rectangle is free — the sampler picks it. Here
         /// an `image::Handle` is drawn whole, so the crop costs a copy. A
@@ -938,12 +940,7 @@ mod cpu {
         /// recut every frame. That is the intended trade: the derivative
         /// itself — the expensive part — is still shared between them, and
         /// the cut is the cheap part the cost model budgets for.
-        crop: Option<(
-            crate::blur::Crop,
-            iced_core::border::Radius,
-            Rectangle,
-            image::Handle,
-        )>,
+        crop: Option<(crate::blur::Crop, [f32; 4], Rectangle, image::Handle)>,
         /// Frames since this was last drawn.
         idle: u32,
         liveness: Weak<Inner>,
@@ -1278,9 +1275,11 @@ mod cpu {
                 height: glass.height * scale,
             };
 
+            let radii = <[f32; 4]>::from(frost.corners).map(|radius| radius * scale);
+
             let handle = match &entry.crop {
-                Some((cached, corners, cached_shape, handle))
-                    if *cached == window && *corners == frost.corners && *cached_shape == shape =>
+                Some((cached, cached_radii, cached_shape, handle))
+                    if *cached == window && *cached_radii == radii && *cached_shape == shape =>
                 {
                     handle.clone()
                 }
@@ -1288,16 +1287,15 @@ mod cpu {
                     let cut = crate::blur::cpu::crop_out(&entry.pixels, entry.size, window);
                     let mut rgba = pixmap_to_rgba(&cut);
 
-                    let radii: [f32; 4] = frost.corners.into();
                     round_corners(
                         &mut rgba,
                         Size::new(window.width, window.height),
                         shape,
-                        radii.map(|radius| radius * scale),
+                        radii,
                     );
 
                     let handle = image::Handle::from_rgba(window.width, window.height, rgba);
-                    entry.crop = Some((window, frost.corners, shape, handle.clone()));
+                    entry.crop = Some((window, radii, shape, handle.clone()));
                     handle
                 }
             };

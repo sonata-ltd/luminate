@@ -305,6 +305,52 @@ fn assert_translated_glass_is_drawn_once_translated(renderer: &mut Renderer) {
     assert_eq!(wide_pixel(&shot, 75, 15), WHITE, "drawn twice as far");
 }
 
+/// Glass over a 40 px source drawn stretched to `side`, with the source
+/// itself cleared so only the backdrop shows.
+fn glass_over_a_source_drawn_at(
+    renderer: &mut Renderer,
+    cache: &TextureCache,
+    side: f32,
+) -> Vec<u8> {
+    let bounds = Rectangle::with_size(Size::new(side, side));
+    renderer.reset(wide());
+    renderer.draw_cached(
+        cache,
+        bounds,
+        bounds,
+        wide(),
+        Transformation::IDENTITY,
+        plain(),
+    );
+    renderer.reset(wide());
+    renderer.draw_frosted(
+        cache,
+        bounds,
+        wide(),
+        Transformation::IDENTITY,
+        1.0,
+        glass(12.0),
+    );
+    renderer.screenshot(WIDE, 1.0, Color::WHITE)
+}
+
+/// Glass at 40 px, then at 80 px over the same source stretched to match.
+/// Crop, radius and normalised shape are all unchanged, but the radius now
+/// spans half as many of the source's texels: a warmed cache has to cut
+/// the same corner a fresh one does.
+fn assert_a_rescaled_pane_is_recut(mut warmed: Renderer, mut fresh: Renderer) {
+    let cache = TextureCache::new();
+    record_padded_red(&mut warmed, &cache, 40.0, 0.0);
+    let _ = glass_over_a_source_drawn_at(&mut warmed, &cache, 40.0);
+    let reused = glass_over_a_source_drawn_at(&mut warmed, &cache, 80.0);
+
+    let cache = TextureCache::new();
+    record_padded_red(&mut fresh, &cache, 40.0, 0.0);
+    let expected = glass_over_a_source_drawn_at(&mut fresh, &cache, 80.0);
+
+    assert_eq!(wide_pixel(&reused, 5, 5), wide_pixel(&expected, 5, 5));
+}
+
 #[cfg(feature = "tiny-skia")]
 mod tiny_skia {
     use std::cell::Cell;
@@ -505,6 +551,13 @@ mod tiny_skia {
     #[test]
     fn glass_inside_an_ancestor_is_translated_once() {
         assert_translated_glass_is_drawn_once_translated(&mut headless_tiny_skia());
+    }
+
+    /// The cut was keyed by the logical radius, so glass over a source
+    /// drawn at another size reused a mask with the wrong radius in texels.
+    #[test]
+    fn a_rescaled_pane_does_not_reuse_the_last_corners() {
+        assert_a_rescaled_pane_is_recut(headless_tiny_skia(), headless_tiny_skia());
     }
 }
 
@@ -864,5 +917,13 @@ mod wgpu {
     #[ignore = "needs a GPU adapter"]
     fn glass_inside_an_ancestor_is_translated_once() {
         assert_translated_glass_is_drawn_once_translated(&mut headless_wgpu());
+    }
+
+    /// The cut was keyed by the logical radius, so glass over a source
+    /// drawn at another size reused a mask with the wrong radius in texels.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn a_rescaled_pane_does_not_reuse_the_last_corners() {
+        assert_a_rescaled_pane_is_recut(headless_wgpu(), headless_wgpu());
     }
 }
