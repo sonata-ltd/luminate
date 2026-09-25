@@ -163,7 +163,11 @@ mod tests {
         for _ in 0..2400 {
             d.tick(1.0 / 240.0);
         }
-        assert!((d.position() - rest).abs() <= 0.125, "{} vs {rest}", d.position());
+        assert!(
+            (d.position() - rest).abs() <= 0.125,
+            "{} vs {rest}",
+            d.position()
+        );
     }
 
     #[test]
