@@ -29,6 +29,7 @@ use iced_luminate::widget::weighted_text::weighted_text;
 use iced_luminate::{Element, Luminate, Renderer, Theme};
 
 use crate::hero::Hero;
+use crate::iso::scenes_flat;
 
 /// Messages of the weight page.
 #[derive(Debug, Clone)]
@@ -67,6 +68,7 @@ impl Page for WeightPage {
     fn view(&self) -> Element<'_, Message> {
         Hero::new(
             &self.luminate,
+            &scenes_flat::WEIGHT,
             "Weight",
             "The variable font weight axis",
             self.axis(),

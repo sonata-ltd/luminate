@@ -12,6 +12,7 @@ use iced_luminate::router::{Action, Lifecycle, Page, Registry};
 use iced_luminate::{Element, Luminate, Renderer, Theme};
 
 use crate::hero::Hero;
+use crate::iso::scenes_flat;
 
 /// Messages of the inputs page.
 #[derive(Debug, Clone)]
@@ -58,6 +59,7 @@ impl Page for InputsPage {
 
         Hero::new(
             luminate,
+            &scenes_flat::INPUTS,
             "Inputs",
             "Text fields, labels and validation",
             inputs(&self.luminate, &self.draft),

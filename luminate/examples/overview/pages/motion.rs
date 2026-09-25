@@ -28,6 +28,7 @@ use iced_luminate::{Element, Luminate, Renderer, Theme};
 use luminate_examples_support::{CellStyle, MUTED, RebuildCounter, demo};
 
 use crate::hero::Hero;
+use crate::iso::scenes_flat;
 
 /// Code above the stage on this page.
 const STYLE: CellStyle = CellStyle {
@@ -110,6 +111,7 @@ impl Page for MotionPage {
 
         Hero::new(
             &self.luminate,
+            &scenes_flat::MOTION,
             "Motion",
             "Springs and eases, resolved per frame",
             column![

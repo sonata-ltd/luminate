@@ -12,6 +12,7 @@ use iced_luminate::{
 use iced_page_router::Action;
 
 use crate::hero::Hero;
+use crate::iso::scenes_flat;
 
 pub(crate) struct Typography {
     luminate: Luminate,
@@ -59,6 +60,7 @@ impl Page for Typography {
 
         Hero::new(
             &self.luminate,
+            &scenes_flat::TYPOGRAPHY,
             "Typography",
             "Type styles, fonts and scale",
             container(

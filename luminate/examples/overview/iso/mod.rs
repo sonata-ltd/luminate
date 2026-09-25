@@ -79,12 +79,7 @@ pub(crate) struct Element3 {
 
 impl Element3 {
     /// An opaque shape.
-    pub(crate) const fn new(
-        shape: Shape,
-        at: Vec3,
-        footprint: (f32, f32),
-        tone: Tone,
-    ) -> Self {
+    pub(crate) const fn new(shape: Shape, at: Vec3, footprint: (f32, f32), tone: Tone) -> Self {
         Self {
             shape,
             at,
@@ -131,10 +126,7 @@ impl Scene {
     /// Every projected point the scene paints. This is what the canvas is
     /// fitted to, so nothing the scene draws can fall outside it.
     fn outline(&self) -> Vec<Point> {
-        self.elements
-            .iter()
-            .flat_map(Element3::face)
-            .collect()
+        self.elements.iter().flat_map(Element3::face).collect()
     }
 
     /// The elements' indices, farthest first. `sort_by` is stable, so ties
@@ -233,9 +225,24 @@ mod tests {
     /// Three shapes declared out of depth order.
     const ORDERED: Scene = Scene {
         elements: &[
-            Element3::new(Shape::Pill, Vec3::new(0.0, 0.0, 0.0), (10.0, 6.0), Tone::Neutral),
-            Element3::new(Shape::Pill, Vec3::new(20.0, 20.0, 0.0), (10.0, 6.0), Tone::Accent),
-            Element3::new(Shape::Pill, Vec3::new(-20.0, -20.0, 0.0), (10.0, 6.0), Tone::Muted),
+            Element3::new(
+                Shape::Pill,
+                Vec3::new(0.0, 0.0, 0.0),
+                (10.0, 6.0),
+                Tone::Neutral,
+            ),
+            Element3::new(
+                Shape::Pill,
+                Vec3::new(20.0, 20.0, 0.0),
+                (10.0, 6.0),
+                Tone::Accent,
+            ),
+            Element3::new(
+                Shape::Pill,
+                Vec3::new(-20.0, -20.0, 0.0),
+                (10.0, 6.0),
+                Tone::Muted,
+            ),
         ],
     };
 
@@ -248,8 +255,18 @@ mod tests {
     fn elevation_counts_towards_depth() {
         const LIFTED: Scene = Scene {
             elements: &[
-                Element3::new(Shape::Pill, Vec3::new(0.0, 0.0, 5.0), (10.0, 6.0), Tone::Neutral),
-                Element3::new(Shape::Pill, Vec3::new(0.0, 0.0, 0.0), (10.0, 6.0), Tone::Accent),
+                Element3::new(
+                    Shape::Pill,
+                    Vec3::new(0.0, 0.0, 5.0),
+                    (10.0, 6.0),
+                    Tone::Neutral,
+                ),
+                Element3::new(
+                    Shape::Pill,
+                    Vec3::new(0.0, 0.0, 0.0),
+                    (10.0, 6.0),
+                    Tone::Accent,
+                ),
             ],
         };
 
@@ -260,8 +277,18 @@ mod tests {
     fn ties_keep_declaration_order() {
         const TIED: Scene = Scene {
             elements: &[
-                Element3::new(Shape::Pill, Vec3::new(1.0, 1.0, 0.0), (10.0, 6.0), Tone::Neutral),
-                Element3::new(Shape::Pill, Vec3::new(2.0, 0.0, 0.0), (10.0, 6.0), Tone::Accent),
+                Element3::new(
+                    Shape::Pill,
+                    Vec3::new(1.0, 1.0, 0.0),
+                    (10.0, 6.0),
+                    Tone::Neutral,
+                ),
+                Element3::new(
+                    Shape::Pill,
+                    Vec3::new(2.0, 0.0, 0.0),
+                    (10.0, 6.0),
+                    Tone::Accent,
+                ),
             ],
         };
 

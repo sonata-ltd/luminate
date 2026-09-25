@@ -10,11 +10,14 @@ use iced_luminate::theme::TextClass;
 use iced_luminate::theme::typography::{DisplaySize, TextSize, TextStyle, styled_text};
 use iced_luminate::{Element, Luminate};
 
+use crate::iso::{self, Scene};
+
 /// The gap between the icon, the title and the subtitle.
 const HEADER_SPACING: f32 = 6.0;
 
 pub(crate) struct Hero<'a, M> {
     pub luminate: &'a Luminate,
+    pub scene: &'static Scene,
     pub title: &'a str,
     pub subtitle: &'a str,
     pub content: Element<'a, M>,
@@ -23,12 +26,14 @@ pub(crate) struct Hero<'a, M> {
 impl<'a, M: 'a> Hero<'a, M> {
     pub(crate) fn new(
         luminate: &'a Luminate,
+        scene: &'static Scene,
         title: &'a str,
         subtitle: &'a str,
         content: impl Into<Element<'a, M>>,
     ) -> Self {
         Self {
             luminate,
+            scene,
             title,
             subtitle,
             content: content.into(),
@@ -39,6 +44,7 @@ impl<'a, M: 'a> Hero<'a, M> {
         let theme = self.luminate.theme();
 
         let heading = column![
+            iso::icon(self.scene),
             styled_text(
                 self.title,
                 TextStyle::display(DisplaySize::Xs, Weight::Semibold)

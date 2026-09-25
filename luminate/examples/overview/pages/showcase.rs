@@ -3,6 +3,7 @@
 //! toggle wired to `Sidebar::collapsed`.
 
 use crate::hero::Hero;
+use crate::iso::scenes_flat;
 use iced_luminate::descriptor::{Axis, Button, ButtonHierarchy, Input, Pager, Sidebar};
 use iced_luminate::iced::Length;
 use iced_luminate::iced::widget::{column, container, row, text};
@@ -113,6 +114,7 @@ impl Page for ShowcasePage {
 
         Hero::new(
             luminate,
+            &scenes_flat::SHOWCASE,
             "Showcase",
             "Every descriptor in one view",
             row![

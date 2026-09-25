@@ -28,6 +28,7 @@ use crate::pages::{
 };
 
 mod hero;
+mod iso;
 mod pages;
 
 fn main() -> iced::Result {

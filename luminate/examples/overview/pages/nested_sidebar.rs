@@ -12,6 +12,7 @@ use iced_luminate::router::{Action, Page, Registry, RouteMessage};
 use iced_luminate::{Element, Luminate, Renderer, Router, Theme};
 
 use crate::hero::Hero;
+use crate::iso::scenes_flat;
 use crate::pages::{buttons::ButtonsPage, inputs::InputsPage};
 
 /// Messages of the nested sidebar page.
@@ -99,6 +100,7 @@ impl Page for NestedSidebar {
 
         Hero::new(
             luminate,
+            &scenes_flat::NESTED_SIDEBAR,
             "Nested sidebar",
             "A sidebar inside a sidebar",
             row![

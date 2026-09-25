@@ -14,6 +14,7 @@ use iced_luminate::router::{Action, Page, Registry};
 use iced_luminate::{Element, Luminate, Renderer, Theme};
 
 use crate::hero::Hero;
+use crate::iso::scenes_flat;
 
 /// Messages of the snapshot page.
 #[derive(Debug, Clone)]
@@ -54,6 +55,7 @@ impl Page for SnapshotPage {
 
         Hero::new(
             &self.luminate,
+            &scenes_flat::SNAPSHOT,
             "Snapshot",
             "Pages captured and restored",
             column![

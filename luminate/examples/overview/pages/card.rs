@@ -16,6 +16,7 @@ use iced_luminate::theme::typography::{TextSize, TextStyle, styled_text};
 use iced_luminate::{Element, Luminate, Renderer, Theme};
 
 use crate::hero::Hero;
+use crate::iso::scenes_flat;
 
 /// Steps in the card's pager.
 const STEPS: usize = 2;
@@ -112,6 +113,7 @@ impl Page for CardPage {
 
         Hero::new(
             luminate,
+            &scenes_flat::CARD,
             "Card",
             "Grouped content on a raised surface",
             column![
