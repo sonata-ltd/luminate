@@ -133,12 +133,19 @@ mod gpu {
                 Ok((device, queue)) => {
                     let max_texture_dimension = device.limits().max_texture_dimension_2d;
                     let filter_quality = crate::filter::auto(adapter.get_info().device_type);
-                    let engine =
-                        Engine::new(adapter, device.clone(), queue, format, antialiasing, shell);
+                    let engine = Engine::new(
+                        adapter,
+                        device.clone(),
+                        queue.clone(),
+                        format,
+                        antialiasing,
+                        shell,
+                    );
 
                     return Ok(GpuContext {
                         engine,
                         device,
+                        queue,
                         format,
                         max_texture_dimension,
                         filter_quality,

@@ -9,8 +9,9 @@
 use iced_core::Renderer as _;
 use iced_core::renderer::{Headless, Quad};
 use iced_core::{Color, Point, Rectangle, Size, Transformation};
-use iced_texture_cache::Warp;
-use iced_texture_cache::{Backend, FilterQuality, Record, Renderer, TextureCache, TextureRenderer};
+use iced_texture_cache::{
+    Backend, Composite, FilterQuality, Record, Renderer, TextureCache, TextureRenderer, Warp,
+};
 
 const CANVAS: Size<u32> = Size {
     width: 8,
@@ -67,14 +68,48 @@ fn composite_with(
         bounds,
         canvas(),
         Transformation::IDENTITY,
-        opacity,
-        filter,
-        Warp::None,
+        Composite {
+            opacity,
+            filter,
+            corners: iced::border::Radius::default(),
+            warp: Warp::None,
+        },
     );
     renderer.screenshot(CANVAS, 1.0, Color::WHITE)
 }
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
+
+/// Composites `cache` at (2, 2) over white, cut to a radius far larger than
+/// its 4 x 4 px: the corners have to be clamped to a circle, on every
+/// backend alike.
+fn composite_pill(renderer: &mut Renderer, cache: &TextureCache) -> Vec<u8> {
+    renderer.reset(canvas());
+    let bounds = Rectangle::new(Point::new(2.0, 2.0), Size::new(4.0, 4.0));
+    renderer.draw_cached(
+        cache,
+        bounds,
+        bounds,
+        canvas(),
+        Transformation::IDENTITY,
+        Composite {
+            opacity: 1.0,
+            filter: FilterQuality::Bilinear,
+            corners: iced::border::Radius::from(1000.0),
+            warp: Warp::None,
+        },
+    );
+    renderer.screenshot(CANVAS, 1.0, Color::WHITE)
+}
+
+/// A radius too large for the rectangle rounds it into a circle rather than
+/// cutting it away: the middle stays, the corner pixel goes.
+fn assert_clamped_to_a_circle(shot: &[u8]) {
+    assert_red(pixel(shot, 3, 3));
+    assert_red(pixel(shot, 4, 4));
+    let corner = pixel(shot, 2, 2);
+    assert!(corner[1] > 60, "the corner is cut off: {corner:?}");
+}
 
 fn assert_red(px: [u8; 4]) {
     assert!(
@@ -219,9 +254,12 @@ mod tiny_skia {
                 quad,
                 quad,
                 Transformation::IDENTITY,
-                1.0,
-                FilterQuality::Bilinear,
-                Warp::None,
+                Composite {
+                    opacity: 1.0,
+                    filter: FilterQuality::Bilinear,
+                    corners: iced::border::Radius::default(),
+                    warp: Warp::None,
+                },
             );
         });
         assert_eq!(record, Record::Fresh);
@@ -244,6 +282,13 @@ mod tiny_skia {
         let again = TextureCache::new();
         assert_eq!(record_red(&mut renderer, &again, 1.0), Record::Fresh);
         assert_red(pixel(&composite(&mut renderer, &again, 1.0), 3, 3));
+    }
+    #[test]
+    fn a_radius_past_half_the_rectangle_is_clamped_to_a_circle() {
+        let mut renderer = headless_tiny_skia();
+        let cache = TextureCache::new();
+        assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
+        assert_clamped_to_a_circle(&composite_pill(&mut renderer, &cache));
     }
 }
 
@@ -340,9 +385,12 @@ mod wgpu {
                 quad,
                 quad,
                 Transformation::IDENTITY,
-                1.0,
-                FilterQuality::Bilinear,
-                Warp::None,
+                Composite {
+                    opacity: 1.0,
+                    filter: FilterQuality::Bilinear,
+                    corners: iced::border::Radius::default(),
+                    warp: Warp::None,
+                },
             );
         });
         assert_eq!(record, Record::Fresh);
@@ -367,9 +415,12 @@ mod wgpu {
             bounds,
             canvas(),
             Transformation::IDENTITY,
-            1.0,
-            FilterQuality::Bilinear,
-            Warp::None,
+            Composite {
+                opacity: 1.0,
+                filter: FilterQuality::Bilinear,
+                corners: iced::border::Radius::default(),
+                warp: Warp::None,
+            },
         );
 
         // Same cache, new size: a new texture, blue this time.
@@ -390,9 +441,12 @@ mod wgpu {
             bounds,
             canvas(),
             Transformation::IDENTITY,
-            1.0,
-            FilterQuality::Bilinear,
-            Warp::None,
+            Composite {
+                opacity: 1.0,
+                filter: FilterQuality::Bilinear,
+                corners: iced::border::Radius::default(),
+                warp: Warp::None,
+            },
         );
 
         let shot = renderer.screenshot(CANVAS, 1.0, Color::WHITE);
@@ -427,15 +481,12 @@ mod wgpu {
                 content,
                 canvas(),
                 Transformation::IDENTITY,
-                1.0,
-                FilterQuality::Bilinear,
-                Warp::Genie(Genie::new(
-                    progress,
-                    GenieShape {
-                        corner_radius,
-                        ..GenieShape::default()
-                    },
-                )),
+                Composite {
+                    opacity: 1.0,
+                    filter: FilterQuality::Bilinear,
+                    corners: corner_radius.into(),
+                    warp: Warp::Genie(Genie::new(progress, GenieShape::default())),
+                },
             );
             renderer.screenshot(CANVAS, 1.0, Color::WHITE)
         };
@@ -553,5 +604,16 @@ mod wgpu {
         }
 
         assert_eq!(cache.record_count(), 1);
+    }
+    /// The shader took the radii as given, and past half the rectangle its
+    /// distance field turned inside out: the software backend drew a circle
+    /// and the GPU drew nothing at all.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn a_radius_past_half_the_rectangle_is_clamped_to_a_circle() {
+        let mut renderer = headless_wgpu();
+        let cache = TextureCache::new();
+        assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
+        assert_clamped_to_a_circle(&composite_pill(&mut renderer, &cache));
     }
 }

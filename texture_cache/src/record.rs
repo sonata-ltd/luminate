@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError, Weak};
 
-use iced_core::{Rectangle, Size, Transformation};
+use iced_core::{Rectangle, Size, Transformation, border};
 
 use crate::filter::FilterQuality;
 use crate::renderer::Backend;
@@ -40,6 +40,94 @@ pub enum Record {
     Uncacheable,
 }
 
+/// How a pane of frosted glass is blurred.
+///
+/// Grouped rather than passed as loose scalars because they answer one
+/// question — *what blur* — while the rest of
+/// [`draw_frosted`](TextureRenderer::draw_frosted)'s arguments answer
+/// *where* and *how opaque*. That keeps the argument count down and gives
+/// the group a name; it buys no room to grow, since callers build this
+/// with a struct literal and a new field is a breaking change wherever it
+/// is added.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Frost {
+    /// The sigma of the equivalent Gaussian, in **logical** pixels. Both
+    /// backends calibrate their own kernel to it, so the same radius looks
+    /// the same on wgpu and on `tiny_skia`. Zero, negative and non-finite
+    /// values draw nothing.
+    pub radius: f32,
+    /// The power of two in `1..=8` the blur is computed and stored at.
+    /// `0` derives one from the radius; anything else is rounded to the
+    /// nearest power of two and clamped.
+    pub downscale: u32,
+    /// Corners of the pane itself, in **logical** pixels. Zero is a
+    /// rectangle.
+    ///
+    /// Named apart from `radius` above because the two are different
+    /// quantities: that one is how far the blur reaches, this one is the
+    /// shape it is cut to. It shapes the glass, not the backdrop behind it —
+    /// a blur spreads outwards, so an opaque source under a rounded pane
+    /// would otherwise bleed past the rounding with nothing to clip it back.
+    pub corners: border::Radius,
+}
+
+/// How a cached texture is painted into its place.
+///
+/// Grouped for the same reason as [`Frost`]: these answer *how* the texture
+/// is drawn, while the rest of [`draw_cached`](TextureRenderer::draw_cached)
+/// answers *where*. Without the grouping the method would carry eight loose
+/// arguments, which is both harder to read and a thing the caller can get
+/// out of order silently.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Composite {
+    /// Group opacity, clamped to `0.0..=1.0` by the implementation; `NaN`
+    /// or `<= 0` draws nothing.
+    pub opacity: f32,
+    /// The reconstruction kernel for a sub-pixel composite. It only affects
+    /// the composite, never the recorded texture, so switching it does not
+    /// invalidate a cache. [`FilterQuality::Snap`] expects the transform to
+    /// have been snapped by the caller (`Cached` and `Pager` do); the
+    /// backends do not re-snap it.
+    pub filter: FilterQuality,
+    /// Corners of the **content** rectangle, in **logical** pixels. Zero is
+    /// a rectangle. The implementation grows them by the padding around the
+    /// content, so the arc lands on the content's corner rather than in the
+    /// transparent margin, and scales them down together when two on one
+    /// side would overlap.
+    ///
+    /// Nothing in iced rounds this for us: `iced_tiny_skia` never reads
+    /// `image::Image::border_radius`, and this crate's own wgpu composite
+    /// draws an unmasked quad. Changing it never re-records a texture — it
+    /// is a property of the composite, not of the recording.
+    ///
+    /// A warp keeps the same corners at the same radius, in screen pixels,
+    /// however far it squeezes the content (wgpu only: the software
+    /// backend's affine stand-in scales the rounded texture with it).
+    pub corners: border::Radius,
+    /// The non-affine warp applied to the texture; [`Warp::None`] draws it
+    /// as recorded. See [`Cached::genie`](crate::Cached::genie).
+    pub warp: Warp,
+}
+
+impl Composite {
+    /// Opaque, square and unwarped: the texture painted exactly as it was
+    /// recorded, through `filter`.
+    #[must_use]
+    pub const fn plain(filter: FilterQuality) -> Self {
+        Self {
+            opacity: 1.0,
+            filter,
+            corners: border::Radius {
+                top_left: 0.0,
+                top_right: 0.0,
+                bottom_right: 0.0,
+                bottom_left: 0.0,
+            },
+            warp: Warp::None,
+        }
+    }
+}
+
 /// Render-to-texture operations of a renderer.
 ///
 /// Implemented by [`Renderer`](crate::Renderer). The trait is public so
@@ -50,6 +138,12 @@ pub enum Record {
 /// report one of this crate's [`Backend`] variants: `Backend` names only
 /// wgpu and `tiny_skia` today and is `#[non_exhaustive]` so a variant for
 /// other backends can be added later.
+///
+/// Before 1.0 this trait is extended in minor versions when a new widget
+/// needs a new render-to-texture operation — [`draw_frosted`](Self::draw_frosted)
+/// arrived this way. That is a breaking change for a third-party
+/// implementor (a new required method), even though it is additive for
+/// every caller that only uses the trait generically.
 pub trait TextureRenderer: iced_core::Renderer {
     /// The active backend.
     #[must_use]
@@ -105,24 +199,16 @@ pub trait TextureRenderer: iced_core::Renderer {
     /// (untransformed) space and is applied first, as a clip layer, because
     /// iced's clip layers do not intersect with their parent: a composite
     /// that overhangs an enclosing clip (a `scrollable`, say) would
-    /// otherwise escape it. `opacity` is clamped to `0.0..=1.0`; `NaN` or
-    /// `<= 0` draws nothing. No-op if the cache was never recorded or is
+    /// otherwise escape it. No-op if the cache was never recorded or is
     /// uncacheable.
     ///
-    /// `content` is the rectangle `warp` is defined on, in the same space
-    /// as `bounds`: the content's own bounds, where `bounds` may carry
-    /// padding recorded around them. A genie collapses into a corner of
-    /// `content`, not of the texture. With [`Warp::None`] it is unused;
-    /// pass `bounds`.
+    /// `content` is the content's own rectangle, in the same space as
+    /// `bounds`, where `bounds` may carry padding recorded around it. The
+    /// [`Composite`]'s corners round it and its warp collapses into one of
+    /// its corners, not the texture's. Without padding, pass `bounds`.
     ///
-    /// `filter` selects the reconstruction kernel. It only affects the
-    /// composite, never the recorded texture, so switching it does not
-    /// invalidate a cache. [`FilterQuality::Snap`] expects `transform` to
-    /// have been snapped by the caller (`Cached` and `Pager` do); the
-    /// backends do not re-snap it.
-    // Every parameter is a distinct property of one composite; bundling
-    // them into a struct would only move the same list one level out.
-    #[allow(clippy::too_many_arguments)]
+    /// `composite` says how the texture is painted; see [`Composite`] for
+    /// what each field does and what it costs.
     fn draw_cached(
         &mut self,
         cache: &TextureCache,
@@ -130,9 +216,42 @@ pub trait TextureRenderer: iced_core::Renderer {
         content: Rectangle,
         clip: Rectangle,
         transform: Transformation,
+        composite: Composite,
+    );
+
+    /// Composites a blurred copy of the texture of `source` into `bounds`
+    /// under `transform`, clipped to `clip`.
+    ///
+    /// The pane reads what lies **under it**: the part of the source
+    /// texture its own screen bounds cover, not the source stretched across
+    /// it. Nothing is recorded — `source` is written by somebody else's
+    /// [`Cached`](crate::Cached), and this only reads it, which is why the
+    /// "one handle per widget" rule is not broken.
+    ///
+    /// `frost` is the blur applied (see [`Frost`]). `opacity` is clamped to
+    /// `0.0..=1.0`; `NaN` or `<= 0` draws nothing.
+    ///
+    /// The blur is computed lazily, once per source rasterisation: moving,
+    /// resizing, fading or clipping the pane costs an integer comparison
+    /// and a composite. Reconstruction is always
+    /// [`FilterQuality::Bilinear`], whatever the app's tier — sharpening
+    /// what was just deliberately blurred would ring on flat gradients and
+    /// cost nine taps instead of one.
+    ///
+    /// Draws nothing if `source` was never recorded, is
+    /// [`Uncacheable`](Record::Uncacheable), or does not lie under the
+    /// pane. If `source` is drawn *after* this pane within the same frame,
+    /// the pane shows the previous frame's texture; that is documented
+    /// behaviour, not a bug — fixing it would need a two-phase draw of the
+    /// whole tree.
+    fn draw_frosted(
+        &mut self,
+        source: &TextureCache,
+        bounds: Rectangle,
+        clip: Rectangle,
+        transform: Transformation,
         opacity: f32,
-        filter: FilterQuality,
-        warp: Warp,
+        frost: Frost,
     );
 }
 
@@ -197,11 +316,35 @@ enum Entry<T> {
     },
 }
 
+/// What a pane of glass needs to know about the texture it reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Source {
+    /// Epoch of the last rasterisation. A derived blur texture compares
+    /// this against its own to decide whether it is still current.
+    epoch: u64,
+    /// Where that texture was last composited, in screen coordinates.
+    bounds: Rectangle,
+    /// Its size in physical pixels — the buffer the blur chain runs over.
+    size: Size<u32>,
+    /// The scale it was recorded at: the device scale times the widget's
+    /// supersample, not the window's scale. A blur radius is stated in
+    /// logical pixels and applied to *this* texture, so this is the number
+    /// it has to be converted with.
+    scale: f32,
+}
+
 /// A backend's recorded texture.
 trait Texture {
     fn liveness(&self) -> &Weak<Inner>;
     /// Size and scale of the last record.
     fn recorded(&self) -> (Size<u32>, f32);
+    /// Everything a pane of glass over this texture reads: see [`Source`].
+    // Both backends' `frosted` reach this through `Entries::source`, and
+    // `lib.rs` refuses a build with neither backend, so there is a caller
+    // in every configuration that compiles.
+    fn source(&self) -> Source;
+    /// Adopts a new screen placement after a composite.
+    fn note_composited(&mut self, bounds: Rectangle);
 }
 
 impl<T: Texture> Entry<T> {
@@ -240,6 +383,25 @@ impl<T: Texture> Entries<T> {
         }
     }
 
+    /// What a pane of glass over `id` reads (see [`Source`]); `None` if it
+    /// was never recorded or is uncacheable.
+    // See `Texture::source`: each backend's `frosted` calls this directly,
+    // rather than through a per-store wrapper.
+    fn source(&self, id: Id) -> Option<Source> {
+        match self.lock().get(&id)? {
+            Entry::Recorded(texture) => Some(texture.source()),
+            Entry::Uncacheable { .. } => None,
+        }
+    }
+
+    /// Records where `id` was last composited. A no-op for an unknown or
+    /// uncacheable cache: a composite of one draws nothing anyway.
+    fn note_composited(&self, id: Id, bounds: Rectangle) {
+        if let Some(Entry::Recorded(texture)) = self.lock().get_mut(&id) {
+            texture.note_composited(bounds);
+        }
+    }
+
     /// Records that `cache` cannot be cached at `size` (any stale texture is
     /// dropped) and logs once per cache.
     fn mark_uncacheable(&self, cache: &TextureCache, size: Size<u32>, limit: fmt::Arguments<'_>) {
@@ -267,6 +429,19 @@ impl<T: Texture> Entries<T> {
     fn len(&self) -> usize {
         self.lock().len()
     }
+}
+
+/// Source of rasterisation epochs. A derived blur texture remembers the
+/// epoch it was built from and compares it against the source's: one
+/// integer comparison per frame, and nothing is re-blurred until the source
+/// is re-recorded. Kept here rather than on [`TextureCache`] because
+/// [`TextureCache::record_count`] is documented as diagnostics and should
+/// not become part of the contract for this.
+static NEXT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The next rasterisation epoch.
+pub(crate) fn next_epoch() -> u64 {
+    NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Nested renderers, one per nesting depth, reused across records.
@@ -302,12 +477,15 @@ impl<R> Pool<R> {
 
 #[cfg(feature = "wgpu")]
 mod gpu {
-    use std::sync::{Arc, Weak};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
-    use iced_core::{Color, Font, Pixels, Size};
+    use iced_core::{Color, Font, Pixels, Rectangle, Size};
     use iced_graphics::Viewport;
 
-    use super::{Entries, Entry, Pool, Record, Texture, clamp_size, fits, needs_record};
+    use super::{Entries, Entry, Pool, Record, Source, Texture, clamp_size, fits, needs_record};
+    use crate::blur::gpu::{BlurPipelines, TargetPool};
     use crate::filter::FilterQuality;
     use crate::texture_cache::{Inner, TextureCache, TextureCacheId as Id};
 
@@ -315,6 +493,10 @@ mod gpu {
     pub(crate) struct GpuContext {
         pub engine: iced_wgpu::Engine,
         pub device: wgpu::Device,
+        /// The device's queue. `iced_wgpu::Engine` owns its own clone; the
+        /// blur chain submits its passes on this one, during the draw pass,
+        /// so they land in the queue before the frame that samples them.
+        pub queue: wgpu::Queue,
         pub format: wgpu::TextureFormat,
         /// `max_texture_dimension_2d` of `device`; bounds cache sizes.
         pub max_texture_dimension: u32,
@@ -330,6 +512,14 @@ mod gpu {
         size: Size<u32>,
         scale_factor: f32,
         liveness: Weak<Inner>,
+        /// Epoch of the last rasterisation, from [`super::next_epoch`]: a
+        /// derived blur texture compares it against its own to decide
+        /// whether it is still current.
+        epoch: u64,
+        /// Where this texture was last composited, in screen coordinates.
+        /// Zero-sized until the first composite; `blur::source_uv` treats
+        /// that as "no backdrop to read".
+        screen_bounds: Rectangle,
     }
 
     impl Texture for WgpuTexture {
@@ -340,6 +530,34 @@ mod gpu {
         fn recorded(&self) -> (Size<u32>, f32) {
             (self.size, self.scale_factor)
         }
+
+        fn source(&self) -> Source {
+            Source {
+                epoch: self.epoch,
+                bounds: self.screen_bounds,
+                size: self.size,
+                scale: self.scale_factor,
+            }
+        }
+
+        fn note_composited(&mut self, bounds: Rectangle) {
+            self.screen_bounds = bounds;
+        }
+    }
+
+    /// A blurred, downscaled copy of one source texture.
+    ///
+    /// The GPU counterpart of `cpu::Derived`, and shorter by exactly the
+    /// crop and the size: the sampler picks the sub-rectangle a pane of
+    /// glass covers for free, so nothing is cut out and nothing is cached
+    /// per pane, and normalised texture coordinates need no size to sample.
+    struct DerivedView {
+        view: Arc<wgpu::TextureView>,
+        /// The source epoch this was built from.
+        epoch: u64,
+        /// Frames since this was last drawn.
+        idle: u32,
+        liveness: Weak<Inner>,
     }
 
     /// Cache storage of the wgpu backend: the device, one texture per live
@@ -350,6 +568,17 @@ mod gpu {
         default_text_size: Pixels,
         pub(super) entries: Entries<WgpuTexture>,
         pub(super) pool: Pool<iced_wgpu::Renderer>,
+        /// Blurred derivatives, one per `(source, radius, downscale)`; see
+        /// [`DerivedView`].
+        derived: Mutex<HashMap<crate::blur::DerivedKey, DerivedView>>,
+        /// Built on the first blur and never rebuilt: an app that never asks
+        /// for one must not pay for two pipelines and a shader compile.
+        pipelines: OnceLock<BlurPipelines>,
+        /// Intermediate render targets of the chain. Named `targets` rather
+        /// than `pool`, which the nested-renderer pool above already holds.
+        targets: TargetPool,
+        /// Blurs run so far, for [`WgpuCacheStore::blur_count`].
+        blurs: AtomicU64,
     }
 
     impl WgpuCacheStore {
@@ -360,6 +589,10 @@ mod gpu {
                 default_text_size,
                 entries: Entries::new(),
                 pool: Pool::new(),
+                derived: Mutex::new(HashMap::new()),
+                pipelines: OnceLock::new(),
+                targets: TargetPool::new(),
+                blurs: AtomicU64::new(0),
             }
         }
 
@@ -371,6 +604,21 @@ mod gpu {
         /// handle died. Called once per `present`/`screenshot`.
         pub(crate) fn begin_frame(&self) {
             self.entries.trim();
+
+            // Derivatives die with their source, and also on their own: a
+            // radius that was set once and abandoned must not pin a texture.
+            // `entries.trim()` above has already released its lock, and the
+            // target pool is aged after this one is dropped, so the order
+            // `derived` -> `entries` that `frosted` relies on is never
+            // inverted and no two of the three are ever held at once.
+            let mut derived = self.derived.lock().unwrap_or_else(PoisonError::into_inner);
+            derived.retain(|_, entry| {
+                entry.idle += 1;
+                entry.liveness.strong_count() > 0 && entry.idle <= crate::blur::DERIVED_IDLE_FRAMES
+            });
+            drop(derived);
+
+            self.targets.age();
         }
 
         /// A renderer on this store's engine (shares the glyph atlas and
@@ -458,6 +706,10 @@ mod gpu {
             self.pool.return_renderer(renderer);
 
             let mut entries = self.entries.lock();
+            let screen_bounds = match entries.get(&cache.id()) {
+                Some(Entry::Recorded(texture)) => texture.screen_bounds,
+                _ => Rectangle::with_size(Size::new(0.0, 0.0)),
+            };
             let _ = entries.insert(
                 cache.id(),
                 Entry::Recorded(WgpuTexture {
@@ -465,6 +717,8 @@ mod gpu {
                     size,
                     scale_factor,
                     liveness: cache.liveness(),
+                    epoch: super::next_epoch(),
+                    screen_bounds,
                 }),
             );
             drop(entries);
@@ -480,6 +734,111 @@ mod gpu {
                 Entry::Uncacheable { .. } => None,
             }
         }
+
+        /// Records where the texture of `id` was just composited, so a pane
+        /// of glass over it can work out which part of it lies underneath.
+        pub(crate) fn note_composited(&self, id: Id, bounds: Rectangle) {
+            self.entries.note_composited(id, bounds);
+        }
+
+        /// The blurred backdrop for a pane of glass at `glass`: the derived
+        /// view, the sub-rectangle of it to sample in normalised
+        /// coordinates, and the screen rectangle to draw into.
+        ///
+        /// The blur runs at most once per source epoch: a derivative
+        /// remembers the epoch it was built from, so moving, resizing,
+        /// fading or clipping the glass costs one integer comparison.
+        /// `None` when there is nothing to show — the source was never
+        /// recorded, is uncacheable, has never been composited, or does not
+        /// lie under the glass at all.
+        ///
+        /// Unlike the software path this returns no crop: the sub-rectangle
+        /// is normalised texture coordinates of the derived view, and the
+        /// sampler cuts it out for free.
+        ///
+        /// `frost` is resolved here rather than by the caller because the
+        /// scale it must be measured against is the source's own recorded
+        /// one, which only this entry knows (see [`Source::scale`]).
+        pub(crate) fn frosted(
+            &self,
+            id: Id,
+            frost: super::Frost,
+            glass: Rectangle,
+        ) -> Option<(Arc<wgpu::TextureView>, Rectangle, Rectangle)> {
+            // The source's size is read here and the view itself only after
+            // `derived` is taken, so a re-record landing between the two
+            // would pair a size with a texture of a different one. The
+            // record and draw pipeline of this crate is single-threaded by
+            // construction, so that cannot happen; and if it ever could,
+            // the epoch stored alongside would be stale and the next frame
+            // would rebuild the derivative anyway.
+            let source = self.entries.source(id)?;
+            let blur = crate::blur::Blur::resolve(frost.radius, source.scale, frost.downscale)?;
+            let (epoch, source_bounds, source_size) = (source.epoch, source.bounds, source.size);
+            let visible = glass.intersection(&source_bounds)?;
+            let uv = crate::blur::source_uv(visible, source_bounds)?;
+            let key = blur.key(id);
+
+            // Lock order is always derived -> entries, matching the software
+            // store: `view` and the liveness lookup below take the entries
+            // lock nested inside this one, and nothing here ever takes them
+            // the other way round.
+            let mut derived = self.derived.lock().unwrap_or_else(PoisonError::into_inner);
+
+            if derived.get(&key).is_none_or(|entry| entry.epoch != epoch) {
+                let source = self.view(id)?;
+                let liveness = {
+                    let entries = self.entries.lock();
+                    entries.get(&id)?.liveness().clone()
+                };
+                let pipelines = self
+                    .pipelines
+                    .get_or_init(|| BlurPipelines::new(&self.gpu.device, self.gpu.format));
+                // The chain's own size is only needed to size intermediate
+                // targets; the caller samples it through normalised
+                // coordinates, so nothing here needs it back.
+                let (view, _size) = pipelines.run(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &source,
+                    source_size,
+                    blur,
+                    &self.targets,
+                );
+                let _ = self.blurs.fetch_add(1, Ordering::Relaxed);
+                // Replacing a stale derivative drops its texture rather
+                // than returning it to the target pool, so the next blur of
+                // this source allocates one afresh: correct, and wasteful
+                // for a cache that re-records every frame.
+                let _ = derived.insert(
+                    key,
+                    DerivedView {
+                        view,
+                        epoch,
+                        idle: 0,
+                        liveness,
+                    },
+                );
+            }
+
+            let entry = derived.get_mut(&key)?;
+            entry.idle = 0;
+
+            Some((entry.view.clone(), uv, visible))
+        }
+
+        /// Blurs run so far. Diagnostics only.
+        pub(crate) fn blur_count(&self) -> u64 {
+            self.blurs.load(Ordering::Relaxed)
+        }
+
+        /// Live derived textures. Diagnostics only.
+        pub(crate) fn derived_len(&self) -> usize {
+            self.derived
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+        }
     }
 }
 
@@ -488,14 +847,16 @@ pub(crate) use gpu::{GpuContext, WgpuCacheStore};
 
 #[cfg(feature = "tiny-skia")]
 mod cpu {
-    use std::sync::Weak;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, PoisonError, Weak};
 
-    use iced_core::{Color, Font, Pixels, Rectangle, Size, image};
+    use iced_core::{Color, Font, Pixels, Point, Rectangle, Size, image};
     use iced_graphics::Viewport;
 
     use super::{
-        CPU_MAX_BYTES, CPU_MAX_DIMENSION, Entries, Entry, Pool, Record, Texture, clamp_size,
-        fits_cpu, needs_record,
+        CPU_MAX_BYTES, CPU_MAX_DIMENSION, Entries, Entry, Pool, Record, Source, Texture,
+        clamp_size, fits_cpu, needs_record,
     };
     use crate::texture_cache::{Inner, TextureCache, TextureCacheId as Id};
 
@@ -504,12 +865,28 @@ mod cpu {
         /// Straight-alpha RGBA of the last record; a new handle per record so
         /// iced's raster cache reloads it.
         handle: image::Handle,
+        /// The last rounded variant of `handle`, and the corners it was cut
+        /// to. `iced_tiny_skia` never reads `image::Image::border_radius`,
+        /// so a rounded composite has to be a rounded *handle*; cutting it
+        /// is a pass over the texture, so it is kept until the corners or
+        /// the recording change. One slot, because a texture composited at
+        /// two different radii in one frame is not a thing any widget here
+        /// does.
+        rounded: Option<(iced_core::border::Radius, image::Handle)>,
         /// Scratch pixmap and clip mask, reused while the size is unchanged.
         /// `None` while a record is in progress.
         scratch: Option<(tiny_skia::Pixmap, tiny_skia::Mask)>,
         size: Size<u32>,
         scale_factor: f32,
         liveness: Weak<Inner>,
+        /// Epoch of the last rasterisation, from [`super::next_epoch`]: a
+        /// derived blur texture compares it against its own to decide
+        /// whether it is still current.
+        epoch: u64,
+        /// Where this texture was last composited, in screen coordinates.
+        /// Zero-sized until the first composite; `blur::source_uv` treats
+        /// that as "no backdrop to read".
+        screen_bounds: Rectangle,
     }
 
     impl Texture for TinySkiaTexture {
@@ -520,6 +897,47 @@ mod cpu {
         fn recorded(&self) -> (Size<u32>, f32) {
             (self.size, self.scale_factor)
         }
+
+        fn source(&self) -> Source {
+            Source {
+                epoch: self.epoch,
+                bounds: self.screen_bounds,
+                size: self.size,
+                scale: self.scale_factor,
+            }
+        }
+
+        fn note_composited(&mut self, bounds: Rectangle) {
+            self.screen_bounds = bounds;
+        }
+    }
+
+    /// A blurred, downscaled copy of one source texture, plus the crop of it
+    /// that was last asked for.
+    struct Derived {
+        /// Premultiplied BGRA at the downscaled size — the same
+        /// representation the pixmap uses, so nothing is converted until
+        /// the handle is built.
+        pixels: Vec<u8>,
+        size: Size<u32>,
+        /// The source epoch this was built from.
+        epoch: u64,
+        /// The last crop and the handle cut from it.
+        ///
+        /// On the GPU the sub-rectangle is free — the sampler picks it. Here
+        /// an `image::Handle` is drawn whole, so the crop costs a copy. A
+        /// still pane pays it once; a moving one pays a copy of a buffer
+        /// `downscale²` times smaller than the source per frame.
+        ///
+        /// Exactly one crop is kept, so two panes at the same radius over
+        /// one source but at different positions evict each other and both
+        /// recut every frame. That is the intended trade: the derivative
+        /// itself — the expensive part — is still shared between them, and
+        /// the cut is the cheap part the cost model budgets for.
+        crop: Option<(crate::blur::Crop, iced_core::border::Radius, image::Handle)>,
+        /// Frames since this was last drawn.
+        idle: u32,
+        liveness: Weak<Inner>,
     }
 
     /// Cache storage of the software backend: one pixmap per live cache and
@@ -529,6 +947,11 @@ mod cpu {
         default_text_size: Pixels,
         pub(super) entries: Entries<TinySkiaTexture>,
         pub(super) pool: Pool<iced_tiny_skia::Renderer>,
+        /// Blurred derivatives, one per `(source, radius, downscale)`; see
+        /// [`Derived`].
+        derived: Mutex<HashMap<crate::blur::DerivedKey, Derived>>,
+        /// Blurs run so far, for [`TinySkiaCacheStore::blur_count`].
+        blurs: AtomicU64,
     }
 
     impl TinySkiaCacheStore {
@@ -538,6 +961,8 @@ mod cpu {
                 default_text_size,
                 entries: Entries::new(),
                 pool: Pool::new(),
+                derived: Mutex::new(HashMap::new()),
+                blurs: AtomicU64::new(0),
             }
         }
 
@@ -545,6 +970,16 @@ mod cpu {
         /// handle died. Called once per `present`/`screenshot`.
         pub(crate) fn begin_frame(&self) {
             self.entries.trim();
+
+            // Derivatives die with their source, and also on their own: a
+            // radius that was set once and abandoned must not pin memory.
+            // `entries.trim()` above has already released its lock, so this
+            // never holds both at once.
+            let mut derived = self.derived.lock().unwrap_or_else(PoisonError::into_inner);
+            derived.retain(|_, entry| {
+                entry.idle += 1;
+                entry.liveness.strong_count() > 0 && entry.idle <= crate::blur::DERIVED_IDLE_FRAMES
+            });
         }
 
         pub(crate) fn new_renderer(&self) -> iced_tiny_skia::Renderer {
@@ -631,17 +1066,25 @@ mod cpu {
             match entry {
                 Entry::Recorded(texture) => {
                     texture.handle = handle;
+                    texture.rounded = None;
                     texture.scratch = Some((pixmap, mask));
                     texture.size = size;
                     texture.scale_factor = scale_factor;
+                    texture.epoch = super::next_epoch();
+                    // `screen_bounds` is left as-is: the texture is updated
+                    // in place, so its last composited placement still
+                    // applies until the next composite moves it.
                 }
                 Entry::Uncacheable { .. } => {
                     *entry = Entry::Recorded(TinySkiaTexture {
                         handle,
+                        rounded: None,
                         scratch: Some((pixmap, mask)),
                         size,
                         scale_factor,
                         liveness: cache.liveness(),
+                        epoch: super::next_epoch(),
+                        screen_bounds: Rectangle::with_size(Size::new(0.0, 0.0)),
                     });
                 }
             }
@@ -649,11 +1092,300 @@ mod cpu {
             Record::Fresh
         }
 
+        /// The image of `id` cut to `corners`, if recorded.
+        ///
+        /// Zero corners hand back the square handle untouched. Otherwise the
+        /// cut is rebuilt from the pixmap — the radii are in logical pixels
+        /// and the texture is in its own, so they are scaled by the
+        /// recording scale on the way in.
+        pub(crate) fn handle_rounded(
+            &self,
+            id: Id,
+            corners: iced_core::border::Radius,
+        ) -> Option<image::Handle> {
+            let radii: [f32; 4] = corners.into();
+            if radii.iter().all(|radius| *radius <= 0.0) {
+                return self.handle(id);
+            }
+
+            let mut entries = self.entries.lock();
+            let Some(Entry::Recorded(texture)) = entries.get_mut(&id) else {
+                return None;
+            };
+
+            if let Some((cached, handle)) = &texture.rounded
+                && *cached == corners
+            {
+                return Some(handle.clone());
+            }
+
+            let (pixmap, _) = texture.scratch.as_ref()?;
+            let mut rgba = pixmap_to_rgba(pixmap.data());
+            let scale = texture.scale_factor;
+            round_corners(
+                &mut rgba,
+                texture.size,
+                Rectangle::with_size(iced_core::Size::new(
+                    texture.size.width as f32,
+                    texture.size.height as f32,
+                )),
+                radii.map(|radius| radius * scale),
+            );
+
+            let handle = image::Handle::from_rgba(texture.size.width, texture.size.height, rgba);
+            texture.rounded = Some((corners, handle.clone()));
+
+            Some(handle)
+        }
+
         /// The image of `id`, if recorded.
         pub(crate) fn handle(&self, id: Id) -> Option<image::Handle> {
             match self.entries.lock().get(&id)? {
                 Entry::Recorded(texture) => Some(texture.handle.clone()),
                 Entry::Uncacheable { .. } => None,
+            }
+        }
+
+        /// Epoch, screen placement and size of the texture of `id`.
+        ///
+        /// Exists for the store's own tests; production code (`frosted`)
+        /// reaches `entries.source` directly and has no need of this
+        /// wrapper.
+        #[cfg(all(test, feature = "tiny-skia"))]
+        pub(crate) fn source(&self, id: Id) -> Option<Source> {
+            self.entries.source(id)
+        }
+
+        /// Records where the texture of `id` was just composited, so a pane
+        /// of glass over it can work out which part of it lies underneath.
+        pub(crate) fn note_composited(&self, id: Id, bounds: Rectangle) {
+            self.entries.note_composited(id, bounds);
+        }
+
+        /// The blurred backdrop a pane of glass at `glass` reads from the
+        /// texture of `id`, and the screen rectangle to draw it into.
+        ///
+        /// # Where the two backends differ
+        ///
+        /// The cut is grown outwards to whole derived texels (see
+        /// [`crate::blur::crop`]), so it covers a little more than the
+        /// rectangle returned here, and the caller stretches it back into
+        /// that rectangle. The GPU path has no such step: it hands the
+        /// sampler the unsnapped normalised coordinates and reads exactly
+        /// them. So the software backdrop carries a scale error of up to
+        /// one derived texel across the pane — zero somewhere inside the
+        /// glass, growing towards its edges, and central only when the crop
+        /// happened to grow by the same amount on both sides — and a moving
+        /// pane shifts that error about as the crop snaps.
+        ///
+        /// Drawing the cut at the texels' own screen positions instead
+        /// would be exact, and is not expressible: `iced_tiny_skia`'s
+        /// raster pipeline places a pixmap at an integer multiple of its
+        /// own texel size (`raster.rs`: `(bounds.x / width_scale) as i32`),
+        /// which truncates towards zero rather than rounding, with any
+        /// layer transformation already folded into the bounds, so the
+        /// whole texel it truncates to is the best it can do — a rigid
+        /// offset of up to a full texel over the *whole* pane, which is
+        /// worse where it is most visible and, measured, makes one
+        /// downscale disagree with another by 23/255 where stretching
+        /// disagrees by 7/255 (`tests/frosted.rs`,
+        /// `the_same_sigma_survives_every_downscale`). Making it exact
+        /// means resampling the cut by the sub-texel residual, which is a
+        /// design change rather than a correction.
+        ///
+        /// The blur runs at most once per source epoch: a derivative
+        /// remembers the epoch it was built from, so moving, resizing,
+        /// fading or clipping the glass costs one integer comparison.
+        /// `None` when there is nothing to show — the source was never
+        /// recorded, is uncacheable, has never been composited, or does not
+        /// lie under the glass at all.
+        ///
+        /// `frost` is resolved here rather than by the caller because the
+        /// scale it must be measured against is the source's own recorded
+        /// one, which only this entry knows (see [`Source::scale`]).
+        pub(crate) fn frosted(
+            &self,
+            id: Id,
+            frost: super::Frost,
+            glass: Rectangle,
+        ) -> Option<(image::Handle, Rectangle)> {
+            let source = self.entries.source(id)?;
+            let blur = crate::blur::Blur::resolve(frost.radius, source.scale, frost.downscale)?;
+            let (epoch, source_bounds, source_size) = (source.epoch, source.bounds, source.size);
+            let visible = glass.intersection(&source_bounds)?;
+            let uv = crate::blur::source_uv(visible, source_bounds)?;
+
+            let key = blur.key(id);
+            let target = blur.target_size(source_size);
+            let window = crate::blur::crop(uv, target)?;
+
+            // Lock order is always derived -> entries: `blurred_pixels`
+            // below takes and releases the entries lock on its own, nested
+            // inside this one, and never the other way around.
+            let mut derived = self.derived.lock().unwrap_or_else(PoisonError::into_inner);
+
+            let stale = derived
+                .get(&key)
+                .is_none_or(|existing| existing.epoch != epoch);
+
+            if stale {
+                let pixels = self.blurred_pixels(id, blur, target)?;
+                let liveness = {
+                    let entries = self.entries.lock();
+                    entries.get(&id)?.liveness().clone()
+                };
+                let _ = self.blurs.fetch_add(1, Ordering::Relaxed);
+                let _ = derived.insert(
+                    key,
+                    Derived {
+                        pixels,
+                        size: target,
+                        epoch,
+                        crop: None,
+                        idle: 0,
+                        liveness,
+                    },
+                );
+            }
+
+            let entry = derived.get_mut(&key)?;
+            entry.idle = 0;
+
+            let handle = match &entry.crop {
+                Some((cached, corners, handle))
+                    if *cached == window && *corners == frost.corners =>
+                {
+                    handle.clone()
+                }
+                _ => {
+                    let cut = crate::blur::cpu::crop_out(&entry.pixels, entry.size, window);
+                    let mut rgba = pixmap_to_rgba(&cut);
+
+                    // The corners belong to the whole pane, but the cut is
+                    // only the part of it lying over the source, at the
+                    // derived texture's resolution — so both the shape and
+                    // the radii are mapped into the cut's own pixels.
+                    let scale = window.width as f32 / visible.width;
+                    let shape = Rectangle {
+                        x: (glass.x - visible.x) * scale,
+                        y: (glass.y - visible.y) * scale,
+                        width: glass.width * scale,
+                        height: glass.height * scale,
+                    };
+                    let radii: [f32; 4] = frost.corners.into();
+                    round_corners(
+                        &mut rgba,
+                        Size::new(window.width, window.height),
+                        shape,
+                        radii.map(|radius| radius * scale),
+                    );
+
+                    let handle = image::Handle::from_rgba(window.width, window.height, rgba);
+                    entry.crop = Some((window, frost.corners, handle.clone()));
+                    handle
+                }
+            };
+
+            Some((handle, visible))
+        }
+
+        /// Downscales and blurs the pixmap of `id`. `None` if the pixmap is
+        /// not available (a record is in progress, or the entry is gone).
+        ///
+        /// Drops the entries lock before blurring: `downsample` returns an
+        /// owned buffer, so the blur itself — the expensive part — never
+        /// runs with the lock held.
+        fn blurred_pixels(
+            &self,
+            id: Id,
+            blur: crate::blur::Blur,
+            target: Size<u32>,
+        ) -> Option<Vec<u8>> {
+            let entries = self.entries.lock();
+            let Some(Entry::Recorded(texture)) = entries.get(&id) else {
+                return None;
+            };
+            let (pixmap, _) = texture.scratch.as_ref()?;
+            let (mut pixels, size) =
+                crate::blur::cpu::downsample(pixmap.data(), texture.size, blur.downscale);
+            drop(entries);
+
+            debug_assert_eq!(size, target, "the downscale agrees with `target_size`");
+            crate::blur::cpu::blur(&mut pixels, size, blur.residual_sigma());
+
+            Some(pixels)
+        }
+
+        /// Blurs run so far. Diagnostics only.
+        pub(crate) fn blur_count(&self) -> u64 {
+            self.blurs.load(Ordering::Relaxed)
+        }
+
+        /// Live derived textures. Diagnostics only.
+        pub(crate) fn derived_len(&self) -> usize {
+            self.derived
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+        }
+
+        /// The blurs the live derivatives were built with. Test-only: it is
+        /// how a test states what a radius resolved to, which production
+        /// code never needs back.
+        #[cfg(test)]
+        pub(crate) fn derived_blurs(&self) -> Vec<crate::blur::Blur> {
+            self.derived
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .keys()
+                .map(|key| key.blur())
+                .collect()
+        }
+    }
+
+    /// Multiplies the alpha of a straight-alpha RGBA buffer by the coverage
+    /// of a rounded rectangle, so a composited texture can have corners.
+    ///
+    /// Alpha only: in straight alpha the colour of a partly covered pixel is
+    /// unchanged and only its coverage differs, so scaling the colour too
+    /// would darken every rounded edge — the same mistake, in the other
+    /// direction, that blurring in straight alpha would make.
+    ///
+    /// `iced_tiny_skia` never reads `image::Image::border_radius` (it
+    /// destructures the field away), so the software backend has no rounded
+    /// image of its own and this is where the corners come from. Runs once
+    /// per buffer, not per frame.
+    ///
+    /// `shape` and `radii` are both in this buffer's pixels, not in logical
+    /// ones: the caller scales them, because only it knows what the buffer
+    /// is a picture of.
+    pub(crate) fn round_corners(
+        rgba: &mut [u8],
+        size: Size<u32>,
+        shape: Rectangle,
+        radii: [f32; 4],
+    ) {
+        if radii.iter().all(|radius| *radius <= 0.0) {
+            return;
+        }
+
+        let extent = iced_core::Size::new(shape.width, shape.height);
+
+        for y in 0..size.height {
+            for x in 0..size.width {
+                // Sampled at the pixel's centre: a pixel is fully covered
+                // when its middle is inside, not when its top-left corner is.
+                // `shape` is where the rounded rectangle sits in this
+                // buffer's own pixels — usually the whole of it, but a pane
+                // of glass clipped to its source draws only part of a shape
+                // that extends past the buffer.
+                let centre = Point::new(x as f32 + 0.5 - shape.x, y as f32 + 0.5 - shape.y);
+                let coverage = crate::geometry::rounded_coverage(centre, extent, radii);
+
+                if coverage < 1.0 {
+                    let alpha = ((y * size.width + x) * 4 + 3) as usize;
+                    rgba[alpha] = (f32::from(rgba[alpha]) * coverage).round() as u8;
+                }
             }
         }
     }
@@ -696,7 +1428,7 @@ mod cpu {
 #[cfg(feature = "tiny-skia")]
 pub(crate) use cpu::TinySkiaCacheStore;
 #[cfg(all(test, feature = "tiny-skia"))]
-use cpu::pixmap_to_rgba;
+use cpu::{pixmap_to_rgba, round_corners};
 
 #[cfg(test)]
 mod tests {
@@ -866,6 +1598,85 @@ mod store_tests {
         assert_eq!(cache.record_count(), 4);
     }
 
+    /// Straight-alpha RGBA, `width` x `height`, every pixel opaque red.
+    fn opaque_red(width: u32, height: u32) -> Vec<u8> {
+        [255u8, 0, 0, 255].repeat((width * height) as usize)
+    }
+
+    #[test]
+    fn a_zero_radius_leaves_every_byte_alone() {
+        let mut pixels = opaque_red(8, 8);
+        let before = pixels.clone();
+        round_corners(
+            &mut pixels,
+            Size::new(8, 8),
+            Rectangle::with_size(iced_core::Size::new(8.0, 8.0)),
+            [0.0; 4],
+        );
+        assert_eq!(pixels, before);
+    }
+
+    #[test]
+    fn rounding_clears_the_corners_and_spares_the_centre() {
+        let mut pixels = opaque_red(16, 16);
+        round_corners(
+            &mut pixels,
+            Size::new(16, 16),
+            Rectangle::with_size(iced_core::Size::new(16.0, 16.0)),
+            [6.0; 4],
+        );
+
+        let alpha = |x: u32, y: u32| pixels[((y * 16 + x) * 4 + 3) as usize];
+        for (x, y) in [(0, 0), (15, 0), (15, 15), (0, 15)] {
+            assert_eq!(alpha(x, y), 0, "corner ({x}, {y}) should be cut away");
+        }
+        assert_eq!(alpha(8, 8), 255, "the centre is untouched");
+        assert_eq!(alpha(8, 0), 255, "the middle of an edge is untouched");
+    }
+
+    #[test]
+    fn rounding_scales_alpha_only_and_never_the_colour() {
+        // Straight alpha: the colour of a partly covered pixel does not
+        // change, only how much of it there is. Scaling RGB here would
+        // darken every rounded edge — the same class of bug premultiplied
+        // blurring exists to avoid.
+        let mut pixels = opaque_red(16, 16);
+        round_corners(
+            &mut pixels,
+            Size::new(16, 16),
+            Rectangle::with_size(iced_core::Size::new(16.0, 16.0)),
+            [6.0; 4],
+        );
+
+        for pixel in pixels.as_chunks::<4>().0 {
+            assert_eq!(pixel[0], 255, "red channel untouched");
+            assert_eq!(pixel[1], 0);
+            assert_eq!(pixel[2], 0);
+        }
+    }
+
+    #[test]
+    fn the_arc_is_antialiased_rather_than_stepped() {
+        let mut pixels = opaque_red(32, 32);
+        round_corners(
+            &mut pixels,
+            Size::new(32, 32),
+            Rectangle::with_size(iced_core::Size::new(32.0, 32.0)),
+            [10.0; 4],
+        );
+
+        let alpha = |x: u32, y: u32| pixels[((y * 32 + x) * 4 + 3) as usize];
+        let partial = (0..32)
+            .flat_map(|y| (0..32).map(move |x| (x, y)))
+            .filter(|&(x, y)| (1..255).contains(&alpha(x, y)))
+            .count();
+
+        assert!(
+            partial >= 8,
+            "expected a soft arc, found {partial} partly covered pixels"
+        );
+    }
+
     #[test]
     fn pixmap_bytes_are_swizzled_and_demultiplied() {
         // Premultiplied BGRA: 50 %-alpha pure red, transparent, opaque (r=30,g=20,b=10).
@@ -873,5 +1684,294 @@ mod store_tests {
         assert_eq!(&out[..4], &[255, 0, 0, 128]);
         assert_eq!(&out[4..8], &[0, 0, 0, 0]);
         assert_eq!(&out[8..], &[30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn the_store_counts_rasterisations_of_its_own() {
+        let store = store();
+        let cache = TextureCache::new();
+
+        assert!(store.source(cache.id()).is_none(), "never recorded");
+
+        assert_eq!(store.record(&cache, SIZE, 1.0, empty), Record::Fresh);
+        let first = store.source(cache.id()).expect("recorded");
+        assert_eq!(first.size, SIZE);
+        assert_eq!(first.scale, 1.0);
+
+        assert_eq!(store.record(&cache, SIZE, 1.0, empty), Record::Reused);
+        let second = store.source(cache.id()).expect("recorded");
+        assert_eq!(second, first, "a reuse is not a new epoch");
+
+        cache.invalidate();
+        assert_eq!(store.record(&cache, SIZE, 1.0, empty), Record::Fresh);
+        let third = store.source(cache.id()).expect("recorded");
+        assert_ne!(third, second, "a re-record is a new epoch");
+    }
+
+    #[test]
+    fn a_composite_records_where_the_texture_landed_on_screen() {
+        let store = store();
+        let cache = TextureCache::new();
+        assert_eq!(store.record(&cache, SIZE, 1.0, empty), Record::Fresh);
+
+        let bounds = store.source(cache.id()).expect("recorded").bounds;
+        assert_eq!(
+            bounds,
+            Rectangle::with_size(Size::new(0.0, 0.0)),
+            "a texture that was never composited claims no place on screen"
+        );
+
+        let placed = Rectangle {
+            x: 10.0,
+            y: 20.0,
+            width: 4.0,
+            height: 4.0,
+        };
+        store.note_composited(cache.id(), placed);
+        let bounds = store.source(cache.id()).expect("recorded").bounds;
+        assert_eq!(bounds, placed);
+
+        // A re-record must not lose the placement: the texture is replaced,
+        // but where it sits on screen has not moved. This is the branch a
+        // blurred derivative depends on — losing it here would leave a pane
+        // of glass sampling nothing.
+        cache.invalidate();
+        assert_eq!(store.record(&cache, SIZE, 1.0, empty), Record::Fresh);
+        let bounds = store.source(cache.id()).expect("recorded").bounds;
+        assert_eq!(bounds, placed, "an invalidation keeps the placement");
+
+        // A resize reaches the same entry down a different path.
+        assert_eq!(
+            store.record(&cache, Size::new(5, 4), 1.0, empty),
+            Record::Fresh
+        );
+        let bounds = store.source(cache.id()).expect("recorded").bounds;
+        assert_eq!(bounds, placed, "so does a resize");
+
+        // An unknown or uncacheable id is a no-op, not a panic.
+        store.note_composited(TextureCache::new().id(), placed);
+    }
+
+    #[test]
+    fn a_cache_recovering_from_uncacheable_starts_with_no_placement() {
+        let store = store();
+        let cache = TextureCache::new();
+
+        let oversize = Size::new(CPU_MAX_DIMENSION + 1, 1);
+        assert_eq!(
+            store.record(&cache, oversize, 1.0, empty),
+            Record::Uncacheable
+        );
+        assert!(store.source(cache.id()).is_none(), "nothing to place");
+
+        // The stale texture was dropped, so the new one has never been
+        // composited — unlike a re-record, there is no placement to carry.
+        assert_eq!(store.record(&cache, SIZE, 1.0, empty), Record::Fresh);
+        let bounds = store.source(cache.id()).expect("recorded").bounds;
+        assert_eq!(bounds.width, 0.0);
+        assert_eq!(bounds.height, 0.0);
+    }
+
+    use iced_core::Rectangle;
+
+    /// A record that fills the whole texture with opaque red.
+    fn red(
+        mut renderer: iced_tiny_skia::Renderer,
+        viewport: &iced_graphics::Viewport,
+    ) -> iced_tiny_skia::Renderer {
+        let bounds = Rectangle::with_size(viewport.logical_size());
+        renderer.reset(bounds);
+        renderer.fill_quad(
+            iced_core::renderer::Quad {
+                bounds,
+                border: iced_core::Border::default(),
+                shadow: iced_core::Shadow::default(),
+                snap: false,
+            },
+            iced_core::Background::Color(iced_core::Color::from_rgb(1.0, 0.0, 0.0)),
+        );
+        renderer
+    }
+
+    const GLASS: Rectangle = Rectangle {
+        x: 0.0,
+        y: 0.0,
+        width: 4.0,
+        height: 4.0,
+    };
+
+    fn frost_of(radius: f32, downscale: u32) -> Frost {
+        Frost {
+            radius,
+            downscale,
+            corners: border::Radius::default(),
+        }
+    }
+
+    /// A source recorded and composited over `GLASS`, ready to be frosted.
+    fn frosted_source(store: &TinySkiaCacheStore) -> TextureCache {
+        let cache = TextureCache::new();
+        assert_eq!(store.record(&cache, SIZE, 1.0, red), Record::Fresh);
+        store.note_composited(cache.id(), GLASS);
+        cache
+    }
+
+    #[test]
+    fn a_settled_frame_blurs_nothing_and_a_new_epoch_blurs_once() {
+        let store = store();
+        let cache = frosted_source(&store);
+        let blur = frost_of(2.0, 2);
+
+        assert!(store.frosted(cache.id(), blur, GLASS).is_some());
+        assert_eq!(store.blur_count(), 1);
+
+        // Redrawing the same glass, and moving, resizing and clipping it,
+        // are all free: the source is blurred whole, once.
+        for glass in [
+            GLASS,
+            Rectangle { x: 1.0, ..GLASS },
+            Rectangle {
+                width: 2.0,
+                ..GLASS
+            },
+        ] {
+            assert!(store.frosted(cache.id(), blur, glass).is_some());
+        }
+        assert_eq!(store.blur_count(), 1, "moving the glass is free");
+
+        cache.invalidate();
+        assert_eq!(store.record(&cache, SIZE, 1.0, red), Record::Fresh);
+        assert!(store.frosted(cache.id(), blur, GLASS).is_some());
+        assert_eq!(store.blur_count(), 2, "a new source epoch re-blurs once");
+    }
+
+    #[test]
+    fn one_derivative_per_radius_not_per_pane_of_glass() {
+        let store = store();
+        let cache = frosted_source(&store);
+
+        let _ = store.frosted(cache.id(), frost_of(2.0, 2), GLASS);
+        let _ = store.frosted(cache.id(), frost_of(2.0, 2), GLASS);
+        assert_eq!(store.derived_len(), 1, "same radius, one derivative");
+        assert_eq!(store.blur_count(), 1);
+
+        let _ = store.frosted(cache.id(), frost_of(4.0, 2), GLASS);
+        assert_eq!(store.derived_len(), 2, "a second radius, a second one");
+        assert_eq!(store.blur_count(), 2);
+    }
+
+    #[test]
+    fn derivatives_die_with_their_source() {
+        let store = store();
+        let cache = frosted_source(&store);
+        let _ = store.frosted(cache.id(), frost_of(2.0, 2), GLASS);
+        assert_eq!(store.derived_len(), 1);
+
+        store.begin_frame();
+        assert_eq!(store.derived_len(), 1, "a live handle keeps it");
+
+        drop(cache);
+        store.begin_frame();
+        assert_eq!(store.derived_len(), 0);
+        assert_eq!(store.entries.len(), 0);
+    }
+
+    #[test]
+    fn a_derivative_nobody_draws_is_released() {
+        let store = store();
+        let cache = frosted_source(&store);
+        let _ = store.frosted(cache.id(), frost_of(2.0, 2), GLASS);
+
+        for _ in 0..crate::blur::DERIVED_IDLE_FRAMES {
+            store.begin_frame();
+        }
+        assert_eq!(store.derived_len(), 1, "still within its idle window");
+
+        store.begin_frame();
+        assert_eq!(store.derived_len(), 0);
+    }
+
+    #[test]
+    fn glass_over_nothing_draws_nothing_and_creates_nothing() {
+        let store = store();
+        let blur = frost_of(2.0, 2);
+
+        // Never recorded.
+        let missing = TextureCache::new();
+        assert!(store.frosted(missing.id(), blur, GLASS).is_none());
+
+        // Uncacheable.
+        let oversized = TextureCache::new();
+        let too_big = Size::new(CPU_MAX_DIMENSION + 1, 1);
+        assert_eq!(
+            store.record(&oversized, too_big, 1.0, empty),
+            Record::Uncacheable
+        );
+        assert!(store.frosted(oversized.id(), blur, GLASS).is_none());
+
+        // Recorded but never composited: it claims no place on screen.
+        let unplaced = TextureCache::new();
+        assert_eq!(store.record(&unplaced, SIZE, 1.0, red), Record::Fresh);
+        assert!(store.frosted(unplaced.id(), blur, GLASS).is_none());
+
+        // Composited, but the glass is somewhere else entirely.
+        let elsewhere = frosted_source(&store);
+        let away = Rectangle {
+            x: 500.0,
+            y: 500.0,
+            ..GLASS
+        };
+        assert!(store.frosted(elsewhere.id(), blur, away).is_none());
+
+        assert_eq!(store.blur_count(), 0);
+        assert_eq!(store.derived_len(), 0);
+    }
+
+    #[test]
+    fn a_blur_is_measured_in_the_pixels_the_source_was_recorded_at() {
+        let store = store();
+        let cache = TextureCache::new();
+        // `Cached::supersample(2.0)` over a window at scale 1 records at a
+        // texture scale of 2: the entry's own scale, not the window's, is
+        // the one a radius has to be measured in.
+        assert_eq!(store.record(&cache, SIZE, 2.0, red), Record::Fresh);
+        store.note_composited(cache.id(), GLASS);
+
+        assert!(store.frosted(cache.id(), frost_of(6.0, 1), GLASS).is_some());
+
+        let blurs = store.derived_blurs();
+        assert_eq!(blurs.len(), 1);
+        assert_eq!(
+            blurs[0].sigma_source(),
+            12.0,
+            "a radius of 6 logical pixels is 12 pixels of a texture recorded at scale 2"
+        );
+    }
+
+    #[test]
+    fn frosted_returns_the_part_of_the_glass_the_source_covers() {
+        let store = store();
+        let cache = frosted_source(&store);
+        // Glass that hangs off the right-hand edge of the source.
+        let overhang = Rectangle {
+            x: 2.0,
+            y: 0.0,
+            width: 8.0,
+            height: 4.0,
+        };
+
+        let (_, drawn) = store
+            .frosted(cache.id(), frost_of(2.0, 2), overhang)
+            .expect("they overlap");
+
+        assert_eq!(
+            drawn,
+            Rectangle {
+                x: 2.0,
+                y: 0.0,
+                width: 2.0,
+                height: 4.0
+            }
+        );
     }
 }

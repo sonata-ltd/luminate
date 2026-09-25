@@ -10,8 +10,9 @@ use iced_core::Renderer as _;
 use iced_core::renderer::Headless;
 use iced_core::text::{Alignment, LineHeight, Renderer as _, Shaping, Text, Wrapping};
 use iced_core::{Color, Font, Pixels, Point, Rectangle, Size, Transformation, alignment};
-use iced_texture_cache::Warp;
-use iced_texture_cache::{FilterQuality, Record, Renderer, TextureCache, TextureRenderer};
+use iced_texture_cache::{
+    Composite, FilterQuality, Record, Renderer, TextureCache, TextureRenderer, Warp,
+};
 
 fn headless_wgpu() -> Renderer {
     iced_test::futures::futures::executor::block_on(<Renderer as Headless>::new(
@@ -136,9 +137,12 @@ fn a_resting_cached_composite_is_as_sharp_as_drawing_in_place() {
             cache_bounds,
             Rectangle::with_size(Size::new(CANVAS.width as f32, CANVAS.height as f32)),
             Transformation::IDENTITY,
-            1.0,
-            filter,
-            Warp::None,
+            Composite {
+                opacity: 1.0,
+                filter,
+                corners: iced::border::Radius::default(),
+                warp: Warp::None,
+            },
         );
         let shot = renderer.screenshot(CANVAS, scale, Color::WHITE);
         let cached = report(&format!("cached ({filter:?})"), &shot);
@@ -225,9 +229,12 @@ fn a_fractional_vertical_offset_costs_far_more_than_a_horizontal_one() {
                 bounds,
                 canvas,
                 Transformation::IDENTITY,
-                1.0,
-                filter,
-                Warp::None,
+                Composite {
+                    opacity: 1.0,
+                    filter,
+                    corners: iced::border::Radius::default(),
+                    warp: Warp::None,
+                },
             );
             let s = spread(&renderer.screenshot(CANVAS, scale, Color::WHITE));
             println!(
@@ -307,9 +314,12 @@ fn the_pager_policy_recovers_the_axis_aligned_sharpness() {
             bounds,
             canvas,
             Transformation::IDENTITY,
-            1.0,
-            FilterQuality::CatmullRom,
-            Warp::None,
+            Composite {
+                opacity: 1.0,
+                filter: FilterQuality::CatmullRom,
+                corners: iced::border::Radius::default(),
+                warp: Warp::None,
+            },
         );
         let s = spread(&renderer.screenshot(CANVAS, scale, Color::WHITE));
         println!(

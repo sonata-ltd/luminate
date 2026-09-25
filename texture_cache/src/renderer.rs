@@ -17,9 +17,8 @@ use iced_core::{
 use iced_graphics::{compositor, mesh};
 
 use crate::filter::FilterQuality;
-use crate::record::{Record, TextureRenderer, normalize_opacity};
+use crate::record::{Composite, Frost, Record, TextureRenderer, normalize_opacity};
 use crate::texture_cache::TextureCache;
-use crate::warp::Warp;
 
 #[cfg(feature = "tiny-skia")]
 use crate::record::TinySkiaCacheStore;
@@ -413,30 +412,108 @@ impl TextureRenderer for WgpuRenderer {
         content: Rectangle,
         clip: Rectangle,
         transform: Transformation,
+        composite: Composite,
+    ) {
+        use iced_wgpu::primitive::Renderer as _;
+
+        let Some(opacity) = normalize_opacity(composite.opacity) else {
+            return;
+        };
+        let Some(view) = self.store.view(cache.id()) else {
+            return;
+        };
+        self.store.note_composited(cache.id(), bounds * transform);
+
+        // At rest the texture is cut to the corners grown out to its padded
+        // edge. The warp is defined on the content, which sits inside that
+        // padding, and its own mask rounds the content's corners in real
+        // pixels.
+        let mask = crate::composite::Mask::whole(
+            bounds.size(),
+            crate::geometry::padded_corners(composite.corners, bounds, content),
+        );
+        let frame =
+            crate::composite::Frame::new(bounds, content, composite.corners, self.scale_factor());
+
+        self.with_layer(clip, |renderer| {
+            renderer.with_transformation(transform, |renderer| {
+                renderer.inner.draw_primitive(
+                    bounds,
+                    crate::composite::CompositePrimitive::new(
+                        view,
+                        opacity,
+                        composite.filter,
+                        mask,
+                        composite.warp,
+                        frame,
+                    ),
+                );
+            });
+        });
+    }
+
+    fn draw_frosted(
+        &mut self,
+        source: &TextureCache,
+        bounds: Rectangle,
+        clip: Rectangle,
+        transform: Transformation,
         opacity: f32,
-        filter: FilterQuality,
-        warp: Warp,
+        frost: Frost,
     ) {
         use iced_wgpu::primitive::Renderer as _;
 
         let Some(opacity) = normalize_opacity(opacity) else {
             return;
         };
-        let Some(view) = self.store.view(cache.id()) else {
+        // `frost` is handed over unresolved: the radius is in logical
+        // pixels and the blur runs in the pixels of the *source* texture,
+        // whose recorded scale (`scale` times that widget's supersample)
+        // only the store knows. Resolving it here against this renderer's
+        // own scale factor would halve the sigma of a supersampled source.
+        let Some((view, uv, visible)) = self.store.frosted(source.id(), frost, bounds * transform)
+        else {
             return;
         };
 
-        // The warp is defined on the content, which sits inside the padded
-        // texture, and its corner mask rounds in real pixels.
-        let frame = crate::composite::Frame::new(bounds, content, self.scale_factor());
+        // The corners belong to the whole pane, but only `visible` is drawn,
+        // so the coverage is sampled in the pane's own coordinates — which
+        // matters exactly when a pane overhangs its source.
+        let pane = bounds * transform;
+        let shape = Rectangle {
+            x: visible.x - pane.x,
+            y: visible.y - pane.y,
+            width: pane.width,
+            height: pane.height,
+        };
+        // Glass does not warp: the frame is only there to fill the uniform.
+        let frame = crate::composite::Frame::new(
+            visible,
+            visible,
+            iced_core::border::Radius::default(),
+            self.scale_factor(),
+        );
 
         self.with_layer(clip, |renderer| {
-            renderer.with_transformation(transform, |renderer| {
-                renderer.inner.draw_primitive(
-                    bounds,
-                    crate::composite::CompositePrimitive::new(view, opacity, filter, warp, frame),
-                );
-            });
+            // `visible` is already in screen space: the store intersected
+            // the transformed bounds with the source's placement, so the
+            // primitive is drawn without the transform, not through it.
+            renderer.inner.draw_primitive(
+                visible,
+                crate::composite::CompositePrimitive::new(
+                    view,
+                    opacity,
+                    FilterQuality::Bilinear,
+                    crate::composite::Mask {
+                        uv,
+                        corners: frost.corners,
+                        shape,
+                        drawn: visible.size(),
+                    },
+                    crate::warp::Warp::None,
+                    frame,
+                ),
+            );
         });
     }
 }
@@ -510,31 +587,37 @@ impl TextureRenderer for TinySkiaRenderer {
         content: Rectangle,
         clip: Rectangle,
         transform: Transformation,
-        opacity: f32,
-        filter: FilterQuality,
-        warp: Warp,
+        composite: Composite,
     ) {
-        let Some(opacity) = normalize_opacity(opacity) else {
+        let Some(opacity) = normalize_opacity(composite.opacity) else {
             return;
         };
-        let Some(handle) = self.store.handle(cache.id()) else {
+        // Cut to shape here rather than through `image::Image::border_radius`:
+        // `iced_tiny_skia` destructures that field away and never reads it.
+        // The corners are grown out to the padded edge, so the arc lands on
+        // the content's corner. The rounded texture is kept until the
+        // corners or the recording change.
+        let corners = crate::geometry::padded_corners(composite.corners, bounds, content);
+        let Some(handle) = self.store.handle_rounded(cache.id(), corners) else {
             return;
         };
 
         // No shaders here, so the genie's neck cannot be drawn. A scale
         // about the same anchor, at the same progress, keeps the motion and
         // its timing; see `Warp::affine_fallback`. The anchor is a corner
-        // of the content, not of the padding around it.
-        let Some(fallback) = warp.affine_transform(content) else {
+        // of the content, not of the padding around it. The rounded corners
+        // scale with it: keeping their radius needs the shader's mask.
+        let Some(fallback) = composite.warp.affine_transform(content) else {
             return;
         };
         let transform = transform * fallback;
+        self.store.note_composited(cache.id(), bounds * transform);
 
         // There is no bicubic kernel in iced's raster path, so `CatmullRom`
         // degrades to the same bilinear tap as `Bilinear`. `Snap` composites
         // on the pixel grid, where nearest is exact and cheapest; the caller
         // has already snapped the transform.
-        let snap = filter.snaps();
+        let snap = composite.filter.snaps();
         let image = image::Image {
             handle,
             filter_method: if snap {
@@ -552,6 +635,57 @@ impl TextureRenderer for TinySkiaRenderer {
             renderer.with_transformation(transform, |renderer| {
                 image::Renderer::draw_image(&mut renderer.inner, image, bounds, bounds);
             });
+        });
+    }
+
+    fn draw_frosted(
+        &mut self,
+        source: &TextureCache,
+        bounds: Rectangle,
+        clip: Rectangle,
+        transform: Transformation,
+        opacity: f32,
+        frost: Frost,
+    ) {
+        let Some(opacity) = normalize_opacity(opacity) else {
+            return;
+        };
+        // See the wgpu implementation: the store resolves `frost`, because
+        // the scale that matters is the one the source was recorded at.
+        let Some((handle, visible)) = self.store.frosted(source.id(), frost, bounds * transform)
+        else {
+            return;
+        };
+
+        // Always linear: the derived texture is upscaled back from
+        // 1/downscale, and nearest would show its blocks.
+        let image = image::Image {
+            handle,
+            filter_method: image::FilterMethod::Linear,
+            rotation: iced_core::Radians(0.0),
+            border_radius: iced_core::border::Radius::default(),
+            opacity,
+            snap: false,
+        };
+
+        self.with_layer(clip, |renderer| {
+            // The handle covers a little more than `visible` — the crop was
+            // grown outwards to whole derived texels — and is stretched
+            // back into it rather than drawn at the texels' own screen
+            // positions. That is not a choice: `iced_tiny_skia`'s raster
+            // pipeline places a pixmap at an integer multiple of its own
+            // texel size (`raster.rs`: `(bounds.x / width_scale) as i32`,
+            // truncating towards zero, after any layer transformation has
+            // been folded in), so the exact position is not expressible.
+            // Stretching keeps some point inside the pane registered — the
+            // centre only when the crop grew by the same amount on both
+            // sides — and spreads the error to the edges, where it stays
+            // under one derived texel; truncating to the whole texel below
+            // instead would offset the whole backdrop by up to a full one,
+            // which is what `the_same_sigma_survives_every_downscale`
+            // measures. See `TinySkiaCacheStore::frosted` for the whole
+            // account.
+            image::Renderer::draw_image(&mut renderer.inner, image, visible, visible);
         });
     }
 }
@@ -632,20 +766,33 @@ impl TextureRenderer for Renderer {
         content: Rectangle,
         clip: Rectangle,
         transform: Transformation,
-        opacity: f32,
-        filter: FilterQuality,
-        warp: Warp,
+        composite: Composite,
     ) {
         match self {
             Self::Primary(renderer) => {
-                renderer.draw_cached(
-                    cache, bounds, content, clip, transform, opacity, filter, warp,
-                );
+                renderer.draw_cached(cache, bounds, content, clip, transform, composite);
             }
             Self::Secondary(renderer) => {
-                renderer.draw_cached(
-                    cache, bounds, content, clip, transform, opacity, filter, warp,
-                );
+                renderer.draw_cached(cache, bounds, content, clip, transform, composite);
+            }
+        }
+    }
+
+    fn draw_frosted(
+        &mut self,
+        source: &TextureCache,
+        bounds: Rectangle,
+        clip: Rectangle,
+        transform: Transformation,
+        opacity: f32,
+        frost: Frost,
+    ) {
+        match self {
+            Self::Primary(renderer) => {
+                renderer.draw_frosted(source, bounds, clip, transform, opacity, frost);
+            }
+            Self::Secondary(renderer) => {
+                renderer.draw_frosted(source, bounds, clip, transform, opacity, frost);
             }
         }
     }
@@ -663,6 +810,37 @@ pub(crate) fn headless_tiny_skia() -> Renderer {
     let renderer = half;
 
     renderer
+}
+
+/// Blurs run by this renderer's store. Diagnostics only; backs
+/// `crate::testing::blur_count`.
+pub(crate) fn blur_count(renderer: &Renderer) -> u64 {
+    #[cfg(all(feature = "wgpu", feature = "tiny-skia"))]
+    {
+        match renderer {
+            Renderer::Primary(renderer) => renderer.store.blur_count(),
+            Renderer::Secondary(renderer) => renderer.store.blur_count(),
+        }
+    }
+    #[cfg(not(all(feature = "wgpu", feature = "tiny-skia")))]
+    {
+        renderer.store.blur_count()
+    }
+}
+
+/// Live derived blur textures. Diagnostics only.
+pub(crate) fn derived_len(renderer: &Renderer) -> usize {
+    #[cfg(all(feature = "wgpu", feature = "tiny-skia"))]
+    {
+        match renderer {
+            Renderer::Primary(renderer) => renderer.store.derived_len(),
+            Renderer::Secondary(renderer) => renderer.store.derived_len(),
+        }
+    }
+    #[cfg(not(all(feature = "wgpu", feature = "tiny-skia")))]
+    {
+        renderer.store.derived_len()
+    }
 }
 
 #[cfg(test)]

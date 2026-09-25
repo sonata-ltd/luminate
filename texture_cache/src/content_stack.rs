@@ -15,9 +15,8 @@ use crate::ancestors;
 use crate::filter::FilterQuality;
 use crate::geometry::{composite_geometry, lerp, snap_to_grid};
 use crate::reaction::{Activity, observe};
-use crate::record::{Record, TextureRenderer};
+use crate::record::{Composite, Record, TextureRenderer};
 use crate::texture_cache::TextureCache;
-use crate::warp::Warp;
 
 /// Pages are recorded edge to edge: they are clipped to the stack anyway, and
 /// a margin would put the texture's own grid at a fractional phase.
@@ -740,9 +739,7 @@ where
                         composite.cache_bounds,
                         clip,
                         Transformation::translate(-offset_x, 0.0),
-                        1.0,
-                        filter,
-                        Warp::None,
+                        Composite::plain(filter),
                     ),
                     // Too large for a texture: draw it where it belongs, by
                     // the same rule, so nothing jumps when it fits again.

@@ -88,6 +88,22 @@ The first release. What each crate provides:
   scroll offsets and focus, for no record at rest. Leaving live drawing
   invalidates the texture, so content that changed at rest is never shown
   stale when the next movement starts.
+- `Cached::border_radius`: cuts the composite to rounded corners, which
+  nothing in iced does for a texture. Radii past half the rectangle are
+  clamped to a capsule on both backends alike, and the edge ramps across one
+  device pixel. A layer with corners is never drawn live.
+- `Cached::genie(progress, GenieShape)`: a non-affine collapse into one of
+  the content's corners (`Warp::Genie`, `Genie`, `Corner`,
+  `MAX_STRETCH_POWER`), evaluated per pixel in the composite shader at
+  `Tier::Composite` — no mesh, no re-record. `GenieShape` tunes the band the
+  rows converge on (`target_width`), each row's lag (`stretch_power`) and the
+  side curve (`curve_in`, `curve_out`). The `border_radius` corners keep
+  their on-screen radius however far the rows are squeezed. The pointer
+  follows the picture. The software backend draws a scale about the same
+  anchor instead.
+- `Frosted` / `frosted()`: a pane that composites a blurred copy of another
+  `Cached`'s texture — the part lying under it — blurred once per
+  rasterisation of the source (`Frost`).
 - `FilterQuality::{CatmullRom, Bilinear, Snap}`: the reconstruction kernel used
   when a texture is composited between device pixels. Chosen from the graphics
   adapter by default (`CatmullRom` discrete, `Bilinear` integrated, `Snap`
@@ -123,7 +139,7 @@ The first release. What each crate provides:
 - `Renderer` and `Compositor` for wgpu and tiny-skia (optional features, at
   least one required), the `Element` alias, `Backend`, and the open
   `TextureRenderer` trait (`record` → `Record::{Fresh, Reused, Uncacheable}`,
-  `draw_cached`, `filter_quality`).
+  `draw_cached` with a `Composite`, `draw_frosted`, `filter_quality`).
 - Surface-format selection that never picks a float format for web colours.
 - Re-exports `iced_animate`.
 

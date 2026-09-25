@@ -14,9 +14,8 @@ use crate::cached::PixelSnap;
 use crate::filter::FilterQuality;
 use crate::geometry::{composite_geometry, lerp, pager_page_bounds, snap_to_grid};
 use crate::reaction::{Activity, observe};
-use crate::record::{Record, TextureRenderer};
+use crate::record::{Composite, Record, TextureRenderer};
 use crate::texture_cache::TextureCache;
-use crate::warp::Warp;
 
 /// Pages are recorded edge to edge: they are clipped to the pager anyway.
 const BLEED: u32 = 0;
@@ -511,6 +510,10 @@ where
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
         let max_height = limits.max().height.min(self.max_height);
+        // Inside a scroll the height is compressed: a page that fills it has
+        // nothing to fill and is measured instead. `Limits::new` would drop
+        // that and stretch the page to an unbounded height.
+        let compression = Size::new(false, limits.compression().height);
         let page_count = self.children.len();
 
         let (camera, pending) = {
@@ -533,7 +536,11 @@ where
             width
         } else {
             {
-                let measure = Limits::new(Size::ZERO, Size::new(f32::INFINITY, max_height));
+                let measure = Limits::with_compression(
+                    Size::ZERO,
+                    Size::new(f32::INFINITY, max_height),
+                    compression,
+                );
                 let mut widest: f32 = 0.0;
                 for (slot, i) in nodes.iter_mut().zip(laid_out_indices(&visible)) {
                     let node = self.children[i].as_widget_mut().layout(
@@ -551,7 +558,11 @@ where
             }
         };
 
-        let child_limits = Limits::new(Size::new(width, 0.0), Size::new(width, max_height));
+        let child_limits = Limits::with_compression(
+            Size::new(width, 0.0),
+            Size::new(width, max_height),
+            compression,
+        );
         for (slot, i) in nodes.iter_mut().zip(laid_out_indices(&visible)) {
             let reusable = slot
                 .as_ref()
@@ -838,9 +849,7 @@ where
                         composite.cache_bounds,
                         clip,
                         Transformation::IDENTITY,
-                        1.0,
-                        filter,
-                        Warp::None,
+                        Composite::plain(filter),
                     ),
                     // Too large for a texture: the page is already laid out
                     // where it is drawn, so draw it there under the same clip.
@@ -1336,6 +1345,49 @@ mod tests {
             "{:?}",
             node.size()
         );
+    }
+
+    fn filling_pages<'a>() -> Vec<crate::Element<'a, ()>> {
+        (0..2)
+            .map(|i| iced::widget::container(text(i)).height(Length::Fill).into())
+            .collect()
+    }
+
+    /// Inside a vertical scroll the height is unbounded and compressed, the
+    /// way iced's scrollable hands it down: a page that fills its height has
+    /// nothing to fill and must be measured, not stretched to infinity —
+    /// an infinite pager makes the whole scrolled content infinite.
+    #[test]
+    fn a_filling_page_inside_a_vertical_scroll_keeps_a_finite_height() {
+        let renderer = crate::testing::headless_tiny_skia();
+        let mut pager: TestPager<'_> = Pager::new(filling_pages()).width(300.0);
+        let mut tree = tree_of(&pager);
+        let scrolling = Limits::with_compression(
+            Size::ZERO,
+            Size::new(300.0, f32::INFINITY),
+            Size::new(false, true),
+        );
+
+        let node = pager.layout(&mut tree, &renderer, &scrolling);
+
+        assert!(
+            node.size().height.is_finite() && node.size().height > 0.0,
+            "{:?}",
+            node.size()
+        );
+    }
+
+    /// Outside a scroll nothing is compressed: a filling page still takes
+    /// the height it is given.
+    #[test]
+    fn a_filling_page_outside_a_scroll_still_fills() {
+        let renderer = crate::testing::headless_tiny_skia();
+        let mut pager: TestPager<'_> = Pager::new(filling_pages()).width(300.0);
+        let mut tree = tree_of(&pager);
+
+        let node = pager.layout(&mut tree, &renderer, &limits(300.0, 200.0));
+
+        assert_eq!(node.size().height, 200.0);
     }
 
     #[test]

@@ -1,21 +1,56 @@
 @group(0) @binding(0) var cache_texture: texture_2d<f32>;
 @group(0) @binding(1) var cache_sampler: sampler;
 
-// Twenty scalars, exactly 80 bytes, matching the Rust side.
+// Offsets, which must match `composite.rs::Params` field for field — the
+// naga test parses this file but cannot compare the two layouts, so a
+// mismatch would only ever show as garbage on a GPU:
+//   opacity 0, mode 4, scale 8, warp_stretch 12, radius 16, size 32,
+//   origin 40, drawn 48, warp_squash 56, warp_target_width 60, uv 64,
+//   warp_radius 80, then twelve scalars from 96 to 144.
+// Scalars packed around the vectors rather than vec4s (whose lanes would
+// have to be unpacked) keep every vector naturally aligned without `@align`.
 struct Params {
     opacity: f32,
     // Reconstruction kernel: 0 = Catmull-Rom, 1 = a single bilinear tap.
     // `FilterQuality::Snap` shares the single-tap value; its crispness comes
     // from the snapped geometry, not from here.
     mode: f32,
-    // How far the genie's stretch has run. 0.0 means no warp and takes
-    // the fast path below.
+    // Device pixels per logical pixel. The corner masks ramp across one
+    // device pixel, so an arc is as crisp on a 2x display as on a 1x one.
+    scale: f32,
+    // How far the genie's stretch has run. 0.0, with `warp_squash` at 0.0,
+    // means no warp and takes the fast path below.
     warp_stretch: f32,
-    // How far its squash has run: the travel along the axis.
+    // Corners of the composited rectangle in logical pixels, in iced's
+    // order: top-left, top-right, bottom-right, bottom-left. All zero is a
+    // rectangle and skips the mask below. Already clamped so no two on one
+    // side overlap.
+    radius: vec4<f32>,
+    // The size of the shape being cut, in logical pixels: the space
+    // `radius` is measured in.
+    size: vec2<f32>,
+    // Where this quad starts inside that shape, and how big it is. Usually
+    // (0, 0) and `size` — a pane of frosted glass overhanging its source is
+    // the exception, drawing only the part over the source while its corners
+    // belong to the whole pane.
+    origin: vec2<f32>,
+    drawn: vec2<f32>,
+    // How far the genie's squash has run: the travel along the axis.
     warp_squash: f32,
     // The width of the band the rows converge on, as a fraction of the
     // content's own width.
     warp_target_width: f32,
+    // The window on the texture this instance samples: x, y, width, height
+    // in normalised coordinates. A plain composite passes 0, 0, 1, 1. See
+    // `composite.rs::Params::uv` for what moves this rectangle and why
+    // nothing else needs to change when it does.
+    uv: vec4<f32>,
+    // The content's corner radii in device pixels, reordered into anchor
+    // space (top-left there is the anchor corner) so the genie's mask does
+    // not have to undo the flips. Real pixels, not `uv`: a radius in `uv`
+    // would squeeze with the shape, which is the whole thing the genie's
+    // mask exists to avoid.
+    warp_radius: vec4<f32>,
     // How sharply a row's travel lags with its distance from the anchor.
     warp_stretch_power: f32,
     // The side curve's control values, at the wide end and the neck end.
@@ -24,11 +59,8 @@ struct Params {
     // Axis mirrors putting the anchor corner at the origin, 0.0 or 1.0.
     warp_flip_x: f32,
     warp_flip_y: f32,
-    // The radius the collapsing shape's corners keep, in device pixels, and
-    // the content rectangle's size in the same units. Real pixels, not
-    // `uv`: a radius in `uv` would squeeze with the shape, which is the
-    // whole thing this exists to avoid.
-    warp_corner_radius: f32,
+    // The content rectangle's size in device pixels, the units of
+    // `warp_radius`.
     warp_rect_width: f32,
     warp_rect_height: f32,
     // How far from the anchor the last row is drawn, as a fraction of the
@@ -43,8 +75,6 @@ struct Params {
     warp_inset_y: f32,
     warp_span_x: f32,
     warp_span_y: f32,
-    pad0: f32,
-    pad1: f32,
 }
 @group(0) @binding(2) var<uniform> params: Params;
 
@@ -74,16 +104,70 @@ fn samp(uv: vec2<f32>) -> vec4<f32> {
 
 // The texture holds premultiplied colour, so scaling every channel of the
 // reconstructed sample by the group opacity keeps it premultiplied.
+//
+// `in.uv` covers 0..1 over this primitive's own quad. The warp, if any, maps
+// it to the point of the texture it shows; mapping that into `params.uv`'s
+// window before handing it to `reconstruct` is the entire backdrop-sampling
+// feature. `reconstruct` itself is unchanged: its clamp to
+// texel centres already keeps a window that overhangs the texture edge from
+// reading past it, which is the clamp-to-edge this needs.
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let source = warp_source(in.uv);
     // `z` is coverage: zero where the collapsed shape does not reach, and
-    // fractional inside a rounded corner. The texture holds premultiplied
-    // colour, so scaling every channel keeps it premultiplied.
+    // fractional inside a rounded corner.
     if (source.z <= 0.0) {
         return vec4<f32>(0.0);
     }
-    return reconstruct(source.xy) * params.opacity * source.z;
+    let uv = params.uv.xy + source.xy * params.uv.zw;
+
+    // A warped composite has already been rounded by the genie, against its
+    // own curved edges; the rectangle's mask below would cut the collapsing
+    // shape along the quad it no longer fills.
+    var alpha = source.z;
+    if (!warping()) {
+        alpha = coverage(params.origin + in.uv * params.drawn);
+    }
+
+    // Premultiplied throughout, so scaling every channel by the coverage
+    // keeps it premultiplied — the same reason the opacity can be a plain
+    // multiply.
+    return reconstruct(uv) * params.opacity * alpha;
+}
+
+// Whether a genie is running: fully open is exactly identity.
+fn warping() -> bool {
+    return params.warp_stretch > 0.0 || params.warp_squash > 0.0;
+}
+
+// Coverage of the rounded rectangle at `point`, in logical pixels: 1 well
+// inside, 0 well outside, a ramp one device pixel wide across the edge.
+// Mirrors `geometry::rounded_coverage`; a hard test would stair-step every
+// arc, and a ramp a logical pixel wide would blur it on a dense display.
+fn coverage(point: vec2<f32>) -> f32 {
+    if (all(params.radius == vec4<f32>(0.0))) {
+        return 1.0;
+    }
+
+    let half_size = params.size * 0.5;
+    let centred = point - half_size;
+
+    // The four corners are the four sign combinations, in iced's order.
+    var radius = params.radius.x;
+    if (centred.x > 0.0 && centred.y <= 0.0) {
+        radius = params.radius.y;
+    } else if (centred.x > 0.0 && centred.y > 0.0) {
+        radius = params.radius.z;
+    } else if (centred.x <= 0.0 && centred.y > 0.0) {
+        radius = params.radius.w;
+    }
+
+    // Distance to the box inset by the radius, minus the radius, is the
+    // distance to the rounded shape. Negative inside.
+    let q = abs(centred) - half_size + vec2<f32>(radius);
+    let distance = min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - radius;
+
+    return clamp(0.5 - distance * params.scale, 0.0, 1.0);
 }
 
 // How much of this pixel survives the corner mask: `1` away from a corner,
@@ -107,6 +191,16 @@ fn corner_alpha(dl: f32, dr: f32, dt: f32, db: f32, r: f32) -> f32 {
     let reach = length(vec2<f32>(r - dx, r - dy));
 
     return clamp(r - reach + 0.5, 0.0, 1.0);
+}
+
+// The radius of the corner nearest a pixel, in anchor space: `left` and
+// `top` say which edges it is closer to. `warp_radius` is in iced's order
+// there, top-left first; `warp::Genie::anchor_corners` put it there.
+fn warp_corner(left: bool, top: bool) -> f32 {
+    if (top) {
+        return select(params.warp_radius.y, params.warp_radius.x, left);
+    }
+    return select(params.warp_radius.z, params.warp_radius.w, left);
 }
 
 // The inverse genie: which source texel this destination pixel shows, with
@@ -182,17 +276,15 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
     // rather than growing corners larger than itself.
     let far = params.warp_far_edge;
     let width_px = w * params.warp_rect_width;
+    let dl = p.x * params.warp_rect_width;
+    let dr = (w - p.x) * params.warp_rect_width;
+    let dt = p.y * params.warp_rect_height;
+    let db = (far - p.y) * params.warp_rect_height;
     let radius = min(
-        params.warp_corner_radius,
+        warp_corner(dl <= dr, dt <= db),
         0.5 * min(width_px, far * params.warp_rect_height)
     );
-    let alpha = corner_alpha(
-        p.x * params.warp_rect_width,
-        (w - p.x) * params.warp_rect_width,
-        p.y * params.warp_rect_height,
-        (far - p.y) * params.warp_rect_height,
-        radius
-    );
+    let alpha = corner_alpha(dl, dr, dt, db, radius);
     if (alpha <= 0.0) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
@@ -209,8 +301,7 @@ fn warp_source(uv: vec2<f32>) -> vec3<f32> {
     if (any(src < vec2<f32>(0.0)) || any(src > vec2<f32>(1.0))) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
-    return vec3<f32>(src, alpha);
-}
+    return vec3<f32>(src, alpha);}
 
 // Catmull-Rom reconstruction (B = 0, C = 1/2): an *interpolating* kernel that
 // passes through the source texels (exact at integer phase) with a mild

@@ -5,14 +5,14 @@ use iced_core::layout::{self, Layout};
 use iced_core::widget::{Operation, Tree, Widget, tree};
 use iced_core::{
     Clipboard, Element, Event, Length, Point, Rectangle, Shell, Size, Transformation, Vector,
-    mouse, overlay, renderer, window,
+    border, mouse, overlay, renderer, window,
 };
 
 use crate::ancestors;
 use crate::filter::FilterQuality;
 use crate::geometry;
 use crate::reaction::{Activity, observe};
-use crate::record::{Record, TextureRenderer};
+use crate::record::{Composite, Record, TextureRenderer};
 use crate::renderer::Backend;
 use crate::texture_cache::{TextureCache, TextureCacheId};
 use crate::warp::{Genie, GenieShape, Warp};
@@ -20,6 +20,11 @@ use crate::warp::{Genie, GenieShape, Warp};
 /// Logical pixels of content padding recorded around the layout bounds, so
 /// bilinear filtering at the texture's edge does not clip anti-aliasing.
 const BLEED: u32 = 2;
+
+/// Whether `corners` round anything at all.
+fn has_corners(corners: border::Radius) -> bool {
+    <[f32; 4]>::from(corners).iter().any(|radius| *radius > 0.0)
+}
 
 /// Whether the composited texture is snapped to the device-pixel grid.
 ///
@@ -167,6 +172,8 @@ where
     warp_shape: Option<GenieShape>,
     /// Genie progress. Meaningless without an anchor.
     warp_progress: Anim<f32>,
+    /// See [`Cached::border_radius`].
+    corners: border::Radius,
 }
 
 impl<Message, Theme, Renderer> std::fmt::Debug for Cached<'_, Message, Theme, Renderer>
@@ -185,6 +192,9 @@ where
             .field("pixel_snap", &self.pixel_snap)
             .field("supersample_in_motion", &self.supersample_in_motion)
             .field("filter", &self.filter)
+            .field("warp_shape", &self.warp_shape)
+            .field("warp_progress", &self.warp_progress)
+            .field("corners", &self.corners)
             .finish_non_exhaustive()
     }
 }
@@ -225,7 +235,47 @@ where
             filter: None,
             warp_shape: None,
             warp_progress: Anim::constant(1.0),
+            corners: border::Radius::default(),
         }
+    }
+
+    /// Rounds the corners of the composited texture. Zero (the default) is a
+    /// rectangle.
+    ///
+    /// A composite is a rectangle unless it is told otherwise, and nothing
+    /// in iced rounds it for you: `iced_tiny_skia` never reads
+    /// `image::Image::border_radius`, and this crate's wgpu composite draws
+    /// an unmasked quad. Without this, a `Cached` sitting on a rounded card
+    /// shows square corners.
+    ///
+    /// Costs nothing on wgpu (a mask in the shader that a zero radius skips)
+    /// and one pass over the texture on the software backend, kept until the
+    /// radius or the recording changes. Changing it never re-records.
+    ///
+    /// The same corners round a [`genie`](Self::genie) as it collapses, at
+    /// the same radius on screen however far the rows are squeezed, so the
+    /// shape stays a rounded card all the way into its anchor. That needs
+    /// the shader: the software backend's affine stand-in scales the
+    /// rounded texture, corners included.
+    ///
+    /// A layer with corners is never drawn live
+    /// ([`live_at_rest`](Self::live_at_rest)): there would be no texture to
+    /// cut.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use iced::widget::text;
+    /// use iced_texture_cache::{TextureCache, cached};
+    ///
+    /// let cache = TextureCache::new();
+    /// let _: iced_texture_cache::Element<'_, ()> =
+    ///     cached(cache, text("rounded")).border_radius(12.0).into();
+    /// ```
+    #[must_use]
+    pub fn border_radius(mut self, radius: impl Into<border::Radius>) -> Self {
+        self.corners = radius.into();
+        self
     }
 
     /// Overrides the [`FilterQuality`] used to composite this texture.
@@ -316,7 +366,8 @@ where
     /// this on, the resting wrapper costs no record at all.
     ///
     /// "Nothing needs a texture" means the translation, scale and warp are
-    /// not animating, the warp is not live and the opacity is `1.0`; a
+    /// not animating, the warp is not live, the opacity is `1.0` and there
+    /// is no [`border_radius`](Self::border_radius) to cut; a
     /// resting translation or scale is drawn live under the same transform.
     /// The first frame of any movement records, and that record is always
     /// fresh: the texture is invalidated whenever the layer leaves live
@@ -420,6 +471,9 @@ where
             && !self.opacity.is_animating()
             && self.opacity.get() >= 1.0
             && !self.warp().is_live()
+            // Drawn live there is no texture to cut, and a rounded layer
+            // would show square corners at rest and round ones in motion.
+            && !has_corners(self.corners)
     }
 
     /// Draws the content in place for [`Cached::live_at_rest`]: like the
@@ -460,6 +514,23 @@ where
         });
     }
 
+    /// The reconstruction kernel this frame composites through: the widget's
+    /// own, else the renderer's tier.
+    ///
+    /// The genie's neck minifies hard, and a cache texture has no mip chain
+    /// to minify through. `CatmullRom`'s high-frequency boost makes that
+    /// worse rather than better, so a live warp drops to a single bilinear
+    /// tap and the configured tier returns at rest.
+    fn composite_filter(&self, renderer: &Renderer, warp: Warp) -> FilterQuality {
+        let filter = self.filter.unwrap_or_else(|| renderer.filter_quality());
+
+        if warp.is_live() && !filter.snaps() {
+            FilterQuality::Bilinear
+        } else {
+            filter
+        }
+    }
+
     /// Draws the content composited from its texture, recording it first if
     /// it is stale.
     #[allow(clippy::too_many_arguments)]
@@ -490,16 +561,7 @@ where
         let user_transform = self.transform(bounds);
 
         let at_rest = state.at_rest;
-        let filter = self.filter.unwrap_or_else(|| renderer.filter_quality());
-        // The neck minifies hard, and a cache texture has no mip chain to
-        // minify through. `CatmullRom`'s high-frequency boost makes that
-        // worse rather than better, so a live warp drops to a single
-        // bilinear tap and the configured tier returns at rest.
-        let filter = if warp.is_live() && !filter.snaps() {
-            FilterQuality::Bilinear
-        } else {
-            filter
-        };
+        let filter = self.composite_filter(renderer, warp);
 
         let supersample =
             geometry::record_supersample(self.supersample, self.supersample_in_motion, at_rest);
@@ -573,9 +635,12 @@ where
                     composite.content_bounds,
                     clip,
                     transform,
-                    opacity,
-                    filter,
-                    warp,
+                    Composite {
+                        opacity,
+                        corners: self.corners,
+                        warp,
+                        ..Composite::plain(filter)
+                    },
                 );
             }
             Record::Uncacheable => {
@@ -954,6 +1019,55 @@ mod tests {
         Go,
     }
 
+    /// A composited texture is a rectangle unless it is told otherwise:
+    /// nothing in iced rounds a raster image on the software backend, and
+    /// the wgpu composite draws an unmasked quad. Without this a rounded
+    /// card shows square corners wherever a `Cached` sits on it.
+    #[test]
+    fn a_border_radius_cuts_the_corners_off_the_composite() {
+        let red = Color::from_rgb(1.0, 0.0, 0.0);
+        let element: crate::Element<'_, ()> = cached(
+            TextureCache::new(),
+            shape().width(40.0).height(40.0).fill(red),
+        )
+        .border_radius(12.0)
+        .into();
+
+        let mut harness = Harness::new(Size::new(60.0, 60.0), element);
+        harness.redraw(Instant::now());
+        let shot = harness.screenshot(1.0);
+
+        // The window is white; the square is red and starts at the origin.
+        assert_eq!(
+            shot.pixel(0, 0),
+            [255, 255, 255, 255],
+            "the corner should be cut away"
+        );
+        assert_eq!(&shot.pixel(20, 20)[..3], &[255, 0, 0], "the centre stays");
+        assert_eq!(
+            &shot.pixel(20, 1)[..3],
+            &[255, 0, 0],
+            "an edge middle stays"
+        );
+    }
+
+    #[test]
+    fn without_a_radius_the_composite_keeps_its_corners() {
+        // The falsification of the test above: the same square, square.
+        let red = Color::from_rgb(1.0, 0.0, 0.0);
+        let element: crate::Element<'_, ()> = cached(
+            TextureCache::new(),
+            shape().width(40.0).height(40.0).fill(red),
+        )
+        .into();
+
+        let mut harness = Harness::new(Size::new(60.0, 60.0), element);
+        harness.redraw(Instant::now());
+        let shot = harness.screenshot(1.0);
+
+        assert_eq!(&shot.pixel(0, 0)[..3], &[255, 0, 0]);
+    }
+
     fn square<'a, M: 'a>(color: Color) -> crate::Element<'a, M> {
         shape().width(40.0).height(20.0).fill(color).into()
     }
@@ -1251,6 +1365,24 @@ mod tests {
         assert_eq!(cache.record_count(), 0, "nothing was recorded at rest");
         assert_eq!(&shot.pixel(20, 10)[..3], &[255, 0, 0], "drawn in place");
         assert_eq!(&shot.pixel(5, 10)[..3], &[255, 255, 255]);
+    }
+
+    /// Drawn live there is no texture to cut: a rounded layer would come
+    /// out square at rest and round again the moment it moved.
+    #[test]
+    fn live_at_rest_still_records_a_layer_with_corners() {
+        let cache = TextureCache::new();
+        let element: crate::Element<'_, ()> =
+            cached(cache.clone(), shape().width(40.0).height(40.0).fill(RED))
+                .border_radius(12.0)
+                .live_at_rest(true)
+                .into();
+        let mut harness = Harness::new(Size::new(60.0, 60.0), element);
+        harness.frame(Instant::now());
+        let shot = harness.screenshot(1.0);
+        assert_eq!(cache.record_count(), 1, "recorded to be cut");
+        assert_eq!(shot.pixel(0, 0), [255, 255, 255, 255], "the corner is cut");
+        assert_eq!(&shot.pixel(20, 20)[..3], &[255, 0, 0]);
     }
 
     #[test]

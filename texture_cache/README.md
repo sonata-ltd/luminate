@@ -170,9 +170,77 @@ neck is severe minification, a cache texture has no mip chain, and
 `CatmullRom`'s high-frequency boost makes that worse. The configured tier
 returns at rest.
 
+`Cached::border_radius` rounds the collapsing shape as well. A rounded corner
+recorded into the texture is pixels, and squeezing a row squeezes its corner
+with it: 8 px at a `target_width` of 0.12 is drawn about 1 px wide and reads
+as a straight cut. So while the genie runs the shader rounds each row in
+screen space instead, at the radius you gave, clamped to half the visible
+shape so a narrow end becomes a stadium. At rest the same radius cuts the
+texture, so the handover is seamless in both directions.
+
 The software backend has no shaders, so the genie degrades there to a scale
 about the same anchor at the same progress: the motion and its timing
-survive, the neck does not.
+survive, the neck does not, and the rounded corners scale with the rest.
+
+### Frosted glass
+
+`frosted(source)` composites a **blurred copy of somebody else's cached
+texture** as its own backdrop: the part of `source` that lies under the
+pane's bounds on screen, not the source stretched across it.
+
+```rust,ignore
+stack![
+    cached(page.clone(), expensive_page()),
+    frosted(page).radius(12.0).opacity(fade),
+]
+```
+
+`radius` is the sigma of the equivalent Gaussian in logical pixels. It is
+stated that way, rather than as a number of passes, because the two
+backends run different kernels — a separable Gaussian over a downscaled copy
+on wgpu, three box passes on `tiny_skia` — and both calibrate to it.
+
+The blur is computed **once per rasterisation of the source**, at a reduced
+resolution (`downscale`, a power of two in `1..=8`, derived from the radius
+by default). Moving the pane, resizing it, clipping it and fading it cost
+nothing but a composite; only changing content underneath, the radius or
+the downscale re-blurs. Reconstruction is always bilinear, whatever
+`set_filter_quality` says: sharpening what was deliberately blurred would
+ring on flat gradients and cost nine taps instead of one.
+
+`border_radius` rounds the pane. It is needed even when the content behind is
+already rounded, because a blur spreads outwards: an opaque source under a
+square pane bleeds past its own rounding with nothing to cut it back. Nothing
+in iced does this for you — `iced_tiny_skia` never reads
+`image::Image::border_radius`, and this crate's own composite draws an
+unmasked quad — so `Cached::border_radius` exists for the same reason and does
+the same thing for a plain cached texture. Changing it never re-records and
+never re-blurs.
+
+`frosted` only *reads*: it never records, so pointing any number of panes at
+one handle does not break the one-handle-per-widget rule, which is about two
+writers.
+
+The source must be drawn **before** the pane — the natural order for glass
+over content. Drawn the other way round the pane shows the previous frame's
+texture and catches up on the next; that is documented behaviour, not a bug.
+There is no backdrop blur of arbitrary screen content: iced gives a widget
+no access to the framebuffer, so what is blurred is always a texture this
+crate recorded.
+
+The two backends' kernels only agree in colour space with `web-colors` on
+(the crate default). With it off (gamma-correct linear colour) the
+compositing surface is sRGB-typed, so the GPU's separable Gaussian sums
+linearised light while the software backend keeps averaging the stored
+sRGB bytes — the same colour-space split the Surface format section below
+describes for ordinary compositing, here affecting the blur's own
+arithmetic rather than just resampling. The two chains then compute
+genuinely different pictures from the same `radius`: measured across a
+black/white edge, the peak channel divergence is up to 73/255 and the
+blurred profile's own second moment (its *effective* sigma) comes out 3.55
+against a requested-and-delivered 3.00 in software — 18 % wider. Nothing
+here converts between the two spaces; see `blur::gpu`'s "Colour space"
+section for why and what would be needed to close the gap.
 
 ### Z-order
 
@@ -276,6 +344,22 @@ iced_texture_cache = { version = "0.1", default-features = false, features = ["w
   mipmaps:
   keep `supersample ≤ 2 × scale`.
 * Native only; wasm is not supported.
+* `frosted` blurs a texture this crate recorded, never the screen: there is
+  no `backdrop-filter` over arbitrary content without forking the renderer.
+* A pane drawn before its source shows the source's previous frame.
+* With `web-colors` off, `frosted`'s two backends blur the same `radius` in
+  different colour spaces (linear on wgpu, stored sRGB bytes on
+  `tiny_skia`) and can diverge by up to 73/255 at a high-contrast edge; see
+  "Frosted glass" above.
+* The two backends also disagree geometrically: the GPU backend samples its
+  blurred backdrop at the source's exact texel positions, while the
+  software backend stretches it into place instead, so its backdrop can sit
+  off by up to one derived texel (bounded by the test
+  `the_software_stretch_stays_under_one_derived_texel`). `iced_tiny_skia`
+  places a pixmap only at an integer multiple of its own texel size, so
+  exact placement is not expressible through that API — the only exact
+  route is resampling the cut by the sub-texel residual, a candidate for a
+  later change. At typical radii it is sub-pixel on screen.
 
 ## Related crates
 

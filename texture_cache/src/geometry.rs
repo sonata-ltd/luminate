@@ -3,7 +3,7 @@
 //! cursor mapping and the per-frame record decisions. Nothing here touches a
 //! renderer, so every rule has a unit test below.
 
-use iced_core::{Point, Rectangle, Size, Transformation, Vector, mouse};
+use iced_core::{Point, Rectangle, Size, Transformation, Vector, border, mouse};
 
 use crate::cached::PixelSnap;
 use crate::filter::FilterQuality;
@@ -98,6 +98,102 @@ pub(crate) fn translate_cursor(cursor: mouse::Cursor, transform: Transformation)
         mouse::Cursor::Levitating(p) => mouse::Cursor::Levitating(map_point(p)),
         mouse::Cursor::Unavailable => mouse::Cursor::Unavailable,
     }
+}
+
+/// Coverage of a rounded rectangle at `point`, in the rectangle's own
+/// pixels: `1` well inside, `0` well outside, and a one-pixel ramp across
+/// the edge.
+///
+/// The ramp is the point. A hard inside/outside test would stair-step every
+/// arc, and the two backends would stair-step it differently — the GPU per
+/// device pixel, the software path per pixel of a texture that may be a
+/// quarter the size. Signed distance gives an edge that reads the same on
+/// both and survives being scaled up.
+///
+/// `radii` is iced's own corner order: top-left, top-right, bottom-right,
+/// bottom-left. Radii that would make two arcs on one side overlap are
+/// scaled down together, as CSS does, so the shape degenerates to a capsule
+/// rather than folding inside out.
+/// Only the software path computes coverage in Rust: the wgpu composite
+/// masks in its own shader, so a wgpu-only build has no caller for this.
+/// Gated the same way `blur::Crop` is, rather than allowed as dead code.
+#[cfg(any(feature = "tiny-skia", test))]
+pub(crate) fn rounded_coverage(point: Point, size: Size, radii: [f32; 4]) -> f32 {
+    let (half_width, half_height) = (size.width / 2.0, size.height / 2.0);
+    let radii = clamp_radii(size, radii);
+
+    // Centre-relative, so the four corners are the four sign combinations.
+    let (x, y) = (point.x - half_width, point.y - half_height);
+    let radius = match (x > 0.0, y > 0.0) {
+        (false, false) => radii[0],
+        (true, false) => radii[1],
+        (true, true) => radii[2],
+        (false, true) => radii[3],
+    };
+
+    // Distance to the rounded box: the corner's arc centre is inset by the
+    // radius, so the distance to that inset box, minus the radius, is the
+    // distance to the rounded shape. Negative inside.
+    let qx = x.abs() - half_width + radius;
+    let qy = y.abs() - half_height + radius;
+    let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+    let distance = qx.max(qy).min(0.0) + outside - radius;
+
+    (0.5 - distance).clamp(0.0, 1.0)
+}
+
+/// Grows `corners`, given for `content`, out to `bounds`, the padded
+/// rectangle drawn around it.
+///
+/// The composite covers the content plus the padding recorded around it, and
+/// offsetting a rounded rectangle outwards by `d` grows its radius by exactly
+/// `d`. Asking the padded rectangle for `corners + d` therefore cuts the
+/// content box to `corners`, rather than rounding the transparent margin
+/// where it would do nothing visible. A square corner stays square.
+pub(crate) fn padded_corners(
+    corners: border::Radius,
+    bounds: Rectangle,
+    content: Rectangle,
+) -> border::Radius {
+    // The padding is the same on every side; the smaller of the two is the
+    // safe one should rounding have made them differ.
+    let padding = (content.x - bounds.x).min(content.y - bounds.y).max(0.0);
+    let grow = |radius: f32| {
+        if radius > 0.0 { radius + padding } else { 0.0 }
+    };
+
+    border::Radius {
+        top_left: grow(corners.top_left),
+        top_right: grow(corners.top_right),
+        bottom_right: grow(corners.bottom_right),
+        bottom_left: grow(corners.bottom_left),
+    }
+}
+
+/// Scales `radii` down together until no two on the same side exceed it.
+///
+/// Both backends clamp through this: the software mask per pixel, the wgpu
+/// composite once per instance before upload, so a radius too large for
+/// its rectangle draws the same capsule on either.
+pub(crate) fn clamp_radii(size: Size, radii: [f32; 4]) -> [f32; 4] {
+    let radii = radii.map(|radius| radius.max(0.0));
+    let [top_left, top_right, bottom_right, bottom_left] = radii;
+
+    let limit = |available: f32, first: f32, second: f32| {
+        let wanted = first + second;
+        if wanted > available {
+            available / wanted
+        } else {
+            1.0
+        }
+    };
+
+    let scale = limit(size.width, top_left, top_right)
+        .min(limit(size.width, bottom_left, bottom_right))
+        .min(limit(size.height, top_left, bottom_left))
+        .min(limit(size.height, top_right, bottom_right));
+
+    radii.map(|radius| radius * scale)
 }
 
 /// Where and how large a texture is recorded and composited.
@@ -321,6 +417,78 @@ mod tests {
             true,
             true
         ));
+    }
+
+    /// Corner order is iced's own: top-left, top-right, bottom-right,
+    /// bottom-left. Getting it wrong rounds the wrong corner and nothing
+    /// but a screenshot would say so.
+    const CORNERS: [f32; 4] = [10.0, 0.0, 0.0, 0.0];
+
+    #[test]
+    fn a_zero_radius_covers_the_whole_rectangle() {
+        let size = Size::new(40.0, 20.0);
+        for point in [
+            Point::new(0.5, 0.5),
+            Point::new(39.5, 0.5),
+            Point::new(39.5, 19.5),
+            Point::new(0.5, 19.5),
+            Point::new(20.0, 10.0),
+        ] {
+            assert_eq!(rounded_coverage(point, size, [0.0; 4]), 1.0, "at {point:?}");
+        }
+    }
+
+    #[test]
+    fn a_rounded_corner_is_empty_and_the_centre_is_full() {
+        let size = Size::new(40.0, 40.0);
+        let radii = [10.0; 4];
+
+        // Well outside the arc, inside the bounding box.
+        assert_eq!(rounded_coverage(Point::new(0.5, 0.5), size, radii), 0.0);
+        assert_eq!(rounded_coverage(Point::new(39.5, 0.5), size, radii), 0.0);
+        assert_eq!(rounded_coverage(Point::new(39.5, 39.5), size, radii), 0.0);
+        assert_eq!(rounded_coverage(Point::new(0.5, 39.5), size, radii), 0.0);
+
+        assert_eq!(rounded_coverage(Point::new(20.0, 20.0), size, radii), 1.0);
+        // The middle of each edge is not cut by any corner.
+        assert_eq!(rounded_coverage(Point::new(20.0, 0.5), size, radii), 1.0);
+        assert_eq!(rounded_coverage(Point::new(0.5, 20.0), size, radii), 1.0);
+    }
+
+    #[test]
+    fn only_the_named_corner_is_rounded() {
+        let size = Size::new(40.0, 40.0);
+        assert_eq!(rounded_coverage(Point::new(0.5, 0.5), size, CORNERS), 0.0);
+        assert_eq!(rounded_coverage(Point::new(39.5, 0.5), size, CORNERS), 1.0);
+        assert_eq!(rounded_coverage(Point::new(39.5, 39.5), size, CORNERS), 1.0);
+        assert_eq!(rounded_coverage(Point::new(0.5, 39.5), size, CORNERS), 1.0);
+    }
+
+    #[test]
+    fn the_edge_is_a_ramp_rather_than_a_step() {
+        // On the arc itself coverage is about a half; a hard test would give
+        // exactly 0 or 1 and the corner would stair-step.
+        let size = Size::new(40.0, 40.0);
+        let radii = [10.0; 4];
+        let on_the_arc = Point::new(
+            10.0 - 10.0 / std::f32::consts::SQRT_2,
+            10.0 - 10.0 / std::f32::consts::SQRT_2,
+        );
+        let coverage = rounded_coverage(on_the_arc, size, radii);
+        assert!(
+            (coverage - 0.5).abs() < 0.2,
+            "expected a partial coverage on the arc, got {coverage}"
+        );
+    }
+
+    #[test]
+    fn a_radius_larger_than_the_rectangle_is_clamped_to_a_capsule() {
+        // Two radii on one side cannot exceed that side, or opposite arcs
+        // would overlap and the coverage would fold inside out.
+        let size = Size::new(40.0, 20.0);
+        let radii = [100.0; 4];
+        assert_eq!(rounded_coverage(Point::new(20.0, 10.0), size, radii), 1.0);
+        assert_eq!(rounded_coverage(Point::new(0.5, 0.5), size, radii), 0.0);
     }
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {

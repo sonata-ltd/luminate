@@ -49,6 +49,13 @@ pub(crate) struct Inner {
 /// handle re-record each other whenever their sizes differ, and whichever
 /// draws last wins.
 ///
+/// [`Frosted`](crate::Frosted) is the exception that is not one: it only
+/// *reads* the texture a `Cached` wrote, never records into it, so a handle
+/// driven by one `Cached` and read by any number of panes of glass is
+/// exactly the intended use. The rule above is about two *writers* fighting
+/// over the same texture; a reader that never writes cannot be one of them,
+/// however many of them there are.
+///
 /// # Memory
 ///
 /// The GPU texture (or CPU pixmap) behind a cache lives as long as *any*

@@ -1,12 +1,14 @@
 #![doc = include_str!("../README.md")]
 
 mod ancestors;
+mod blur;
 mod cached;
 #[cfg(feature = "wgpu")]
 mod composite;
 mod compositor;
 mod content_stack;
 mod filter;
+mod frosted;
 mod geometry;
 mod pager;
 mod reaction;
@@ -29,8 +31,9 @@ pub use cached::{Cached, PixelSnap, cached};
 pub use compositor::Compositor;
 pub use content_stack::{ContentStack, content_stack};
 pub use filter::{FilterQuality, filter_quality, set_filter_quality};
+pub use frosted::{Frosted, frosted};
 pub use pager::{Pager, pager};
-pub use record::{Record, TextureRenderer};
+pub use record::{Composite, Frost, Record, TextureRenderer};
 pub use renderer::{Backend, Renderer};
 pub use texture_cache::{TextureCache, TextureCacheId};
 pub use warp::{Corner, Genie, GenieShape, MAX_STRETCH_POWER, Warp};
@@ -78,5 +81,19 @@ pub mod testing {
         scale: f32,
     ) -> iced_core::Rectangle {
         crate::geometry::pager_page_bounds(filter, mode, page, pager, scale)
+    }
+
+    /// Blurs the renderer's store has run since it was created. Diagnostics
+    /// only, for tests that assert a settled frame re-blurs nothing.
+    #[must_use]
+    pub fn blur_count(renderer: &crate::Renderer) -> u64 {
+        crate::renderer::blur_count(renderer)
+    }
+
+    /// Derived blur textures the renderer's store is holding. Diagnostics
+    /// only.
+    #[must_use]
+    pub fn derived_len(renderer: &crate::Renderer) -> usize {
+        crate::renderer::derived_len(renderer)
     }
 }

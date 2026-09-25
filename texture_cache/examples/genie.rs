@@ -108,9 +108,6 @@ impl App {
                     let shape = GenieShape {
                         anchor: self.anchor,
                         target_width,
-                        // The corner the shape keeps while it is squeezed,
-                        // matching the panel's own so the two agree at rest.
-                        corner_radius: PANEL_RADIUS,
                         ..GenieShape::default()
                     };
 
@@ -118,8 +115,15 @@ impl App {
                         text(format!("target {target_width:.2}")).size(13),
                         // `progress` is cloned rather than copied: `Anim<f32>`
                         // is not `Copy` and this closure is `FnMut`.
-                        container(cached(cache.clone(), panel()).genie(progress.clone(), shape))
-                            .height(Length::Fixed(PANEL_SLOT)),
+                        // The panel's own radius, as the composite's: it
+                        // cuts the texture at rest and is kept, unsqueezed,
+                        // while the genie runs.
+                        container(
+                            cached(cache.clone(), panel())
+                                .border_radius(PANEL_RADIUS)
+                                .genie(progress.clone(), shape)
+                        )
+                        .height(Length::Fixed(PANEL_SLOT)),
                     ]
                     .spacing(6)
                     .into()

@@ -140,21 +140,6 @@ pub struct GenieShape {
     /// `bend`'s slope there is `3 * (1 - curve_out)`, so `1` arrives
     /// parallel to the travel and lowering it bends the side later.
     pub curve_out: f32,
-    /// The radius, in logical pixels, that the collapsing shape's corners
-    /// keep however far it has been squeezed. `0` leaves them alone.
-    ///
-    /// A rounded corner recorded into the texture is *pixels*, so squeezing
-    /// a row to `target_width` squeezes its corner with it: an 8px radius at
-    /// a target of 0.12 is drawn about 1px wide and reads as a straight cut.
-    /// Rounding here instead, in destination space, keeps the radius on
-    /// screen whatever the row's width. Clamped per row to half the shape,
-    /// so a narrow end becomes a stadium rather than growing corners bigger
-    /// than itself.
-    ///
-    /// Only applied while the warp is live. At rest the content's own
-    /// rounding is left exactly as recorded, and the handover is continuous
-    /// because the warp starts at full width.
-    pub corner_radius: f32,
 }
 
 impl Default for GenieShape {
@@ -165,7 +150,6 @@ impl Default for GenieShape {
             stretch_power: DEFAULT_STRETCH_POWER,
             curve_in: DEFAULT_CURVE_IN,
             curve_out: DEFAULT_CURVE_OUT,
-            corner_radius: 0.0,
         }
     }
 }
@@ -222,11 +206,6 @@ impl Genie {
             } else {
                 DEFAULT_CURVE_OUT
             },
-            corner_radius: if shape.corner_radius.is_finite() {
-                shape.corner_radius.max(0.0)
-            } else {
-                0.0
-            },
         };
 
         Self { progress, shape }
@@ -243,12 +222,6 @@ impl Genie {
     #[must_use]
     pub const fn target_width(self) -> f32 {
         self.shape.target_width
-    }
-
-    /// The radius its corners keep however far it is squeezed.
-    #[must_use]
-    pub const fn corner_radius(self) -> f32 {
-        self.shape.corner_radius
     }
 
     /// The clamped progress this genie will actually draw at.
@@ -319,6 +292,33 @@ impl Genie {
     /// The axis mirrors that put this genie's anchor at the origin.
     pub(crate) const fn flips(self) -> (bool, bool) {
         self.shape.anchor.flips()
+    }
+
+    /// The content's corner radii, given in iced's order, reordered into
+    /// anchor space: the space the shader rounds the collapsing shape in,
+    /// where the anchor corner is the top-left one.
+    ///
+    /// The corners keep their radius however far the shape is squeezed: a
+    /// rounded corner recorded into the texture is *pixels*, so squeezing a
+    /// row to `target_width` would squeeze its corner with it — an 8px
+    /// radius at a target of 0.12 is drawn about 1px wide and reads as a
+    /// straight cut. The shader rounds in destination space instead, per
+    /// row, clamped to half the visible shape so a narrow end becomes a
+    /// stadium rather than growing corners bigger than itself.
+    #[cfg(any(feature = "wgpu", test))]
+    pub(crate) fn anchor_corners(self, corners: [f32; 4]) -> [f32; 4] {
+        // iced's order, as (right, bottom) pairs.
+        const ORDER: [(bool, bool); 4] =
+            [(false, false), (true, false), (true, true), (false, true)];
+        let index = |corner: (bool, bool)| {
+            ORDER
+                .iter()
+                .position(|&c| c == corner)
+                .expect("every corner is in the order")
+        };
+
+        let (flip_x, flip_y) = self.flips();
+        ORDER.map(|(right, bottom)| corners[index((right != flip_x, bottom != flip_y))])
     }
 
     /// Where a source point lands, or `None` once it has been drawn through
@@ -1208,18 +1208,17 @@ mod tests {
     }
 
     #[test]
-    fn a_non_finite_corner_radius_is_ignored() {
-        let nan = GenieShape {
-            corner_radius: f32::NAN,
-            ..GenieShape::default()
-        };
-        assert!(Genie::new(0.5, nan).corner_radius().abs() < f32::EPSILON);
+    fn the_corners_follow_the_anchor_into_anchor_space() {
+        // iced's order: top-left, top-right, bottom-right, bottom-left.
+        let corners = [1.0, 2.0, 3.0, 4.0];
+        let anchored = |anchor| Genie::new(0.5, shape(anchor, 0.0)).anchor_corners(corners);
 
-        let negative = GenieShape {
-            corner_radius: -4.0,
-            ..GenieShape::default()
-        };
-        assert!(Genie::new(0.5, negative).corner_radius().abs() < f32::EPSILON);
+        // The anchor corner is always the first, and the one diagonally
+        // opposite it the third.
+        assert_eq!(anchored(Corner::TopLeft), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(anchored(Corner::TopRight), [2.0, 1.0, 4.0, 3.0]);
+        assert_eq!(anchored(Corner::BottomRight), [3.0, 4.0, 1.0, 2.0]);
+        assert_eq!(anchored(Corner::BottomLeft), [4.0, 3.0, 2.0, 1.0]);
     }
 
     #[test]
