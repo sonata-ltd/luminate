@@ -451,10 +451,11 @@ mod fading_scrollable {
 mod under_a_scrolled_ancestor {
     use iced_luminate::Renderer;
     use iced_luminate::iced::advanced::renderer::Headless;
-    use iced_luminate::iced::advanced::widget::Tree;
+    use iced_luminate::iced::advanced::widget::{Operation, Tree, operation};
     use iced_luminate::iced::advanced::{Layout, Shell, Widget, clipboard, layout, mouse};
-    use iced_luminate::iced::widget::text;
-    use iced_luminate::iced::{self, Event, Point, Rectangle, Size};
+    use iced_luminate::iced::widget::{container, text};
+    use iced_luminate::iced::{self, Event, Length, Point, Rectangle, Size, Vector};
+    use iced_luminate::widget::fading_scrollable::fading_scrollable;
     use iced_luminate::widget::tabs::tabs;
 
     /// How far the ancestor has scrolled.
@@ -532,5 +533,103 @@ mod under_a_scrolled_ancestor {
         );
 
         assert_eq!(selected, vec![1]);
+    }
+
+    fn offset(
+        widget: &mut dyn Widget<(), iced::Theme, Renderer>,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        node: &layout::Node,
+    ) -> f32 {
+        #[derive(Default)]
+        struct Read(f32);
+
+        impl Operation for Read {
+            fn traverse(&mut self, _: &mut dyn FnMut(&mut dyn Operation)) {}
+
+            fn scrollable(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                _: Rectangle,
+                _: Rectangle,
+                translation: Vector,
+                _: &mut dyn operation::Scrollable,
+            ) {
+                self.0 = translation.y;
+            }
+        }
+
+        let mut read = Read::default();
+        widget.operate(tree, Layout::new(node), renderer, &mut read);
+        read.0
+    }
+
+    /// A five-pixel drag down on a nested pill took the event's window
+    /// position as a point in the gutter, 180 px above the pill, and threw
+    /// the content from 300 to the top.
+    #[test]
+    fn dragging_a_nested_pill_down_scrolls_down() {
+        let renderer = renderer();
+        let mut widget = fading_scrollable(container(text("a long page")).height(900.0))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .no_smooth_scroll();
+        let mut tree = Tree::new(&widget as &dyn Widget<(), iced::Theme, Renderer>);
+        let node = widget
+            .layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(200.0, 100.0)),
+            )
+            .move_to(Point::new(0.0, TOP));
+
+        let _ = deliver(
+            &mut widget,
+            &mut tree,
+            &renderer,
+            &node,
+            &Event::Mouse(mouse::Event::WheelScrolled {
+                delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -300.0 },
+            }),
+            Point::new(50.0, TOP + 50.0),
+        );
+        assert_eq!(offset(&mut widget, &mut tree, &renderer, &node), 300.0);
+
+        // Default track: 3 px inset, a 24 px pill, 70 px of travel.
+        let grabbed = Point::new(195.0, TOP + 3.0 + 70.0 * 300.0 / 800.0 + 12.0);
+        let _ = deliver(
+            &mut widget,
+            &mut tree,
+            &renderer,
+            &node,
+            &Event::Window(iced::window::Event::RedrawRequested(
+                iced::time::Instant::now(),
+            )),
+            grabbed,
+        );
+        let _ = deliver(
+            &mut widget,
+            &mut tree,
+            &renderer,
+            &node,
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            grabbed,
+        );
+        let before = offset(&mut widget, &mut tree, &renderer, &node);
+
+        let moved = Point::new(grabbed.x, grabbed.y + 5.0);
+        let _ = deliver(
+            &mut widget,
+            &mut tree,
+            &renderer,
+            &node,
+            &Event::Mouse(mouse::Event::CursorMoved {
+                position: on_screen(moved),
+            }),
+            moved,
+        );
+        let after = offset(&mut widget, &mut tree, &renderer, &node);
+
+        assert!(after > before, "{before} -> {after}");
     }
 }

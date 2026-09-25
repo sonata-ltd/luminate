@@ -4088,9 +4088,13 @@ where
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 state.dragging = None;
             }
-            Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            // The cursor, not the event's position: an ancestor scrollable
+            // translates the cursor into this layout's coordinates, where
+            // the gutters are, and passes the event on untouched.
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some(axis) = state.dragging
                     && let Some(gutter) = lanes.of(axis)
+                    && let Some(position) = cursor.position()
                 {
                     take_to = Some(dragged_to(
                         self.bar,
@@ -4098,7 +4102,7 @@ where
                         *gutter,
                         *state.reach.of(axis),
                         state.grabbed_at,
-                        *position,
+                        position,
                     ));
                     swallowed = true;
                     shell.capture_event();
