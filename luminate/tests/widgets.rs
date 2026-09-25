@@ -272,3 +272,140 @@ fn the_bubble_is_clamped_to_the_right_edge() {
         r - l
     );
 }
+
+/// The fading scrollable driven event by event, reading back the offset it
+/// actually left the content at.
+mod fading_scrollable {
+    use std::time::Duration;
+
+    use iced_luminate::Renderer;
+    use iced_luminate::iced::advanced::clipboard;
+    use iced_luminate::iced::advanced::renderer::Headless;
+    use iced_luminate::iced::advanced::widget::{Operation, Tree, operation};
+    use iced_luminate::iced::advanced::{Layout, Shell, Widget, layout, mouse};
+    use iced_luminate::iced::time::Instant;
+    use iced_luminate::iced::widget::{container, text};
+    use iced_luminate::iced::{self, Event, Length, Point, Rectangle, Size, Vector};
+    use iced_luminate::widget::fading_scrollable::{FadingScrollable, fading_scrollable};
+
+    const FRAME: Size = Size::new(200.0, 100.0);
+
+    /// A 900 px page in a 200 x 100 frame, reporting its vertical offset.
+    struct Rig {
+        widget: FadingScrollable<'static, f32, iced::Theme, Renderer>,
+        tree: Tree,
+        renderer: Renderer,
+        node: layout::Node,
+        now: Instant,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let renderer =
+                iced_test::futures::futures::executor::block_on(<Renderer as Headless>::new(
+                    iced::Font::DEFAULT,
+                    iced::Pixels(16.0),
+                    Some("tiny-skia"),
+                ))
+                .expect("tiny_skia needs no GPU");
+            let mut widget = fading_scrollable(container(text("a long page")).height(900.0))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .on_scroll(|viewport| viewport.absolute_offset().y);
+            let mut tree = Tree::new(&widget as &dyn Widget<f32, iced::Theme, Renderer>);
+            let node = widget.layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, FRAME),
+            );
+
+            Self {
+                widget,
+                tree,
+                renderer,
+                node,
+                now: Instant::now(),
+            }
+        }
+
+        /// Hands the widget `event` with the cursor at `at`; returns what it
+        /// published.
+        fn event(&mut self, event: &Event, at: Point) -> Vec<f32> {
+            let mut messages = Vec::new();
+            self.widget.update(
+                &mut self.tree,
+                event,
+                Layout::new(&self.node),
+                mouse::Cursor::Available(at),
+                &self.renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &Rectangle::with_size(FRAME),
+            );
+            messages
+        }
+
+        /// The next 16 ms frame.
+        fn frame(&mut self, at: Point) -> Vec<f32> {
+            self.now += Duration::from_millis(16);
+            let now = self.now;
+            self.event(
+                &Event::Window(iced::window::Event::RedrawRequested(now)),
+                at,
+            )
+        }
+
+        /// The vertical offset the content is drawn at.
+        fn offset(&mut self) -> f32 {
+            #[derive(Default)]
+            struct Read(f32);
+
+            impl Operation for Read {
+                fn traverse(&mut self, _: &mut dyn FnMut(&mut dyn Operation)) {}
+
+                fn scrollable(
+                    &mut self,
+                    _: Option<&iced::advanced::widget::Id>,
+                    _: Rectangle,
+                    _: Rectangle,
+                    translation: Vector,
+                    _: &mut dyn operation::Scrollable,
+                ) {
+                    self.0 = translation.y;
+                }
+            }
+
+            let mut read = Read::default();
+            self.widget.operate(
+                &mut self.tree,
+                Layout::new(&self.node),
+                &self.renderer,
+                &mut read,
+            );
+            read.0
+        }
+    }
+
+    /// A press on the rail below the pill used to set only the grip, and
+    /// the pill went there on the first movement after it: a click with a
+    /// still mouse did nothing.
+    #[test]
+    fn a_click_on_the_rail_scrolls_without_the_cursor_moving() {
+        let mut rig = Rig::new();
+        let rail = Point::new(195.0, 75.0);
+
+        // With no engine the reveal is immediate, so the bar is grabbable.
+        let _ = rig.frame(rail);
+        let _ = rig.event(
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            rail,
+        );
+        let _ = rig.event(
+            &Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            rail,
+        );
+        let _ = rig.frame(rail);
+
+        assert!(rig.offset() > 0.0, "the click scrolled: {}", rig.offset());
+    }
+}

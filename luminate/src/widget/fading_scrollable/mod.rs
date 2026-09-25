@@ -3905,13 +3905,17 @@ where
                 state.dragging = grabbed(zones, state.revealed(), cursor);
 
                 if let Some(axis) = state.dragging {
-                    state.grabbed_at = grip(
-                        self.bar,
-                        axis,
-                        &lanes.of(axis).expect("grabbed means a lane"),
-                        *state.reach.of(axis),
-                        cursor,
-                    );
+                    let gutter = lanes.of(axis).expect("grabbed means a lane");
+                    let reach = *state.reach.of(axis);
+                    state.grabbed_at = grip(self.bar, axis, &gutter, reach, cursor);
+
+                    // A press on the rail takes the pill there at once, not
+                    // on the first movement after it: a click with a still
+                    // mouse has to scroll too. On the pill itself this is
+                    // where it already is.
+                    take_to = cursor
+                        .position()
+                        .map(|at| dragged_to(self.bar, axis, gutter, reach, state.grabbed_at, at));
                 }
 
                 // The bar is ours: iced's own is zero-width and never grabs,
