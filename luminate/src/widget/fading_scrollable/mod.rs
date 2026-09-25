@@ -1,5 +1,8 @@
 //! A scrollable whose bars stay out of the way until they are wanted.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use iced::advanced::widget::{Operation, Tree, tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, text};
 use iced::border::Radius;
@@ -204,6 +207,28 @@ fn bar_style(style: &Style, reveal: f32, expand: f32, press: f32) -> scrollable:
             border: border::rounded(style.radius),
         },
     }
+}
+
+/// Carries everything but the messages from a shell a child updated into
+/// over to the one this widget was handed.
+fn relay<Message>(from: &Shell<'_, Message>, to: &mut Shell<'_, Message>) {
+    if from.is_event_captured() {
+        to.capture_event();
+    }
+    to.request_redraw_at(from.redraw_request());
+    if from.is_layout_invalid() {
+        to.invalidate_layout();
+    }
+    if from.are_widgets_invalid() {
+        to.invalidate_widgets();
+    }
+    to.input_method_mut().merge(from.input_method());
+}
+
+/// Whether two offsets are the same to within what the scrollable rounds
+/// its translation to.
+fn same_offset(a: AbsoluteOffset, b: AbsoluteOffset) -> bool {
+    (a.x - b.x).abs() < 0.5 && (a.y - b.y).abs() < 0.5
 }
 
 /// Where in the pill a press landed, 0 at its leading edge and 1 at its
@@ -2887,6 +2912,14 @@ where
     smooth: bool,
     /// The most a turn of the wheel can grow to inside a fast series.
     fastest: f32,
+    /// The application's `on_scroll`, kept here as well as in the inner
+    /// scrollable, so a notification the inner one swallowed as redundant
+    /// can still be delivered once the content actually gets there.
+    on_scroll: Option<Rc<dyn Fn(scrollable::Viewport) -> Message + 'a>>,
+    /// The viewport the inner scrollable reported during the current
+    /// `update`, if it reported one. Its message is the last one it
+    /// published: `notify_viewport` is the final step of every path.
+    heard: Rc<Cell<Option<scrollable::Viewport>>>,
 }
 
 /// Default narrowest grab zone across a bar.
@@ -2994,6 +3027,8 @@ where
             curves: Curves::default(),
             smooth: true,
             fastest: FASTEST,
+            on_scroll: None,
+            heard: Rc::new(Cell::new(None)),
         };
         scrollable.reapply_direction();
 
@@ -3052,9 +3087,26 @@ where
     }
 
     /// A message produced whenever the content is scrolled.
+    ///
+    /// Only offsets the content is actually drawn at are reported: the
+    /// destination of a wheel turn that is still travelling is not, until
+    /// the travel gets there.
     #[must_use]
-    pub fn on_scroll(mut self, f: impl Fn(scrollable::Viewport) -> Message + 'a) -> Self {
-        self.map_inner(|inner| inner.on_scroll(f));
+    pub fn on_scroll(mut self, f: impl Fn(scrollable::Viewport) -> Message + 'a) -> Self
+    where
+        Message: 'a,
+    {
+        let f: Rc<dyn Fn(scrollable::Viewport) -> Message + 'a> = Rc::new(f);
+        let heard = Rc::clone(&self.heard);
+        let notify = Rc::clone(&f);
+
+        self.map_inner(|inner| {
+            inner.on_scroll(move |viewport| {
+                heard.set(Some(viewport));
+                notify(viewport)
+            })
+        });
+        self.on_scroll = Some(f);
         self
     }
 
@@ -3325,6 +3377,11 @@ struct State {
     /// finger, an application's `scroll_to` — can be told from one this
     /// widget wrote itself.
     left_at: Axes<f32>,
+    /// A viewport the inner scrollable reported and this widget held back,
+    /// because the content was never drawn there. The inner scrollable
+    /// counts it as heard, so if the content comes to rest exactly there it
+    /// stays quiet, and this is what gets delivered instead.
+    withheld: Option<scrollable::Viewport>,
 }
 
 impl State {
@@ -3369,6 +3426,7 @@ impl State {
             glide: Axes::default(),
             glided_at: Axes::default(),
             left_at: Axes::default(),
+            withheld: None,
             clock: None,
             turned_at: Axes::default(),
             gain: Axes {
@@ -3632,6 +3690,102 @@ where
         }
 
         state.scrolled = Axes::default();
+    }
+
+    /// Hands `event` to the inner scrollable, and passes on everything it
+    /// did except its report of where it now is, which comes back along
+    /// with its message instead.
+    ///
+    /// The scrollable publishes into a shell of its own so that report can
+    /// be held back until `aim` has said where the content will really be
+    /// drawn; see [`Self::report`]. It is the last message the scrollable
+    /// published, when it made one: `notify_viewport` is the final step of
+    /// every path through its `update`.
+    #[allow(clippy::too_many_arguments)]
+    fn update_inner(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) -> Option<(scrollable::Viewport, Message)> {
+        let mut published = Vec::new();
+        let mut inner_shell = Shell::new(&mut published);
+        if shell.is_event_captured() {
+            inner_shell.capture_event();
+        }
+
+        self.heard.set(None);
+        self.inner_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            &mut inner_shell,
+            viewport,
+        );
+        relay(&inner_shell, shell);
+
+        let heard = if let Some(viewport) = self.heard.take() {
+            published.pop().map(|message| (viewport, message))
+        } else {
+            None
+        };
+        for message in published {
+            shell.publish(message);
+        }
+
+        heard
+    }
+
+    /// Publishes what the inner scrollable reported this `update`, if the
+    /// content is really drawn there, and otherwise holds it back.
+    ///
+    /// A report is true when the content was drawn at it — the frame before,
+    /// which is what a report on a redraw describes — or will be drawn at it
+    /// now. A wheel turn the scrollable jumped and `aim` then pulled back to
+    /// glide from is neither. The scrollable counts a report as heard either
+    /// way, so one held back is delivered here if the content later comes to
+    /// rest exactly on it and the scrollable, finding nothing new, stays
+    /// quiet.
+    fn report(
+        &self,
+        state: &mut State,
+        heard: Option<(scrollable::Viewport, Message)>,
+        reach: Axes<Reach>,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let before = AbsoluteOffset {
+            x: *state.left_at.of(Axis::Horizontal),
+            y: *state.left_at.of(Axis::Vertical),
+        };
+        let now = AbsoluteOffset {
+            x: reach.of(Axis::Horizontal).offset,
+            y: reach.of(Axis::Vertical).offset,
+        };
+
+        if let Some((viewport, message)) = heard {
+            let at = viewport.absolute_offset();
+
+            if same_offset(at, before) || same_offset(at, now) {
+                state.withheld = None;
+                shell.publish(message);
+            } else {
+                state.withheld = Some(viewport);
+            }
+        } else if let Some(viewport) = state.withheld
+            && same_offset(viewport.absolute_offset(), now)
+            && let Some(on_scroll) = &self.on_scroll
+        {
+            state.withheld = None;
+            shell.publish(on_scroll(viewport));
+        }
     }
 
     /// Points both axes at what `event` asked for, and reports the offset
@@ -3981,18 +4135,13 @@ where
             self.spend(tree.state.downcast_mut::<State>(), cues, *now, shell);
         }
 
-        if !swallowed {
-            self.inner_mut().update(
-                &mut tree.children[0],
-                event,
-                layout,
-                cursor,
-                renderer,
-                clipboard,
-                shell,
-                viewport,
-            );
-        }
+        let heard = if swallowed {
+            None
+        } else {
+            self.update_inner(
+                tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+            )
+        };
 
         // Last, so it sees whatever this event did to the offset — the
         // wheel the scrollable just spent, or the drag taken above.
@@ -4012,6 +4161,8 @@ where
 
         let state = tree.state.downcast_mut::<State>();
         state.reach = reach;
+
+        self.report(state, heard, reach, shell);
 
         for axis in Axis::BOTH {
             *state.left_at.of_mut(axis) = reach.of(axis).offset;

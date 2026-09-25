@@ -408,4 +408,39 @@ mod fading_scrollable {
 
         assert!(rig.offset() > 0.0, "the click scrolled: {}", rig.offset());
     }
+
+    /// The inner scrollable reported a wheel turn's destination before the
+    /// widget pulled the content back to glide there, then reported where
+    /// it really was: one notch down read `[60, 0]` and then the glide.
+    #[test]
+    fn a_smooth_wheel_turn_reports_only_offsets_the_content_is_drawn_at() {
+        let mut rig = Rig::new();
+        let cursor = Point::new(50.0, 50.0);
+        let _ = rig.frame(cursor);
+
+        let mut reports = rig.event(
+            &Event::Mouse(mouse::Event::WheelScrolled {
+                delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+            }),
+            cursor,
+        );
+        let mut drawn = vec![0.0, rig.offset()];
+
+        for _ in 0..120 {
+            reports.extend(rig.frame(cursor));
+            drawn.push(rig.offset());
+        }
+
+        let rest = rig.offset();
+        assert!(rest > 0.0, "the turn scrolled");
+        assert!(
+            reports.windows(2).all(|pair| pair[1] >= pair[0]),
+            "one notch down never reports going back up: {reports:?}"
+        );
+        assert!(
+            reports.iter().all(|report| drawn.contains(report)),
+            "every report is an offset that was drawn: {reports:?}, drawn {drawn:?}"
+        );
+        assert_eq!(reports.last(), Some(&rest), "the resting offset is heard");
+    }
 }
