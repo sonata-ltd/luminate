@@ -55,6 +55,7 @@ default = [
     "linux-theme-detection",
     "x11",
     "wayland",
+    "tokio",
 ]
 # Embeds InterVariable.ttf and InterVariable-Italic.ttf (1.8 MB together) and
 # exposes `theme::typography::{FONT_INTER, FONT_INTER_ITALIC}`. Off,
@@ -78,6 +79,7 @@ canvas = ["iced/canvas", "iced_texture_cache/canvas"]
 # Hot reloading of the iced application (`iced/hot`).
 hot = ["iced/hot"]
 strict-assertions = ["iced/strict-assertions", "iced_texture_cache/strict-assertions"]
+tokio = ["iced/tokio"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -86,7 +88,10 @@ all-features = true
 name = "overview"
 path = "examples/overview/main.rs"
 # Opens a window (`wgpu` backend) and registers the bundled Inter faces.
-required-features = ["wgpu", "bundled-font"]
+# `canvas` draws the isometric page icons. Cargo only compiles an example by
+# default; `test = true` also runs the geometry unit tests inside it.
+required-features = ["wgpu", "bundled-font", "tokio", "canvas"]
+test = true
 
 [[bench]]
 name = "widget_cost"

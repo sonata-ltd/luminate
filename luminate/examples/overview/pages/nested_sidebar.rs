@@ -11,6 +11,7 @@ use iced_luminate::iced::{Length, Padding, Subscription};
 use iced_luminate::router::{Action, Page, Registry, RouteMessage};
 use iced_luminate::{Element, Luminate, Renderer, Router, Theme};
 
+use crate::hero::Hero;
 use crate::pages::{buttons::ButtonsPage, inputs::InputsPage};
 
 /// Messages of the nested sidebar page.
@@ -96,16 +97,21 @@ impl Page for NestedSidebar {
             None => text("no page").into(),
         };
 
-        row![
-            luminate.sidebar(
-                Sidebar::new(items)
-                    .width(200)
-                    .height(Length::Fill)
-                    .axis(Axis::Vertical)
-                    .show_toggle(true)
-            ),
-            container(content).padding(15),
-        ]
-        .into()
+        Hero::new(
+            luminate,
+            "Nested sidebar",
+            "A sidebar inside a sidebar",
+            row![
+                luminate.sidebar(
+                    Sidebar::new(items)
+                        .width(200)
+                        .height(Length::Fill)
+                        .axis(Axis::Vertical)
+                        .show_toggle(true)
+                ),
+                container(content).padding(15),
+            ],
+        )
+        .build()
     }
 }

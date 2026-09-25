@@ -1,6 +1,9 @@
 //! The Luminate overview: every descriptor, the theme, the router and the
 //! motion engine in one window.
 //!
+//! Run it with `cargo run --example overview --features canvas`: the page
+//! headers draw their isometric icons on a canvas, so the feature is required.
+//!
 //! Each page's module says which feature it demonstrates. Everything is
 //! reached through `iced_luminate` paths (`iced_luminate::iced`,
 //! `iced_luminate::router`, `iced_luminate::descriptor`, …): an application needs
@@ -11,16 +14,20 @@ use iced_luminate::iced::widget::{container, row, text};
 use iced_luminate::iced::{self, Length, Subscription, Task};
 use iced_luminate::router::{Registry, RouteMessage};
 use iced_luminate::theme::typography::FONT;
-use iced_luminate::{Element, Luminate, Router};
+use iced_luminate::widget::fading_scrollable::fading_scrollable;
+use iced_luminate::{Element, Luminate, Router, Theme};
 use iced_texture_cache::{FilterQuality, set_filter_quality};
 use luminate_examples_support::bench::Bench;
 
+use crate::pages::tabs::Tabs;
+use crate::pages::typo::Typography;
 use crate::pages::{
     buttons::ButtonsPage, card::CardPage, inputs::InputsPage, motion::MotionPage,
     nested_sidebar::NestedSidebar, showcase::ShowcasePage, snapshot::SnapshotPage,
     weight::WeightPage,
 };
 
+mod hero;
 mod pages;
 
 fn main() -> iced::Result {
@@ -38,6 +45,10 @@ fn main() -> iced::Result {
 
     let app = iced::application(App::new, App::update, App::view)
         .title("iced_luminate: overview")
+        // Triangle primitives, which is what a canvas emits, are drawn with
+        // no multisampling unless this is on. Without it the isometric icons
+        // come out hard-edged.
+        .antialiasing(true)
         .theme(|app: &App| *app.luminate.theme())
         .default_font(FONT)
         .subscription(App::subscription);
@@ -69,7 +80,7 @@ pub(crate) enum Message {
 
 impl App {
     fn new() -> (Self, Task<Message>) {
-        let luminate = Luminate::new();
+        let luminate = Luminate::with_theme(Theme::LIGHT);
 
         let mut router = Router::new(Registry::new(), luminate.clone());
         router
@@ -80,7 +91,9 @@ impl App {
             .add::<MotionPage>("Motion")
             .add::<WeightPage>("Weight")
             .add::<ShowcasePage>("Showcase")
-            .add::<NestedSidebar>("Nested sidebar");
+            .add::<NestedSidebar>("Nested sidebar")
+            .add::<Typography>("Typography")
+            .add::<Tabs>("Tabs");
         router
             .navigate::<ButtonsPage>()
             .expect("ButtonsPage was added above");
@@ -131,13 +144,17 @@ impl App {
                         } else {
                             ButtonHierarchy::Tertiary
                         })
-                        .on_press(Message::Navigate(page.index)),
+                        .on_press(Message::Navigate(page.index))
+                        .flat(),
                 )
             })
             .collect();
 
         let page: Element<'_, Message> = match self.router.view() {
-            Some(page) => container(page.map(Message::Route)).padding(15).into(),
+            Some(page) => fading_scrollable(page.map(Message::Route))
+                .motion(self.luminate.motion().clone())
+                .margin(5)
+                .into(),
             None => container(text("no page")).padding(15).into(),
         };
 

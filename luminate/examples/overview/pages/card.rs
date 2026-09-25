@@ -15,6 +15,8 @@ use iced_luminate::texture::{Cached, TextureCache};
 use iced_luminate::theme::typography::{TextSize, TextStyle, styled_text};
 use iced_luminate::{Element, Luminate, Renderer, Theme};
 
+use crate::hero::Hero;
+
 /// Steps in the card's pager.
 const STEPS: usize = 2;
 
@@ -108,19 +110,25 @@ impl Page for CardPage {
             card = card.max_height(height);
         }
 
-        column![
-            container(
-                luminate.input(
-                    Input::new("500", &self.max_height)
-                        .label("Max height")
-                        .on_input(Message::MaxHeightChanged)
+        Hero::new(
+            luminate,
+            "Card",
+            "Grouped content on a raised surface",
+            column![
+                container(
+                    luminate.input(
+                        Input::new("500", &self.max_height)
+                            .label("Max height")
+                            .on_input(Message::MaxHeightChanged)
+                    )
                 )
-            )
-            .width(160),
-            container(luminate.card(card)).center(Length::Fill),
-        ]
-        .spacing(15)
-        .into()
+                .width(160),
+                container(luminate.card(card)).center(Length::Fill),
+            ]
+            .height(Length::Fill)
+            .spacing(15),
+        )
+        .build()
     }
 }
 

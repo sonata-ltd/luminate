@@ -13,6 +13,8 @@ use iced_luminate::iced::widget::{column, text};
 use iced_luminate::router::{Action, Page, Registry};
 use iced_luminate::{Element, Luminate, Renderer, Theme};
 
+use crate::hero::Hero;
+
 /// Messages of the snapshot page.
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
@@ -48,14 +50,21 @@ impl Page for SnapshotPage {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        column![
-            text(format!("clicked {} times", self.count)),
-            text("Leave and come back: the page is dropped, the count is restored.").size(12),
-            self.luminate
-                .button(Button::new("Click").on_press(Message::Increment)),
-        ]
-        .spacing(15)
-        .into()
+        let theme = self.luminate.theme();
+
+        Hero::new(
+            &self.luminate,
+            "Snapshot",
+            "Pages captured and restored",
+            column![
+                text(format!("clicked {} times", self.count)),
+                text("Leave and come back: the page is dropped, the count is restored.").size(12),
+                self.luminate
+                    .button(Button::new("Click").on_press(Message::Increment)),
+            ]
+            .spacing(theme.spacing.xl),
+        )
+        .build()
     }
 
     fn into_snapshot(self) -> Option<Box<dyn Any>> {

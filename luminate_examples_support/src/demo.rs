@@ -440,7 +440,7 @@ where
         key!(),
         SMOOTH,
         if on {
-            Vector::new(64.0, 0.0)
+            Vector::new(25.0, 0.0)
         } else {
             Vector::ZERO
         },

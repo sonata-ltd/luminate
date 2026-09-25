@@ -2,6 +2,7 @@
 //! `Input` showing its error bubble, and a collapsible `Sidebar` with its
 //! toggle wired to `Sidebar::collapsed`.
 
+use crate::hero::Hero;
 use iced_luminate::descriptor::{Axis, Button, ButtonHierarchy, Input, Pager, Sidebar};
 use iced_luminate::iced::Length;
 use iced_luminate::iced::widget::{column, container, row, text};
@@ -93,9 +94,8 @@ impl Page for ShowcasePage {
         // The pager on its own, without a card around it.
         let pages = (0..STEPS).map(|step| {
             container(text(format!("Step {} of {STEPS}", step + 1)))
-                .width(Length::Fill)
-                .height(Length::Fixed(60.0 + 30.0 * step as f32))
                 .center(Length::Fill)
+                .height(Length::Fixed(60.0 + 30.0 * step as f32))
         });
         let pager = luminate.pager(Pager::new(pages).current(self.step).width(280));
         let steps =
@@ -111,11 +111,16 @@ impl Page for ShowcasePage {
             ]
             .spacing(10);
 
-        row![
-            sidebar,
-            column![input, pager, steps].spacing(20).width(Length::Fill),
-        ]
-        .spacing(20)
-        .into()
+        Hero::new(
+            luminate,
+            "Showcase",
+            "Every descriptor in one view",
+            row![
+                sidebar,
+                column![input, pager, steps].spacing(20).width(Length::Fill),
+            ]
+            .spacing(20),
+        )
+        .build()
     }
 }
