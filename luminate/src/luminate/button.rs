@@ -8,6 +8,7 @@ use crate::descriptor::{Button, ButtonContent};
 use crate::luminate::Luminate;
 use crate::theme::typography::styled_text;
 use crate::theme::{ButtonClass, SvgClass, Theme};
+use crate::widget::interaction_override::interaction_override;
 use crate::widget::multi_border::{Ring, Style, multi_border};
 use crate::{Element, Renderer};
 
@@ -27,6 +28,8 @@ impl Luminate {
             line_height,
             id,
             on_press,
+            force_default_interaction,
+            flat,
         } = descriptor;
 
         let tokens = self.theme.button;
@@ -63,19 +66,20 @@ impl Luminate {
                 .into(),
         };
 
-        let button = button(content)
+        let mut button: Element<'_, M> = button(content)
             .padding(padding)
             .width(width)
             .height(height)
             .on_press_maybe(on_press)
-            .class(ButtonClass::Hierarchy(hierarchy));
+            .class(ButtonClass::Hierarchy(hierarchy))
+            .into();
 
         // The pressed ring is drawn outside the layout box, so a row of
         // buttons sits as tightly at rest as it would with no ring at all;
         // an ancestor that clips will cut it. The closure reads the tokens
         // from the theme it is handed, capturing only the hierarchy.
-        let ringed =
-            multi_border(button)
+        if !flat {
+            button = multi_border(button)
                 .disabled(is_disabled)
                 .style(move |theme: &Theme, status| {
                     if !status.is_pressed || status.is_disabled {
@@ -91,11 +95,21 @@ impl Luminate {
                             .radius(t.ring_radius)
                             .overflowing(),
                     )
-                });
+                })
+                .into();
+        }
+
+        // The default interaction is `None`, which drops the pointer cursor
+        // the button asks for without proposing another.
+        let area: Element<'a, M> = if force_default_interaction || flat {
+            interaction_override(button).into()
+        } else {
+            button
+        };
 
         match id {
-            Some(id) => container(ringed).id(id).into(),
-            None => ringed.into(),
+            Some(id) => container(area).id(id).into(),
+            None => area,
         }
     }
 }

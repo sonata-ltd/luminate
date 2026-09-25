@@ -68,6 +68,10 @@ pub struct Button<'a, Message> {
     pub id: Option<widget::Id>,
     /// Message published on press; `None` disables the button.
     pub on_press: Option<Message>,
+    /// Interaction cursor override
+    pub force_default_interaction: bool,
+    /// Disable ring
+    pub flat: bool,
 }
 
 impl<'a, Message> Button<'a, Message> {
@@ -93,6 +97,8 @@ impl<'a, Message> Button<'a, Message> {
             line_height: None,
             id: None,
             on_press: None,
+            force_default_interaction: false,
+            flat: false,
         }
     }
 
@@ -174,6 +180,20 @@ impl<'a, Message> Button<'a, Message> {
     #[must_use]
     pub fn on_press_maybe(mut self, message: Option<Message>) -> Self {
         self.on_press = message;
+        self
+    }
+
+    /// Force disable pointer cursor
+    #[must_use]
+    pub fn force_default_interaction(mut self) -> Self {
+        self.force_default_interaction = true;
+        self
+    }
+
+    /// Disable ring and interaction
+    #[must_use]
+    pub fn flat(mut self) -> Self {
+        self.flat = true;
         self
     }
 }
