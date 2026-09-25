@@ -40,6 +40,9 @@ fontdb = "0.23"
 # The example installs a logger so `RUST_LOG=info` shows the adapter and
 # surface-format choice.
 env_logger = "0.11"
+# `benches/widget_cost.rs` drives `UserInterface` directly to time the diff,
+# layout and draw passes; `iced` does not re-export it.
+iced_runtime.workspace = true
 
 [features]
 default = [
@@ -84,3 +87,7 @@ name = "overview"
 path = "examples/overview/main.rs"
 # Opens a window (`wgpu` backend) and registers the bundled Inter faces.
 required-features = ["wgpu", "bundled-font"]
+
+[[bench]]
+name = "widget_cost"
+harness = false

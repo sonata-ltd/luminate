@@ -1765,6 +1765,7 @@ dependencies = [
  "iced",
  "iced_animate",
  "iced_page_router",
+ "iced_runtime",
  "iced_test",
  "iced_texture_cache",
  "luminate_examples_support",
