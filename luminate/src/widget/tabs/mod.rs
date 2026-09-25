@@ -8,6 +8,7 @@ use iced::{
         widget::{Tree, tree},
     },
     border::Radius,
+    touch,
 };
 use iced_animate::{Anim, Motion, MotionKey, curves::QUICK};
 
@@ -276,14 +277,19 @@ where
         shell: &mut iced::advanced::Shell<'_, Message>,
         viewport: &iced::Rectangle,
     ) {
-        let is_left_press = matches!(
-            event,
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-        );
+        // A finger selects a tab as a click does: the children are usually
+        // plain text, with no press handling of their own to fall back on.
+        let pressed_at = match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => cursor.position(),
+            Event::Touch(touch::Event::FingerPressed { position, .. }) => Some(*position),
+            _ => None,
+        };
 
-        if is_left_press && let Some(on_select) = &self.on_select {
+        if let Some(at) = pressed_at
+            && let Some(on_select) = &self.on_select
+        {
             for (index, child_layout) in layout.children().enumerate() {
-                if cursor.is_over(child_layout.bounds()) {
+                if child_layout.bounds().contains(at) {
                     shell.capture_event();
                     shell.publish(on_select(index));
                 }
@@ -537,4 +543,52 @@ where
     Renderer: renderer::Renderer,
 {
     Tabs::with_children(children)
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::widget::text;
+    use iced::{Point, Size};
+    use iced_test::Simulator;
+
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct Select(usize);
+
+    fn bar() -> iced::Element<'static, Select, iced::Theme, crate::Renderer> {
+        tabs([text("One").into(), text("Two").into()])
+            .on_select(Select)
+            .into()
+    }
+
+    /// The centre of tab `index` in a bar laid out at 300 x 60.
+    fn centre_of(index: usize) -> Point {
+        let mut ui = Simulator::with_size(iced::Settings::default(), Size::new(300.0, 60.0), bar());
+        let label = if index == 0 { "One" } else { "Two" };
+        let target = ui.find(label).expect("the tab is laid out");
+        target.bounds().center()
+    }
+
+    #[test]
+    fn a_click_selects_the_tab_under_it() {
+        let at = centre_of(1);
+        let mut ui = Simulator::with_size(iced::Settings::default(), Size::new(300.0, 60.0), bar());
+        ui.point_at(at);
+        let _ = ui.simulate(iced_test::simulator::click());
+        assert_eq!(ui.into_messages().collect::<Vec<_>>(), vec![Select(1)]);
+    }
+
+    /// Only mouse presses used to select: the tabs are plain text, so a
+    /// finger had nothing at all to press.
+    #[test]
+    fn a_touch_selects_the_tab_under_it() {
+        let at = centre_of(1);
+        let mut ui = Simulator::with_size(iced::Settings::default(), Size::new(300.0, 60.0), bar());
+        let _ = ui.simulate([Event::Touch(touch::Event::FingerPressed {
+            id: touch::Finger(0),
+            position: at,
+        })]);
+        assert_eq!(ui.into_messages().collect::<Vec<_>>(), vec![Select(1)]);
+    }
 }
