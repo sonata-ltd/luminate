@@ -116,6 +116,11 @@ pub struct Spring {
     offset: f32,
     velocity: f32,
     target: f32,
+    /// The excursion the current move set out to make, which is what the
+    /// settling tolerance is a fraction of. See [`is_settled`].
+    ///
+    /// [`is_settled`]: Self::is_settled
+    span: f32,
 }
 
 impl Spring {
@@ -130,6 +135,7 @@ impl Spring {
             offset: 0.0,
             velocity: 0.0,
             target: initial,
+            span: 0.0,
         }
     }
 
@@ -161,12 +167,22 @@ impl Spring {
 
     /// Retargets the spring, preserving its velocity so a change of direction
     /// mid-flight reads as momentum rather than a restart.
+    ///
+    /// A target it is already headed for changes nothing, span included: a
+    /// track retargets every component whenever any one of them moves, and
+    /// re-measuring the span of a move already under way would tighten its
+    /// tolerance with every view build.
     pub fn set_target(&mut self, target: f32) {
+        if target == self.target {
+            return;
+        }
+
         // Shifted by the change alone: rebuilt from the rounded absolute
         // position, the offset would lose the precision it exists to keep,
         // and a target restated every frame would stall the spring again.
         self.offset += self.target - target;
         self.target = target;
+        self.span = self.peak_excursion();
     }
 
     /// Replaces the tuning while keeping position and velocity.
@@ -283,12 +299,29 @@ impl Spring {
         x0.abs().max(at.abs())
     }
 
+    /// How far from its target the spring may sit and still count as arrived.
+    ///
+    /// The fraction is of the *span* of the move — the excursion it set out
+    /// to make — so that a window width settles as reliably as an opacity,
+    /// and so that a move and its reverse settle alike. Scaling it with the
+    /// coordinate instead collapses the tolerance to the floor whenever a
+    /// move ends at zero, and a zero target is the commonest there is: an
+    /// offset going home, a lane collapsing, a translation returning to its
+    /// origin. Those would render hundreds of milliseconds of sub-pixel
+    /// frames that the outbound move does not.
+    ///
+    /// The floor keeps a move smaller than one unit — an opacity, a scale
+    /// factor — from asking for a tolerance finer than the motion itself.
+    fn tolerance(&self) -> f32 {
+        5e-4 * self.span.max(1.0)
+    }
+
     /// Returns `true` once nothing the spring has left to do would be visible,
     /// so it can stop animating.
     ///
-    /// The tolerance scales with the magnitude being animated so that a
-    /// window width settles as reliably as an opacity; whatever residual it
-    /// allows is erased by [`snap`](Self::snap).
+    /// Whatever residual the tolerance allows — a fraction of the span of the
+    /// move, never finer than a fraction of one unit — is erased
+    /// by [`snap`](Self::snap).
     ///
     /// The question asked is about the *excursion still ahead*
     /// (`peak_excursion`), not the speed right now.
@@ -304,17 +337,15 @@ impl Spring {
     /// ahead, stop when nothing does.
     #[must_use]
     pub fn is_settled(&self) -> bool {
-        let scale = self.target.abs().max(self.position().abs()).max(1.0);
-
-        self.is_settled_within(5e-4 * scale)
+        self.is_settled_within(self.tolerance())
     }
 
     /// Returns `true` once the spring will never again be `tolerance` or more
     /// from its target.
     ///
-    /// [`is_settled`](Self::is_settled) scales its tolerance with the value,
-    /// which suits sizes and colours but not a position on a long axis: a
-    /// scroll offset of 20 000 px would settle 10 px early. Such a value
+    /// [`is_settled`](Self::is_settled) scales its tolerance with the move,
+    /// which suits sizes and colours but not a position on a long axis that
+    /// has to land on a whole pixel whatever the move's length. Such a value
     /// states its own tolerance in its own units here.
     #[must_use]
     pub fn is_settled_within(&self, tolerance: f32) -> bool {
@@ -355,10 +386,11 @@ mod tests {
 
     #[test]
     fn an_absolute_tolerance_does_not_grow_with_the_value() {
-        let mut s = Spring::new(SpringParams::default(), 20_000.0);
-        s.set_target(20_004.0);
+        let mut s = Spring::new(SpringParams::default(), 0.0);
+        s.set_target(20_000.0);
+        let (s, _) = settle(s, 1.0 / 60.0, 10_000);
         assert!(s.is_settled(), "relative tolerance is 10 units here");
-        assert!(!s.is_settled_within(0.5));
+        assert!(!s.is_settled_within(0.5), "at {}", s.position());
     }
 
     #[test]
@@ -489,7 +521,7 @@ mod tests {
             let mut s = Spring::new(SpringParams::new(bounce, Duration::from_millis(300)), 1.0);
             s.set_target(1.6);
 
-            let tolerance = |s: &Spring| 5e-4 * s.target.abs().max(s.position().abs()).max(1.0);
+            let tolerance = Spring::tolerance;
 
             // Every frame the spring actually renders, and the error it shows.
             let mut frames = Vec::new();
@@ -545,6 +577,42 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Frames a 60 Hz spring of the shipped default tuning takes to settle.
+    fn frames_to_settle(from: f32, to: f32) -> usize {
+        let mut s = Spring::new(SpringParams::new(0.0, Duration::from_millis(400)), from);
+        s.set_target(to);
+        settle(s, 1.0 / 60.0, 10_000).1
+    }
+
+    /// A move and the same move backwards are one motion played each way, so
+    /// they have to stop after the same number of frames.
+    ///
+    /// The tolerance scales with what the move covers, not with where it
+    /// lands. Scaling it with the coordinate instead collapses it to the
+    /// floor whenever a move ends at zero — and a `0.0` target is the
+    /// commonest there is: an offset going home, a lane collapsing, a
+    /// translation returning to its origin. Such a move then renders
+    /// hundreds of milliseconds of sub-pixel frames its counterpart does
+    /// not, which is long enough to outlast whatever drives the next one.
+    #[test]
+    fn a_move_and_its_reverse_settle_in_the_same_number_of_frames() {
+        for (near, far) in [
+            (0.0_f32, 512.0_f32),
+            (0.0, 64.0),
+            (0.0, 1.0),
+            (-256.0, 256.0),
+            (0.15, 1.0),
+        ] {
+            let out = frames_to_settle(near, far);
+            let back = frames_to_settle(far, near);
+
+            assert!(
+                out.abs_diff(back) <= 1,
+                "{near} -> {far} settles in {out} frames, {far} -> {near} in {back}"
+            );
         }
     }
 
