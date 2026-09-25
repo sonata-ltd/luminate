@@ -3,7 +3,7 @@
 //! cursor mapping and the per-frame record decisions. Nothing here touches a
 //! renderer, so every rule has a unit test below.
 
-use iced_core::{Point, Rectangle, Size, Transformation, Vector, border, mouse};
+use iced_core::{Point, Rectangle, Size, Transformation, Vector, mouse};
 
 use crate::cached::PixelSnap;
 use crate::filter::FilterQuality;
@@ -142,31 +142,21 @@ pub(crate) fn rounded_coverage(point: Point, size: Size, radii: [f32; 4]) -> f32
     (0.5 - distance).clamp(0.0, 1.0)
 }
 
-/// Grows `corners`, given for `content`, out to `bounds`, the padded
-/// rectangle drawn around it.
+/// Where `content` sits inside `bounds`, the padded rectangle drawn around
+/// it, as an offset from `bounds`' origin and the content's own size.
 ///
-/// The composite covers the content plus the padding recorded around it, and
-/// offsetting a rounded rectangle outwards by `d` grows its radius by exactly
-/// `d`. Asking the padded rectangle for `corners + d` therefore cuts the
-/// content box to `corners`, rather than rounding the transparent margin
-/// where it would do nothing visible. A square corner stays square.
-pub(crate) fn padded_corners(
-    corners: border::Radius,
-    bounds: Rectangle,
-    content: Rectangle,
-) -> border::Radius {
-    // The padding is the same on every side; the smaller of the two is the
-    // safe one should rounding have made them differ.
-    let padding = (content.x - bounds.x).min(content.y - bounds.y).max(0.0);
-    let grow = |radius: f32| {
-        if radius > 0.0 { radius + padding } else { 0.0 }
-    };
-
-    border::Radius {
-        top_left: grow(corners.top_left),
-        top_right: grow(corners.top_right),
-        bottom_right: grow(corners.bottom_right),
-        bottom_left: grow(corners.bottom_left),
+/// Both backends cut a composite's corners on this rectangle rather than on
+/// the padded one. Growing the radii by the padding and rounding `bounds`
+/// instead is not the same cut: that arc is the content's arc offset
+/// outwards, which passes up to `padding` outside the content's corner and
+/// keeps pixels the requested radius should remove. The padding is only
+/// margin for the filter, so masking it away costs nothing visible.
+pub(crate) fn content_shape(bounds: Rectangle, content: Rectangle) -> Rectangle {
+    Rectangle {
+        x: content.x - bounds.x,
+        y: content.y - bounds.y,
+        width: content.width,
+        height: content.height,
     }
 }
 

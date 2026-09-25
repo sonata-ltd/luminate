@@ -168,6 +168,36 @@ fn glass(corners: f32) -> Frost {
     }
 }
 
+/// A 40 px red square with the standard 2 px of padding, composited at
+/// (10, 10) with a 4 px radius. The padding is margin for the filter, not
+/// content: the corner has to be cut on the content, so the content's own
+/// corner pixel goes and its edge stays.
+fn assert_corner_cut_on_the_content(renderer: &mut Renderer) {
+    let cache = TextureCache::new();
+    record_padded_red(renderer, &cache, 40.0, 2.0);
+    renderer.reset(wide());
+    renderer.draw_cached(
+        &cache,
+        Rectangle::new(Point::new(8.0, 8.0), Size::new(44.0, 44.0)),
+        Rectangle::new(Point::new(10.0, 10.0), Size::new(40.0, 40.0)),
+        wide(),
+        Transformation::IDENTITY,
+        Composite {
+            corners: 4.0.into(),
+            ..plain()
+        },
+    );
+    let shot = renderer.screenshot(WIDE, 1.0, Color::WHITE);
+
+    let corner = wide_pixel(&shot, 10, 10);
+    assert!(
+        corner[1] >= 250,
+        "the content's corner is cut away: {corner:?}"
+    );
+    assert_red(wide_pixel(&shot, 30, 10));
+    assert_red(wide_pixel(&shot, 10, 30));
+}
+
 /// One pane of glass over a 40 px source, then a larger one overhanging it
 /// on every side. The first rounds the source's corner; the second rounds
 /// its own, well outside the source, so the source's corner must show.
@@ -446,6 +476,13 @@ mod tiny_skia {
         let cache = TextureCache::new();
         assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
         assert_clamped_to_a_circle(&composite_pill(&mut renderer, &cache));
+    }
+
+    /// Growing the radius by the padding and rounding the padded texture
+    /// kept the content's corner pixel whole at a small radius.
+    #[test]
+    fn a_rounded_corner_is_cut_on_the_content_not_the_padding() {
+        assert_corner_cut_on_the_content(&mut headless_tiny_skia());
     }
 
     /// The cut was reused by crop and radius alone, so a pane that grew
@@ -794,6 +831,14 @@ mod wgpu {
         let cache = TextureCache::new();
         assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
         assert_clamped_to_a_circle(&composite_pill(&mut renderer, &cache));
+    }
+
+    /// Growing the radius by the padding and rounding the padded texture
+    /// kept the content's corner pixel whole at a small radius.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn a_rounded_corner_is_cut_on_the_content_not_the_padding() {
+        assert_corner_cut_on_the_content(&mut headless_wgpu());
     }
 
     /// The cut was reused by crop and radius alone, so a pane that grew

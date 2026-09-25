@@ -868,11 +868,11 @@ mod cpu {
         /// The last rounded variant of `handle`, and the corners it was cut
         /// to. `iced_tiny_skia` never reads `image::Image::border_radius`,
         /// so a rounded composite has to be a rounded *handle*; cutting it
-        /// is a pass over the texture, so it is kept until the corners or
-        /// the recording change. One slot, because a texture composited at
-        /// two different radii in one frame is not a thing any widget here
-        /// does.
-        rounded: Option<(iced_core::border::Radius, image::Handle)>,
+        /// is a pass over the texture, so it is kept until the corners, the
+        /// shape they are cut on or the recording change. One slot, because
+        /// a texture composited at two different radii in one frame is not a
+        /// thing any widget here does.
+        rounded: Option<(iced_core::border::Radius, Rectangle, image::Handle)>,
         /// Scratch pixmap and clip mask, reused while the size is unchanged.
         /// `None` while a record is in progress.
         scratch: Option<(tiny_skia::Pixmap, tiny_skia::Mask)>,
@@ -1101,16 +1101,19 @@ mod cpu {
             Record::Fresh
         }
 
-        /// The image of `id` cut to `corners`, if recorded.
+        /// The image of `id` cut to `corners` on `shape`, if recorded.
         ///
-        /// Zero corners hand back the square handle untouched. Otherwise the
-        /// cut is rebuilt from the pixmap — the radii are in logical pixels
-        /// and the texture is in its own, so they are scaled by the
-        /// recording scale on the way in.
+        /// `shape` is the rounded rectangle's place in the texture, in
+        /// logical pixels from its origin — the content, inside the padding
+        /// recorded around it. Zero corners hand back the square handle
+        /// untouched. Otherwise the cut is rebuilt from the pixmap — the
+        /// radii and the shape are in logical pixels and the texture is in
+        /// its own, so they are scaled by the recording scale on the way in.
         pub(crate) fn handle_rounded(
             &self,
             id: Id,
             corners: iced_core::border::Radius,
+            shape: Rectangle,
         ) -> Option<image::Handle> {
             let radii: [f32; 4] = corners.into();
             if radii.iter().all(|radius| *radius <= 0.0) {
@@ -1122,8 +1125,9 @@ mod cpu {
                 return None;
             };
 
-            if let Some((cached, handle)) = &texture.rounded
+            if let Some((cached, cached_shape, handle)) = &texture.rounded
                 && *cached == corners
+                && *cached_shape == shape
             {
                 return Some(handle.clone());
             }
@@ -1134,15 +1138,17 @@ mod cpu {
             round_corners(
                 &mut rgba,
                 texture.size,
-                Rectangle::with_size(iced_core::Size::new(
-                    texture.size.width as f32,
-                    texture.size.height as f32,
-                )),
+                Rectangle {
+                    x: shape.x * scale,
+                    y: shape.y * scale,
+                    width: shape.width * scale,
+                    height: shape.height * scale,
+                },
                 radii.map(|radius| radius * scale),
             );
 
             let handle = image::Handle::from_rgba(texture.size.width, texture.size.height, rgba);
-            texture.rounded = Some((corners, handle.clone()));
+            texture.rounded = Some((corners, shape, handle.clone()));
 
             Some(handle)
         }

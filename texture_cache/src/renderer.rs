@@ -466,14 +466,20 @@ impl TextureRenderer for WgpuRenderer {
             bounds * (self.transformations.current() * transform),
         );
 
-        // At rest the texture is cut to the corners grown out to its padded
-        // edge. The warp is defined on the content, which sits inside that
-        // padding, and its own mask rounds the content's corners in real
-        // pixels.
-        let mask = crate::composite::Mask::whole(
-            bounds.size(),
-            crate::geometry::padded_corners(composite.corners, bounds, content),
-        );
+        // At rest the texture is cut to the content's own corners, measured
+        // on the content inside the padding. The warp is defined on the same
+        // content, and its own mask rounds those corners in real pixels.
+        let inside = crate::geometry::content_shape(bounds, content);
+        let mask = crate::composite::Mask {
+            corners: composite.corners,
+            // The quad starts at the padded origin, before the content.
+            shape: Rectangle {
+                x: -inside.x,
+                y: -inside.y,
+                ..inside
+            },
+            ..crate::composite::Mask::whole(bounds.size(), composite.corners)
+        };
         let frame =
             crate::composite::Frame::new(bounds, content, composite.corners, self.scale_factor());
 
@@ -641,11 +647,14 @@ impl TextureRenderer for TinySkiaRenderer {
         };
         // Cut to shape here rather than through `image::Image::border_radius`:
         // `iced_tiny_skia` destructures that field away and never reads it.
-        // The corners are grown out to the padded edge, so the arc lands on
-        // the content's corner. The rounded texture is kept until the
-        // corners or the recording change.
-        let corners = crate::geometry::padded_corners(composite.corners, bounds, content);
-        let Some(handle) = self.store.handle_rounded(cache.id(), corners) else {
+        // The corners are cut on the content, not on the padding around it.
+        // The rounded texture is kept until the corners, the content's place
+        // in the texture or the recording change.
+        let shape = crate::geometry::content_shape(bounds, content);
+        let Some(handle) = self
+            .store
+            .handle_rounded(cache.id(), composite.corners, shape)
+        else {
             return;
         };
 
