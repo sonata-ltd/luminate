@@ -79,6 +79,8 @@ pub struct WgpuRenderer {
     inner: iced_wgpu::Renderer,
     store: Arc<WgpuCacheStore>,
     scale_factor: f32,
+    /// The transformations inherited from ancestors, composed.
+    transformations: Transformations,
 }
 
 /// The software half of [`Renderer`]: `iced_tiny_skia::Renderer` plus cache
@@ -91,6 +93,39 @@ pub struct TinySkiaRenderer {
     inner: iced_tiny_skia::Renderer,
     store: Arc<TinySkiaCacheStore>,
     scale_factor: f32,
+    /// The transformations inherited from ancestors, composed.
+    transformations: Transformations,
+}
+
+/// The stack of transformations the renderer is inside, each entry composed
+/// with the ones before it, as iced's own layer stack composes them.
+///
+/// `iced_wgpu` and `iced_tiny_skia` fold these into what they draw but never
+/// hand them back, and a composite needs them: the placement a pane of glass
+/// samples its source by must be where the source actually landed on screen,
+/// scrolled and translated by every ancestor, not merely moved by the
+/// transform passed with the composite.
+#[derive(Debug, Default)]
+struct Transformations(Vec<Transformation>);
+
+impl Transformations {
+    /// Every inherited transformation, composed; identity at the root.
+    fn current(&self) -> Transformation {
+        self.0.last().copied().unwrap_or(Transformation::IDENTITY)
+    }
+
+    fn push(&mut self, transformation: Transformation) {
+        let composed = self.current() * transformation;
+        self.0.push(composed);
+    }
+
+    fn pop(&mut self) {
+        let _ = self.0.pop();
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 macro_rules! half {
@@ -101,6 +136,7 @@ macro_rules! half {
                     inner,
                     store,
                     scale_factor,
+                    transformations: Transformations::default(),
                 }
             }
 
@@ -131,10 +167,12 @@ macro_rules! half {
             }
 
             fn start_transformation(&mut self, transformation: Transformation) {
+                self.transformations.push(transformation);
                 self.inner.start_transformation(transformation);
             }
 
             fn end_transformation(&mut self) {
+                self.transformations.pop();
                 self.inner.end_transformation();
             }
 
@@ -143,6 +181,7 @@ macro_rules! half {
             }
 
             fn reset(&mut self, new_bounds: Rectangle) {
+                self.transformations.clear();
                 self.inner.reset(new_bounds);
             }
 
@@ -422,7 +461,10 @@ impl TextureRenderer for WgpuRenderer {
         let Some(view) = self.store.view(cache.id()) else {
             return;
         };
-        self.store.note_composited(cache.id(), bounds * transform);
+        self.store.note_composited(
+            cache.id(),
+            bounds * (self.transformations.current() * transform),
+        );
 
         // At rest the texture is cut to the corners grown out to its padded
         // edge. The warp is defined on the content, which sits inside that
@@ -471,15 +513,17 @@ impl TextureRenderer for WgpuRenderer {
         // whose recorded scale (`scale` times that widget's supersample)
         // only the store knows. Resolving it here against this renderer's
         // own scale factor would halve the sigma of a supersampled source.
-        let Some((view, uv, visible)) = self.store.frosted(source.id(), frost, bounds * transform)
-        else {
+        // Both the pane and the source placement it is matched against are
+        // on screen, through every inherited transformation.
+        let inherited = self.transformations.current();
+        let pane = bounds * (inherited * transform);
+        let Some((view, uv, visible)) = self.store.frosted(source.id(), frost, pane) else {
             return;
         };
 
         // The corners belong to the whole pane, but only `visible` is drawn,
         // so the coverage is sampled in the pane's own coordinates — which
         // matters exactly when a pane overhangs its source.
-        let pane = bounds * transform;
         let shape = Rectangle {
             x: visible.x - pane.x,
             y: visible.y - pane.y,
@@ -494,12 +538,15 @@ impl TextureRenderer for WgpuRenderer {
             self.scale_factor(),
         );
 
+        // `visible` is already in screen space: the store intersected the
+        // transformed bounds with the source's placement, so the primitive
+        // is drawn without the transform, and with the inherited ones the
+        // backend is about to apply undone.
+        let drawn = visible * inherited.inverse();
+
         self.with_layer(clip, |renderer| {
-            // `visible` is already in screen space: the store intersected
-            // the transformed bounds with the source's placement, so the
-            // primitive is drawn without the transform, not through it.
             renderer.inner.draw_primitive(
-                visible,
+                drawn,
                 crate::composite::CompositePrimitive::new(
                     view,
                     opacity,
@@ -611,7 +658,10 @@ impl TextureRenderer for TinySkiaRenderer {
             return;
         };
         let transform = transform * fallback;
-        self.store.note_composited(cache.id(), bounds * transform);
+        self.store.note_composited(
+            cache.id(),
+            bounds * (self.transformations.current() * transform),
+        );
 
         // There is no bicubic kernel in iced's raster path, so `CatmullRom`
         // degrades to the same bilinear tap as `Bilinear`. `Snap` composites
@@ -652,10 +702,16 @@ impl TextureRenderer for TinySkiaRenderer {
         };
         // See the wgpu implementation: the store resolves `frost`, because
         // the scale that matters is the one the source was recorded at.
-        let Some((handle, visible)) = self.store.frosted(source.id(), frost, bounds * transform)
+        // Matched on screen, through every inherited transformation, and
+        // drawn back through them: see the wgpu implementation.
+        let inherited = self.transformations.current();
+        let Some((handle, visible)) =
+            self.store
+                .frosted(source.id(), frost, bounds * (inherited * transform))
         else {
             return;
         };
+        let drawn = visible * inherited.inverse();
 
         // Always linear: the derived texture is upscaled back from
         // 1/downscale, and nearest would show its blocks.
@@ -685,7 +741,7 @@ impl TextureRenderer for TinySkiaRenderer {
             // which is what `the_same_sigma_survives_every_downscale`
             // measures. See `TinySkiaCacheStore::frosted` for the whole
             // account.
-            image::Renderer::draw_image(&mut renderer.inner, image, visible, visible);
+            image::Renderer::draw_image(&mut renderer.inner, image, drawn, drawn);
         });
     }
 }

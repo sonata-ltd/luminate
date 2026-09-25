@@ -8,9 +8,9 @@
 
 use iced_core::Renderer as _;
 use iced_core::renderer::{Headless, Quad};
-use iced_core::{Color, Point, Rectangle, Size, Transformation};
+use iced_core::{Color, Point, Rectangle, Size, Transformation, Vector};
 use iced_texture_cache::{
-    Backend, Composite, FilterQuality, Record, Renderer, TextureCache, TextureRenderer, Warp,
+    Backend, Composite, FilterQuality, Frost, Record, Renderer, TextureCache, TextureRenderer, Warp,
 };
 
 const CANVAS: Size<u32> = Size {
@@ -116,6 +116,122 @@ fn assert_red(px: [u8; 4]) {
         px[0] >= 250 && px[1] <= 3 && px[2] <= 3 && px[3] == 255,
         "pure red: {px:?}"
     );
+}
+
+/// The 80 x 80 canvas the corner and glass tests draw on: room for a pane
+/// to overhang its source, or to sit where only a translated source is.
+const WIDE: Size<u32> = Size {
+    width: 80,
+    height: 80,
+};
+
+fn wide() -> Rectangle {
+    Rectangle::with_size(Size::new(80.0, 80.0))
+}
+
+/// RGBA of the pixel at `(x, y)` of an 80 x 80 screenshot.
+fn wide_pixel(rgba: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let i = ((y * WIDE.width + x) * 4) as usize;
+    [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+}
+
+/// Records `cache` as a solid red square of `side` px, `inset` px inside a
+/// texture `2 * inset` px larger: `inset` is the padding a `Cached` records
+/// around its content.
+fn record_padded_red(renderer: &mut Renderer, cache: &TextureCache, side: f32, inset: f32) {
+    let texture = (side + 2.0 * inset) as u32;
+    let _ = renderer.record(cache, Size::new(texture, texture), 1.0, |r| {
+        r.fill_quad(
+            Quad {
+                bounds: Rectangle::new(Point::new(inset, inset), Size::new(side, side)),
+                ..Quad::default()
+            },
+            Color::from_rgb(1.0, 0.0, 0.0),
+        );
+    });
+}
+
+fn plain() -> Composite {
+    Composite {
+        opacity: 1.0,
+        filter: FilterQuality::Bilinear,
+        corners: iced::border::Radius::default(),
+        warp: Warp::None,
+    }
+}
+
+fn glass(corners: f32) -> Frost {
+    Frost {
+        radius: 2.0,
+        downscale: 1,
+        corners: corners.into(),
+    }
+}
+
+/// A source composited inside an ancestor's translation lands 30 px to the
+/// right of its bounds; a pane of glass there has to find it there.
+fn assert_glass_finds_a_translated_source(renderer: &mut Renderer) {
+    let cache = TextureCache::new();
+    record_padded_red(renderer, &cache, 40.0, 0.0);
+    let source = Rectangle::with_size(Size::new(40.0, 40.0));
+    renderer.reset(wide());
+    renderer.with_translation(Vector::new(30.0, 0.0), |r| {
+        r.draw_cached(
+            &cache,
+            source,
+            source,
+            wide(),
+            Transformation::IDENTITY,
+            plain(),
+        );
+    });
+
+    // Only the glass is drawn, so only the backdrop can colour the pixel.
+    renderer.reset(wide());
+    renderer.draw_frosted(
+        &cache,
+        Rectangle::new(Point::new(45.0, 10.0), Size::new(10.0, 10.0)),
+        wide(),
+        Transformation::IDENTITY,
+        1.0,
+        glass(0.0),
+    );
+    let shot = renderer.screenshot(WIDE, 1.0, Color::WHITE);
+    assert_red(wide_pixel(&shot, 50, 15));
+}
+
+/// A pane inside the same translation as its source is drawn where that
+/// translation puts it, not twice as far.
+fn assert_translated_glass_is_drawn_once_translated(renderer: &mut Renderer) {
+    let cache = TextureCache::new();
+    record_padded_red(renderer, &cache, 40.0, 0.0);
+    let source = Rectangle::with_size(Size::new(40.0, 40.0));
+    renderer.reset(wide());
+    renderer.with_translation(Vector::new(30.0, 0.0), |r| {
+        r.draw_cached(
+            &cache,
+            source,
+            source,
+            wide(),
+            Transformation::IDENTITY,
+            plain(),
+        );
+    });
+
+    renderer.reset(wide());
+    renderer.with_translation(Vector::new(30.0, 0.0), |r| {
+        r.draw_frosted(
+            &cache,
+            Rectangle::new(Point::new(10.0, 10.0), Size::new(10.0, 10.0)),
+            wide(),
+            Transformation::IDENTITY,
+            1.0,
+            glass(0.0),
+        );
+    });
+    let shot = renderer.screenshot(WIDE, 1.0, Color::WHITE);
+    assert_red(wide_pixel(&shot, 45, 15));
+    assert_eq!(wide_pixel(&shot, 75, 15), WHITE, "drawn twice as far");
 }
 
 #[cfg(feature = "tiny-skia")]
@@ -289,6 +405,21 @@ mod tiny_skia {
         let cache = TextureCache::new();
         assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
         assert_clamped_to_a_circle(&composite_pill(&mut renderer, &cache));
+    }
+
+    /// Placements were stored through the composite's own transform only,
+    /// so a source inside a scrolled or translated ancestor was looked for
+    /// where it was not.
+    #[test]
+    fn glass_finds_a_source_moved_by_an_ancestor() {
+        assert_glass_finds_a_translated_source(&mut headless_tiny_skia());
+    }
+
+    /// The backdrop is matched on screen and must not then be translated
+    /// a second time by the ancestor it is drawn inside.
+    #[test]
+    fn glass_inside_an_ancestor_is_translated_once() {
+        assert_translated_glass_is_drawn_once_translated(&mut headless_tiny_skia());
     }
 }
 
@@ -615,5 +746,22 @@ mod wgpu {
         let cache = TextureCache::new();
         assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
         assert_clamped_to_a_circle(&composite_pill(&mut renderer, &cache));
+    }
+
+    /// Placements were stored through the composite's own transform only,
+    /// so a source inside a scrolled or translated ancestor was looked for
+    /// where it was not.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn glass_finds_a_source_moved_by_an_ancestor() {
+        assert_glass_finds_a_translated_source(&mut headless_wgpu());
+    }
+
+    /// The backdrop is matched on screen and must not then be translated
+    /// a second time by the ancestor it is drawn inside.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn glass_inside_an_ancestor_is_translated_once() {
+        assert_translated_glass_is_drawn_once_translated(&mut headless_wgpu());
     }
 }
