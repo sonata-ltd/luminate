@@ -36,7 +36,7 @@ iced_test.workspace = true
 luminate_examples_support = { workspace = true, features = ["texture"] }
 # The version iced 0.14's text stack resolves (Cargo.lock: 0.23.0);
 # `tests/fonts.rs` checks the bundled faces with the matcher the renderer uses.
-fontdb = "0.23"
+fontdb = "0.24"
 # The example installs a logger so `RUST_LOG=info` shows the adapter and
 # surface-format choice.
 env_logger = "0.11"
