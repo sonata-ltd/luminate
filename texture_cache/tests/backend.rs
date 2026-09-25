@@ -168,6 +168,47 @@ fn glass(corners: f32) -> Frost {
     }
 }
 
+/// One pane of glass over a 40 px source, then a larger one overhanging it
+/// on every side. The first rounds the source's corner; the second rounds
+/// its own, well outside the source, so the source's corner must show.
+fn assert_an_overhanging_pane_is_recut(renderer: &mut Renderer) {
+    let cache = TextureCache::new();
+    record_padded_red(renderer, &cache, 40.0, 0.0);
+    let source = Rectangle::with_size(Size::new(40.0, 40.0));
+    renderer.reset(wide());
+    renderer.draw_cached(
+        &cache,
+        source,
+        source,
+        wide(),
+        Transformation::IDENTITY,
+        plain(),
+    );
+
+    renderer.reset(wide());
+    renderer.draw_frosted(
+        &cache,
+        source,
+        wide(),
+        Transformation::IDENTITY,
+        1.0,
+        glass(12.0),
+    );
+    let _ = renderer.screenshot(WIDE, 1.0, Color::WHITE);
+
+    renderer.reset(wide());
+    renderer.draw_frosted(
+        &cache,
+        Rectangle::new(Point::new(-20.0, -20.0), Size::new(80.0, 80.0)),
+        wide(),
+        Transformation::IDENTITY,
+        1.0,
+        glass(12.0),
+    );
+    let shot = renderer.screenshot(WIDE, 1.0, Color::WHITE);
+    assert_red(wide_pixel(&shot, 1, 1));
+}
+
 /// A source composited inside an ancestor's translation lands 30 px to the
 /// right of its bounds; a pane of glass there has to find it there.
 fn assert_glass_finds_a_translated_source(renderer: &mut Renderer) {
@@ -405,6 +446,13 @@ mod tiny_skia {
         let cache = TextureCache::new();
         assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
         assert_clamped_to_a_circle(&composite_pill(&mut renderer, &cache));
+    }
+
+    /// The cut was reused by crop and radius alone, so a pane that grew
+    /// past its source kept the previous pane's corners.
+    #[test]
+    fn an_overhanging_pane_does_not_reuse_the_last_corners() {
+        assert_an_overhanging_pane_is_recut(&mut headless_tiny_skia());
     }
 
     /// Placements were stored through the composite's own transform only,
@@ -746,6 +794,14 @@ mod wgpu {
         let cache = TextureCache::new();
         assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
         assert_clamped_to_a_circle(&composite_pill(&mut renderer, &cache));
+    }
+
+    /// The cut was reused by crop and radius alone, so a pane that grew
+    /// past its source kept the previous pane's corners.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn an_overhanging_pane_does_not_reuse_the_last_corners() {
+        assert_an_overhanging_pane_is_recut(&mut headless_wgpu());
     }
 
     /// Placements were stored through the composite's own transform only,

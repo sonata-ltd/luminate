@@ -922,7 +922,11 @@ mod cpu {
         size: Size<u32>,
         /// The source epoch this was built from.
         epoch: u64,
-        /// The last crop and the handle cut from it.
+        /// The last crop, the corners and the pane shape (in the cut's own
+        /// pixels) its mask was built for, and the handle cut from it. The
+        /// shape is part of the key: two panes can share one crop and one
+        /// radius yet round different corners, when one overhangs the
+        /// source and the other does not.
         ///
         /// On the GPU the sub-rectangle is free — the sampler picks it. Here
         /// an `image::Handle` is drawn whole, so the crop costs a copy. A
@@ -934,7 +938,12 @@ mod cpu {
         /// recut every frame. That is the intended trade: the derivative
         /// itself — the expensive part — is still shared between them, and
         /// the cut is the cheap part the cost model budgets for.
-        crop: Option<(crate::blur::Crop, iced_core::border::Radius, image::Handle)>,
+        crop: Option<(
+            crate::blur::Crop,
+            iced_core::border::Radius,
+            Rectangle,
+            image::Handle,
+        )>,
         /// Frames since this was last drawn.
         idle: u32,
         liveness: Weak<Inner>,
@@ -1251,9 +1260,21 @@ mod cpu {
             let entry = derived.get_mut(&key)?;
             entry.idle = 0;
 
+            // The corners belong to the whole pane, but the cut is only the
+            // part of it lying over the source, at the derived texture's
+            // resolution — so both the shape and the radii are mapped into
+            // the cut's own pixels.
+            let scale = window.width as f32 / visible.width;
+            let shape = Rectangle {
+                x: (glass.x - visible.x) * scale,
+                y: (glass.y - visible.y) * scale,
+                width: glass.width * scale,
+                height: glass.height * scale,
+            };
+
             let handle = match &entry.crop {
-                Some((cached, corners, handle))
-                    if *cached == window && *corners == frost.corners =>
+                Some((cached, corners, cached_shape, handle))
+                    if *cached == window && *corners == frost.corners && *cached_shape == shape =>
                 {
                     handle.clone()
                 }
@@ -1261,17 +1282,6 @@ mod cpu {
                     let cut = crate::blur::cpu::crop_out(&entry.pixels, entry.size, window);
                     let mut rgba = pixmap_to_rgba(&cut);
 
-                    // The corners belong to the whole pane, but the cut is
-                    // only the part of it lying over the source, at the
-                    // derived texture's resolution — so both the shape and
-                    // the radii are mapped into the cut's own pixels.
-                    let scale = window.width as f32 / visible.width;
-                    let shape = Rectangle {
-                        x: (glass.x - visible.x) * scale,
-                        y: (glass.y - visible.y) * scale,
-                        width: glass.width * scale,
-                        height: glass.height * scale,
-                    };
                     let radii: [f32; 4] = frost.corners.into();
                     round_corners(
                         &mut rgba,
@@ -1281,7 +1291,7 @@ mod cpu {
                     );
 
                     let handle = image::Handle::from_rgba(window.width, window.height, rgba);
-                    entry.crop = Some((window, frost.corners, handle.clone()));
+                    entry.crop = Some((window, frost.corners, shape, handle.clone()));
                     handle
                 }
             };
