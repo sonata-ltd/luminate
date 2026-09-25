@@ -111,7 +111,10 @@ pub(crate) fn translate_cursor(cursor: mouse::Cursor, transform: Transformation)
 /// both and survives being scaled up.
 ///
 /// `radii` is iced's own corner order: top-left, top-right, bottom-right,
-/// bottom-left. Radii that would make two arcs on one side overlap are
+/// bottom-left. Each corner is cut across its own full extent, not just
+/// the quadrant it names: a top-left radius the whole width of the
+/// rectangle, with a square top-right corner, curves along the entire top
+/// edge, as CSS draws it. Radii that would make two arcs on one side overlap are
 /// scaled down together, as CSS does, so the shape degenerates to a capsule
 /// rather than folding inside out.
 /// Only the software path computes coverage in Rust: the wgpu composite
@@ -119,25 +122,46 @@ pub(crate) fn translate_cursor(cursor: mouse::Cursor, transform: Transformation)
 /// Gated the same way `blur::Crop` is, rather than allowed as dead code.
 #[cfg(any(feature = "tiny-skia", test))]
 pub(crate) fn rounded_coverage(point: Point, size: Size, radii: [f32; 4]) -> f32 {
-    let (half_width, half_height) = (size.width / 2.0, size.height / 2.0);
-    let radii = clamp_radii(size, radii);
+    let (width, height) = (size.width, size.height);
+    let [top_left, top_right, bottom_right, bottom_left] = clamp_radii(size, radii);
+    let (x, y) = (point.x, point.y);
 
-    // Centre-relative, so the four corners are the four sign combinations.
-    let (x, y) = (point.x - half_width, point.y - half_height);
-    let radius = match (x > 0.0, y > 0.0) {
-        (false, false) => radii[0],
-        (true, false) => radii[1],
-        (true, true) => radii[2],
-        (false, true) => radii[3],
-    };
+    // Distance to the plain box, negative inside.
+    let qx = (x - width / 2.0).abs() - width / 2.0;
+    let qy = (y - height / 2.0).abs() - height / 2.0;
+    let mut distance = qx.max(qy).min(0.0) + qx.max(0.0).hypot(qy.max(0.0));
 
-    // Distance to the rounded box: the corner's arc centre is inset by the
-    // radius, so the distance to that inset box, minus the radius, is the
-    // distance to the rounded shape. Negative inside.
-    let qx = x.abs() - half_width + radius;
-    let qy = y.abs() - half_height + radius;
-    let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
-    let distance = qx.max(qy).min(0.0) + outside - radius;
+    // Each arc cuts only the square between its corner and its centre;
+    // there the rounded shape's edge is the circle. Clamped radii never
+    // overlap along one side, so taking the farthest of these distances is
+    // the intersection of every cut.
+    let corners = [
+        (top_left, top_left, top_left, x < top_left && y < top_left),
+        (
+            top_right,
+            width - top_right,
+            top_right,
+            x > width - top_right && y < top_right,
+        ),
+        (
+            bottom_right,
+            width - bottom_right,
+            height - bottom_right,
+            x > width - bottom_right && y > height - bottom_right,
+        ),
+        (
+            bottom_left,
+            bottom_left,
+            height - bottom_left,
+            x < bottom_left && y > height - bottom_left,
+        ),
+    ];
+
+    for (radius, centre_x, centre_y, within) in corners {
+        if radius > 0.0 && within {
+            distance = distance.max((x - centre_x).hypot(y - centre_y) - radius);
+        }
+    }
 
     (0.5 - distance).clamp(0.0, 1.0)
 }
@@ -452,6 +476,24 @@ mod tests {
         assert_eq!(rounded_coverage(Point::new(39.5, 0.5), size, CORNERS), 1.0);
         assert_eq!(rounded_coverage(Point::new(39.5, 39.5), size, CORNERS), 1.0);
         assert_eq!(rounded_coverage(Point::new(0.5, 39.5), size, CORNERS), 1.0);
+    }
+
+    /// A corner may reach past the middle of its sides when its
+    /// neighbours are square. Picking the radius by quadrant cut the arc
+    /// off at the midpoint and left the pixels beyond it opaque.
+    #[test]
+    fn a_corner_is_cut_across_its_full_extent() {
+        let size = Size::new(40.0, 40.0);
+        let radii = [40.0, 0.0, 0.0, 0.0];
+
+        // Right of the midpoint, still under the top-left arc.
+        assert_eq!(rounded_coverage(Point::new(21.5, 0.5), size, radii), 0.0);
+        assert_eq!(rounded_coverage(Point::new(0.5, 21.5), size, radii), 0.0);
+        // The arc meets the square corners' sides at a tangent, so their
+        // pixels are all but covered, and the far side is untouched.
+        assert!(rounded_coverage(Point::new(39.5, 0.5), size, radii) > 0.99);
+        assert!(rounded_coverage(Point::new(0.5, 39.5), size, radii) > 0.99);
+        assert_eq!(rounded_coverage(Point::new(30.0, 30.0), size, radii), 1.0);
     }
 
     #[test]

@@ -149,23 +149,33 @@ fn coverage(point: vec2<f32>) -> f32 {
         return 1.0;
     }
 
-    let half_size = params.size * 0.5;
-    let centred = point - half_size;
+    let size = params.size;
+    let r = params.radius;
 
-    // The four corners are the four sign combinations, in iced's order.
-    var radius = params.radius.x;
-    if (centred.x > 0.0 && centred.y <= 0.0) {
-        radius = params.radius.y;
-    } else if (centred.x > 0.0 && centred.y > 0.0) {
-        radius = params.radius.z;
-    } else if (centred.x <= 0.0 && centred.y > 0.0) {
-        radius = params.radius.w;
+    // Distance to the plain box, negative inside.
+    let q = abs(point - size * 0.5) - size * 0.5;
+    var distance = min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0)));
+
+    // Each arc cuts only the square between its corner and its centre,
+    // across its full extent rather than the quadrant it names, so a
+    // radius past the midpoint follows the whole side. Clamped radii never
+    // overlap along one side: the farthest distance is every cut at once.
+    let top_left = vec2<f32>(r.x, r.x);
+    if (r.x > 0.0 && point.x < top_left.x && point.y < top_left.y) {
+        distance = max(distance, length(point - top_left) - r.x);
     }
-
-    // Distance to the box inset by the radius, minus the radius, is the
-    // distance to the rounded shape. Negative inside.
-    let q = abs(centred) - half_size + vec2<f32>(radius);
-    let distance = min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - radius;
+    let top_right = vec2<f32>(size.x - r.y, r.y);
+    if (r.y > 0.0 && point.x > top_right.x && point.y < top_right.y) {
+        distance = max(distance, length(point - top_right) - r.y);
+    }
+    let bottom_right = size - vec2<f32>(r.z);
+    if (r.z > 0.0 && point.x > bottom_right.x && point.y > bottom_right.y) {
+        distance = max(distance, length(point - bottom_right) - r.z);
+    }
+    let bottom_left = vec2<f32>(r.w, size.y - r.w);
+    if (r.w > 0.0 && point.x < bottom_left.x && point.y > bottom_left.y) {
+        distance = max(distance, length(point - bottom_left) - r.w);
+    }
 
     return clamp(0.5 - distance * params.scale, 0.0, 1.0);
 }

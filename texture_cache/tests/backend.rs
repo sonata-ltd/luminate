@@ -351,6 +351,34 @@ fn assert_a_rescaled_pane_is_recut(mut warmed: Renderer, mut fresh: Renderer) {
     assert_eq!(wide_pixel(&reused, 5, 5), wide_pixel(&expected, 5, 5));
 }
 
+/// A 40 px square with only its top-left corner rounded, at 40 px. The arc
+/// runs the whole top edge, so a pixel past the midpoint is cut too.
+fn assert_a_corner_is_cut_across_its_full_extent(renderer: &mut Renderer) {
+    let cache = TextureCache::new();
+    record_padded_red(renderer, &cache, 40.0, 0.0);
+    let bounds = Rectangle::with_size(Size::new(40.0, 40.0));
+    renderer.reset(wide());
+    renderer.draw_cached(
+        &cache,
+        bounds,
+        bounds,
+        wide(),
+        Transformation::IDENTITY,
+        Composite {
+            corners: iced::border::Radius {
+                top_left: 40.0,
+                ..iced::border::Radius::default()
+            },
+            ..plain()
+        },
+    );
+    let shot = renderer.screenshot(WIDE, 1.0, Color::WHITE);
+
+    // The arc is centred on (40, 40): (21.5, 0.5) is 43.6 px from it.
+    assert_eq!(wide_pixel(&shot, 21, 0), WHITE, "cut past the midpoint");
+    assert_red(wide_pixel(&shot, 30, 30));
+}
+
 #[cfg(feature = "tiny-skia")]
 mod tiny_skia {
     use std::cell::Cell;
@@ -558,6 +586,13 @@ mod tiny_skia {
     #[test]
     fn a_rescaled_pane_does_not_reuse_the_last_corners() {
         assert_a_rescaled_pane_is_recut(headless_tiny_skia(), headless_tiny_skia());
+    }
+
+    /// Radii were picked by quadrant, so an arc past the midpoint stopped
+    /// there and left opaque pixels outside the requested corner.
+    #[test]
+    fn a_corner_past_the_midpoint_is_cut_along_its_whole_arc() {
+        assert_a_corner_is_cut_across_its_full_extent(&mut headless_tiny_skia());
     }
 }
 
@@ -925,5 +960,13 @@ mod wgpu {
     #[ignore = "needs a GPU adapter"]
     fn a_rescaled_pane_does_not_reuse_the_last_corners() {
         assert_a_rescaled_pane_is_recut(headless_wgpu(), headless_wgpu());
+    }
+
+    /// Radii were picked by quadrant, so an arc past the midpoint stopped
+    /// there and left opaque pixels outside the requested corner.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn a_corner_past_the_midpoint_is_cut_along_its_whole_arc() {
+        assert_a_corner_is_cut_across_its_full_extent(&mut headless_wgpu());
     }
 }
