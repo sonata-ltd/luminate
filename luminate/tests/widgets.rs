@@ -444,3 +444,93 @@ mod fading_scrollable {
         assert_eq!(reports.last(), Some(&rest), "the resting offset is heard");
     }
 }
+
+/// Widgets inside a scrolled ancestor. An iced scrollable hands its children
+/// a cursor translated into their layout's coordinates and passes events on
+/// untouched, so a position read off the event is in the wrong space.
+mod under_a_scrolled_ancestor {
+    use iced_luminate::Renderer;
+    use iced_luminate::iced::advanced::renderer::Headless;
+    use iced_luminate::iced::advanced::widget::Tree;
+    use iced_luminate::iced::advanced::{Layout, Shell, Widget, clipboard, layout, mouse};
+    use iced_luminate::iced::widget::text;
+    use iced_luminate::iced::{self, Event, Point, Rectangle, Size};
+    use iced_luminate::widget::tabs::tabs;
+
+    /// How far the ancestor has scrolled.
+    const SCROLLED: f32 = 180.0;
+    /// Where the widget is laid out, in the ancestor's content.
+    const TOP: f32 = 200.0;
+
+    fn renderer() -> Renderer {
+        iced_test::futures::futures::executor::block_on(<Renderer as Headless>::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(16.0),
+            Some("tiny-skia"),
+        ))
+        .expect("tiny_skia needs no GPU")
+    }
+
+    /// The window position of a point `at` in the ancestor's content.
+    fn on_screen(at: Point) -> Point {
+        Point::new(at.x, at.y - SCROLLED)
+    }
+
+    /// Delivers `event` as the ancestor would: the cursor at `at`, in
+    /// content coordinates.
+    fn deliver<M>(
+        widget: &mut dyn Widget<M, iced::Theme, Renderer>,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        node: &layout::Node,
+        event: &Event,
+        at: Point,
+    ) -> Vec<M> {
+        let mut messages = Vec::new();
+        widget.update(
+            tree,
+            event,
+            Layout::new(node),
+            mouse::Cursor::Available(at),
+            renderer,
+            &mut clipboard::Null,
+            &mut Shell::new(&mut messages),
+            &Rectangle::new(Point::new(0.0, TOP), Size::new(300.0, 100.0)),
+        );
+        messages
+    }
+
+    #[test]
+    fn a_touch_selects_the_tab_it_lands_on() {
+        let renderer = renderer();
+        let mut widget = tabs([text("One").into(), text("Two").into()]).on_select(|index| index);
+        let mut tree = Tree::new(&widget as &dyn Widget<usize, iced::Theme, Renderer>);
+        let node = widget
+            .layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(300.0, 100.0)),
+            )
+            .move_to(Point::new(0.0, TOP));
+        let at = Layout::new(&node)
+            .children()
+            .nth(1)
+            .expect("a second tab")
+            .bounds()
+            .center();
+
+        let selected = deliver(
+            &mut widget,
+            &mut tree,
+            &renderer,
+            &node,
+            &Event::Touch(iced::touch::Event::FingerPressed {
+                id: iced::touch::Finger(0),
+                position: on_screen(at),
+            }),
+            at,
+        );
+
+        assert_eq!(selected, vec![1]);
+    }
+}

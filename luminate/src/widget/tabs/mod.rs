@@ -279,17 +279,19 @@ where
     ) {
         // A finger selects a tab as a click does: the children are usually
         // plain text, with no press handling of their own to fall back on.
-        let pressed_at = match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => cursor.position(),
-            Event::Touch(touch::Event::FingerPressed { position, .. }) => Some(*position),
-            _ => None,
-        };
+        // The hit test reads the cursor, which the runtime moves to a touch
+        // as well, never the event's own position: an ancestor scrollable
+        // translates the cursor into the layout's coordinates and passes
+        // the event on untouched.
+        let is_press = matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                | Event::Touch(touch::Event::FingerPressed { .. })
+        );
 
-        if let Some(at) = pressed_at
-            && let Some(on_select) = &self.on_select
-        {
+        if is_press && let Some(on_select) = &self.on_select {
             for (index, child_layout) in layout.children().enumerate() {
-                if child_layout.bounds().contains(at) {
+                if cursor.is_over(child_layout.bounds()) {
                     shell.capture_event();
                     shell.publish(on_select(index));
                 }
@@ -585,6 +587,8 @@ mod tests {
     fn a_touch_selects_the_tab_under_it() {
         let at = centre_of(1);
         let mut ui = Simulator::with_size(iced::Settings::default(), Size::new(300.0, 60.0), bar());
+        // The runtime moves the cursor to a touch before delivering it.
+        ui.point_at(at);
         let _ = ui.simulate([Event::Touch(touch::Event::FingerPressed {
             id: touch::Finger(0),
             position: at,
