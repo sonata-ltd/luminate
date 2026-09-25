@@ -2,7 +2,7 @@
 //! `NavigationOptions` to the inputs page.
 
 use iced::Length;
-use iced::widget::{container, row};
+use iced::widget::{container, row, svg};
 use iced_luminate::descriptor::{Button, ButtonHierarchy};
 use iced_luminate::iced::widget::column;
 use iced_luminate::router::{Action, Page, Registry};
@@ -11,9 +11,14 @@ use iced_luminate::{Element, Luminate, Renderer, Theme};
 use crate::hero::Hero;
 use crate::iso::scenes_flat;
 
-const ICON_SVG: &str = r#"<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M5 4.98963C5 4.01847 5 3.53289 5.20249 3.26522C5.37889 3.03203 5.64852 2.88773 5.9404 2.8703C6.27544 2.8503 6.67946 3.11965 7.48752 3.65835L18.0031 10.6687C18.6708 11.1139 19.0046 11.3364 19.1209 11.6169C19.2227 11.8622 19.2227 12.1378 19.1209 12.3831C19.0046 12.6636 18.6708 12.8862 18.0031 13.3313L7.48752 20.3417C6.67946 20.8804 6.27544 21.1497 5.9404 21.1297C5.64852 21.1123 5.37889 20.968 5.20249 20.7348C5 20.4671 5 19.9815 5 19.0104V4.98963Z" fill="black" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>"#;
+/// The play icon every button on the page shows.
+///
+/// From memory, never from a `&str`: iced turns a string into a handle
+/// through `Into<PathBuf>`, so passing the markup itself reads it as a file
+/// name and draws nothing.
+fn icon() -> svg::Handle {
+    svg::Handle::from_memory(include_bytes!("../assets/play.svg"))
+}
 
 /// Messages of the buttons page.
 #[derive(Debug, Clone)]
@@ -53,7 +58,7 @@ impl Page for ButtonsPage {
         let luminate = &self.luminate;
         let theme = luminate.theme();
 
-        let icon = ICON_SVG;
+        let icon = icon();
         let column_spacing = theme.spacing.lg;
 
         Hero::new(
@@ -64,14 +69,16 @@ impl Page for ButtonsPage {
             container(
                 row![
                     column![
-                        luminate.button(Button::with_icon(icon).on_press(Message::ActionPressed)),
                         luminate.button(
-                            Button::with_icon(icon)
+                            Button::with_icon(icon.clone()).on_press(Message::ActionPressed)
+                        ),
+                        luminate.button(
+                            Button::with_icon(icon.clone())
                                 .hierarchy(ButtonHierarchy::Secondary)
                                 .on_press(Message::ActionPressed)
                         ),
                         luminate.button(
-                            Button::with_icon(icon)
+                            Button::with_icon(icon.clone())
                                 .hierarchy(ButtonHierarchy::Tertiary)
                                 .on_press(Message::ActionPressed)
                         ),
@@ -94,18 +101,18 @@ impl Page for ButtonsPage {
                     column![
                         luminate.button(
                             Button::new("Action")
-                                .icon(icon)
+                                .icon(icon.clone())
                                 .on_press(Message::ActionPressed)
                         ),
                         luminate.button(
                             Button::new("Action")
-                                .icon(icon)
+                                .icon(icon.clone())
                                 .hierarchy(ButtonHierarchy::Secondary)
                                 .on_press(Message::ActionPressed)
                         ),
                         luminate.button(
                             Button::new("Action")
-                                .icon(icon)
+                                .icon(icon.clone())
                                 .hierarchy(ButtonHierarchy::Tertiary)
                                 .on_press(Message::ActionPressed)
                         ),
@@ -117,5 +124,60 @@ impl Page for ButtonsPage {
             .center_x(Length::Fill),
         )
         .build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iced_luminate::iced::advanced::Renderer as _;
+    use iced_luminate::iced::advanced::clipboard;
+    use iced_luminate::iced::advanced::renderer::{self, Headless};
+    use iced_luminate::iced::time::Instant;
+    use iced_luminate::iced::{Color, Event, Rectangle, Size, mouse, window};
+    use iced_luminate::texture::testing::headless_tiny_skia;
+    use iced_test::runtime::user_interface::{self, UserInterface};
+
+    use super::*;
+
+    const SIZE: Size = Size::new(64.0, 64.0);
+
+    /// An icon-only primary button showing `icon`, drawn on the software
+    /// backend.
+    fn render(icon: svg::Handle) -> Vec<u8> {
+        let luminate = Luminate::default();
+        let root: Element<'_, ()> = luminate.button(Button::with_icon(icon).on_press(()));
+        let mut renderer = headless_tiny_skia();
+        let mut ui =
+            UserInterface::build(root, SIZE, user_interface::Cache::default(), &mut renderer);
+        let _ = ui.update(
+            &[Event::Window(
+                window::Event::RedrawRequested(Instant::now()),
+            )],
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut clipboard::Null,
+            &mut Vec::new(),
+        );
+        renderer.reset(Rectangle::with_size(SIZE));
+        ui.draw(
+            &mut renderer,
+            luminate.theme(),
+            &renderer::Style {
+                text_color: Color::BLACK,
+            },
+            mouse::Cursor::Unavailable,
+        );
+        renderer.screenshot(Size::new(64, 64), 1.0, Color::WHITE)
+    }
+
+    /// The icons were handed over as markup in a `&str`, which iced reads
+    /// as a path: nothing was found, and the buttons drew no icon at all.
+    #[test]
+    fn the_page_icon_draws() {
+        let blank = svg::Handle::from_memory(
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"/>"#.as_slice(),
+        );
+
+        assert!(render(icon()) != render(blank), "the icon left no mark");
     }
 }
