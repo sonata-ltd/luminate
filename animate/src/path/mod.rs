@@ -10,12 +10,16 @@
 
 mod cubic;
 mod data;
+mod fit;
 mod length;
+mod values;
 
 #[cfg(feature = "svg-path")]
 mod parse;
 
 pub use data::{PathBuilder, PathData, PathError};
+pub use fit::{Fit, Placement};
+pub use values::{DrawRange, Pose};
 
 #[allow(unused_imports)]
 pub(crate) use cubic::Cubic;
