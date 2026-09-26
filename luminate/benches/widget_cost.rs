@@ -176,9 +176,20 @@ fn main() {
 }
 
 /// A 24 px icon at rest, mid-draw and mid-morph, and a 500-segment path
-/// mid-morph. A counter moves the animated value on every build, so the
-/// moving cases rebuild their geometry every frame, as a running animation
-/// does; the resting case hits the cache.
+/// mid-morph. A shared counter advances once per widget built; its value
+/// modulo 101 drives the animated value. 101 is coprime with `WIDGETS`
+/// (200), so a widget's position in the column never sees the same residue
+/// two frames running, and the moving cases genuinely rebuild their geometry
+/// every frame, as a running animation does, while the resting case hits the
+/// cache. (A modulus of 100 — a divisor of `WIDGETS` — would give every
+/// position the same value every frame and measure the cache path twice
+/// over instead.)
+///
+/// On the tiny-skia backend this binary measures, the `draw` figure above
+/// excludes rasterisation, as the module doc says of every case; for a path
+/// specifically, that stops being true on wgpu, which tessellates the
+/// frame's geometry inside `draw` itself, so a moving case's wgpu figure
+/// would include work this one does not.
 #[cfg(feature = "canvas")]
 fn paths(bench: &mut Bench, kit: &Luminate) {
     use std::cell::Cell;
@@ -195,10 +206,10 @@ fn paths(bench: &mut Bench, kit: &Luminate) {
         Arc::new(Morph::new(&ICON, &cross))
     });
     static BIG_MORPH: LazyLock<Arc<Morph>> = LazyLock::new(|| {
-        let ring = |r: f32, phase: f32| {
+        let ring = |r: f32, rotation: f32| {
             let mut builder = PathData::builder().move_to(iced::Point::new(r, 0.0));
             for k in 1..500 {
-                let a = k as f32 / 500.0 * std::f32::consts::TAU + phase;
+                let a = k as f32 / 500.0 * std::f32::consts::TAU + rotation;
                 builder = builder.line_to(iced::Point::new(r * a.cos(), r * a.sin()));
             }
             builder.close().build().expect("a ring")
@@ -206,10 +217,13 @@ fn paths(bench: &mut Bench, kit: &Luminate) {
         Arc::new(Morph::new(&ring(10.0, 0.0), &ring(12.0, 0.3)))
     });
 
+    // 101 is coprime with `WIDGETS` (200); see the doc comment above.
+    const PHASE_MODULUS: u32 = 101;
+
     let tick = Cell::new(0_u32);
     let phase = move || {
         tick.set(tick.get().wrapping_add(1));
-        (tick.get() % 100) as f32 / 100.0
+        (tick.get() % PHASE_MODULUS) as f32 / PHASE_MODULUS as f32
     };
     let phase = &phase;
 
