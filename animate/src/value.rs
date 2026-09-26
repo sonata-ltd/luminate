@@ -223,6 +223,9 @@ impl Animatable for Radians {
 /// dropped still gets a grace period of a few builds (`GC_IDLE_BUILDS`,
 /// currently 3) after the build in which it was last read.
 ///
+/// A handle made with [`map`](Self::map) holds the same track and counts
+/// as a handle on it.
+///
 /// [`get`]: Self::get
 /// [`Motion::to`]: crate::Motion::to
 #[derive(Debug, Clone)]
@@ -230,10 +233,29 @@ pub struct Anim<T> {
     inner: Inner<T>,
 }
 
-#[derive(Debug, Clone)]
+/// A projection from a track's raw slots to the value a derived handle reads.
+type Project<T> = Arc<dyn Fn(&[f32; MAX_COMPONENTS]) -> T + Send + Sync>;
+
+#[derive(Clone)]
 enum Inner<T> {
     Const(T),
     Live(Arc<Track>, PhantomData<fn() -> T>),
+    /// A value computed from another track's, every time it is read: a point
+    /// on a path from a progress, say. See [`Anim::map`].
+    Derived(Arc<Track>, Project<T>),
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Inner<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Const(value) => f.debug_tuple("Const").field(value).finish(),
+            Self::Live(track, _) => f.debug_tuple("Live").field(track).finish(),
+            Self::Derived(track, _) => f
+                .debug_tuple("Derived")
+                .field(track)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 impl<T: Animatable> Anim<T> {
@@ -253,12 +275,59 @@ impl<T: Animatable> Anim<T> {
 
     /// Re-types a single-component handle. Both types must read and write
     /// slot `0` only, so the track is shared as-is.
-    pub(crate) fn retype<U: Animatable>(self, convert: impl FnOnce(T) -> U) -> Anim<U> {
+    pub(crate) fn retype<U: Animatable>(
+        self,
+        convert: impl Fn(T) -> U + Send + Sync + 'static,
+    ) -> Anim<U> {
         const { assert!(T::COMPONENTS == 1 && U::COMPONENTS == 1) };
 
         match self.inner {
             Inner::Const(value) => Anim::constant(convert(value)),
             Inner::Live(track, _) => Anim::live(track),
+            Inner::Derived(track, project) => Anim {
+                inner: Inner::Derived(track, Arc::new(move |slots| convert(project(slots)))),
+            },
+        }
+    }
+
+    /// A handle whose value is `f` of this one's, computed on every read.
+    ///
+    /// This is how one track drives a value of another type: a progress
+    /// becomes a point on a path, a pose, a colour from a ramp.
+    ///
+    /// ```
+    /// use iced_animate::Anim;
+    /// let progress: Anim<f32> = 0.5.into();
+    /// let width = progress.map(|t| 40.0 + 200.0 * t);
+    /// assert_eq!(width.get(), 140.0);
+    /// ```
+    ///
+    /// The mapped handle *is* a handle on the same track: it keeps the track
+    /// alive exactly as the original does, it animates while the track
+    /// moves, and [`mark_tier`](Self::mark_tier) on it raises the track's
+    /// tier. A track read through two handles pays for the most expensive of
+    /// them — map a progress into a `Cached::translate` and also into a
+    /// width, and the whole track is `Tier::Layout`.
+    ///
+    /// `f` runs on every [`get`](Self::get) and [`target`](Self::target),
+    /// inside `draw` or `layout`: keep it cheap, and precompute anything
+    /// heavy (a path's length table) outside it.
+    #[must_use]
+    pub fn map<U: Animatable>(&self, f: impl Fn(T) -> U + Send + Sync + 'static) -> Anim<U> {
+        match &self.inner {
+            Inner::Const(value) => Anim::constant(f(*value)),
+            Inner::Live(track, _) => Anim {
+                inner: Inner::Derived(Arc::clone(track), Arc::new(move |slots| f(T::read(slots)))),
+            },
+            Inner::Derived(track, project) => {
+                let project = Arc::clone(project);
+                Anim {
+                    inner: Inner::Derived(
+                        Arc::clone(track),
+                        Arc::new(move |slots| f(project(slots))),
+                    ),
+                }
+            }
         }
     }
 
@@ -279,6 +348,10 @@ impl<T: Animatable> Anim<T> {
             Inner::Live(track, _) => {
                 track.touch();
                 T::read(&track.value())
+            }
+            Inner::Derived(track, project) => {
+                track.touch();
+                project(&track.value())
             }
         }
     }
@@ -301,6 +374,10 @@ impl<T: Animatable> Anim<T> {
                 track.touch();
                 T::read(&track.target())
             }
+            Inner::Derived(track, project) => {
+                track.touch();
+                project(&track.target())
+            }
         }
     }
 
@@ -309,7 +386,7 @@ impl<T: Animatable> Anim<T> {
     pub fn is_animating(&self) -> bool {
         match &self.inner {
             Inner::Const(_) => false,
-            Inner::Live(track, _) => !track.is_settled(),
+            Inner::Live(track, _) | Inner::Derived(track, _) => !track.is_settled(),
         }
     }
 
@@ -317,7 +394,7 @@ impl<T: Animatable> Anim<T> {
     /// not it is moving right now).
     #[must_use]
     pub fn is_live(&self) -> bool {
-        matches!(self.inner, Inner::Live(..))
+        matches!(self.inner, Inner::Live(..) | Inner::Derived(..))
     }
 
     /// Raises the presentation cost of the underlying track to at least
@@ -327,7 +404,7 @@ impl<T: Animatable> Anim<T> {
     /// knows whether it reads the value in `layout`, in `draw`, or hands it
     /// to the compositor.
     pub fn mark_tier(&self, tier: Tier) {
-        if let Inner::Live(track, _) = &self.inner {
+        if let Inner::Live(track, _) | Inner::Derived(track, _) = &self.inner {
             track.mark_tier(tier);
         }
     }
@@ -339,7 +416,7 @@ impl<T: Animatable> Anim<T> {
     pub fn tier(&self) -> Option<Tier> {
         match &self.inner {
             Inner::Const(_) => None,
-            Inner::Live(track, _) => track.tier(),
+            Inner::Live(track, _) | Inner::Derived(track, _) => track.tier(),
         }
     }
 }
@@ -540,6 +617,67 @@ mod tests {
 
         assert_eq!(value.target(), 16.0);
         assert_eq!(value.target(), value.get());
+    }
+
+    const LINEAR_100: Curve = Curve::ease(crate::Easing::Linear, Duration::from_millis(100));
+
+    #[test]
+    fn a_mapped_constant_is_a_constant_and_a_mapped_track_follows_it() {
+        let constant: Anim<f32> = 3.0.into();
+        let doubled = constant.map(|v| v * 2.0);
+        assert_eq!(doubled.get(), 6.0);
+        assert!(!doubled.is_live());
+
+        let m = Motion::new();
+        let mut clock = FrameClock::new(&m);
+        let base = m.play(key!(), LINEAR_100, 0.0_f32, 10.0);
+        let point = base.map(|v| Point::new(v, -v));
+        assert!(point.is_live());
+        assert_eq!(
+            point.target(),
+            Point::new(10.0, -10.0),
+            "target goes through the map too"
+        );
+
+        let _ = clock.run(4);
+        assert_eq!(point.get(), Point::new(base.get(), -base.get()));
+        assert!(point.is_animating());
+        let _ = clock.run_until_settled();
+        assert!(!point.is_animating());
+        assert_eq!(point.get(), Point::new(10.0, -10.0));
+    }
+
+    #[test]
+    fn two_maps_compose_into_one() {
+        let m = Motion::new();
+        let mut clock = FrameClock::new(&m);
+        let base = m.play(key!(), LINEAR_100, 0.0_f32, 10.0);
+        let twice = base.map(|v| v + 1.0).map(|v| v * 3.0);
+        let _ = clock.run(3);
+        assert_eq!(twice.get(), (base.get() + 1.0) * 3.0);
+    }
+
+    #[test]
+    fn a_mapped_handle_marks_the_source_track_and_keeps_it_alive() {
+        let m = Motion::new();
+        let base = m.to(key!(), LINEAR_100, 1.0_f32);
+        let mapped = base.map(|v| v * 2.0);
+
+        mapped.mark_tier(Tier::Composite);
+        assert_eq!(base.tier(), Some(Tier::Composite));
+        mapped.mark_tier(Tier::Layout);
+        assert_eq!(base.tier(), Some(Tier::Layout), "the highest tier wins");
+
+        drop(base);
+        for _ in 0..=crate::engine::GC_IDLE_BUILDS {
+            m.end_build();
+            m.collect();
+        }
+        assert_eq!(m.track_count(), 1, "the mapped handle holds the track");
+
+        drop(mapped);
+        m.collect();
+        assert_eq!(m.track_count(), 0, "and releases it when dropped");
     }
 
     #[test]
