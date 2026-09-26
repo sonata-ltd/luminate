@@ -10,6 +10,7 @@
 
 mod cubic;
 mod data;
+mod length;
 
 pub use data::{PathBuilder, PathData, PathError};
 
@@ -17,3 +18,5 @@ pub use data::{PathBuilder, PathData, PathError};
 pub(crate) use cubic::Cubic;
 #[allow(unused_imports)]
 pub(crate) use data::Subpath;
+#[allow(unused_imports)] // used by tasks 5, 7
+pub(crate) use length::ArcLength;
