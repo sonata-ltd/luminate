@@ -12,6 +12,7 @@ mod cubic;
 mod data;
 mod fit;
 mod length;
+mod morph;
 mod motion;
 mod values;
 
@@ -20,6 +21,7 @@ mod parse;
 
 pub use data::{PathBuilder, PathData, PathError};
 pub use fit::{Fit, Placement};
+pub use morph::Morph;
 pub use motion::MotionPath;
 pub use values::{DrawRange, Pose};
 

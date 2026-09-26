@@ -54,7 +54,6 @@ impl Cubic {
 
     /// A segment sitting at one point: what a subpath collapses into when a
     /// morph has no partner for it.
-    #[allow(dead_code)] // used by Morph (task 8)
     pub(crate) const fn point(at: Point) -> Self {
         Self::new(at, at, at, at)
     }
@@ -96,7 +95,7 @@ impl Cubic {
     }
 
     /// The part between parameters `t0 ≤ t1`.
-    #[allow(dead_code)] // used by Morph (task 8)
+    #[allow(dead_code)] // used by `trim`, called by the path widget (feature "geometry")
     pub(crate) fn subsegment(&self, t0: f32, t1: f32) -> Self {
         if t1 <= 0.0 {
             return Self::point(self.p0);
@@ -107,7 +106,6 @@ impl Cubic {
     }
 
     /// The same curve, traversed from the other end.
-    #[allow(dead_code)] // used by Morph (task 8)
     pub(crate) const fn reversed(&self) -> Self {
         Self::new(self.p3, self.p2, self.p1, self.p0)
     }
@@ -119,7 +117,6 @@ impl Cubic {
 
     /// The segment between `a` and `b` at `t`, control point by control
     /// point. Not clamped: `t` outside `[0, 1]` extrapolates.
-    #[allow(dead_code)] // used by Morph (task 8)
     pub(crate) fn lerp(a: &Self, b: &Self, t: f32) -> Self {
         Self::new(
             lerp(a.p0, b.p0, t),
@@ -152,7 +149,6 @@ impl Cubic {
     }
 
     /// Length of the flattened curve.
-    #[allow(dead_code)] // used by Morph (task 8)
     pub(crate) fn length(&self) -> f32 {
         let n = self.steps();
         let mut previous = self.p0;
@@ -169,7 +165,6 @@ impl Cubic {
 
     /// The parameter at which half the length has been covered: where a
     /// morph splits a segment so the new nodes fall evenly.
-    #[allow(dead_code)] // used by Morph (task 8)
     pub(crate) fn half_length_t(&self) -> f32 {
         let n = self.steps().max(8);
         let points: Vec<Point> = (0..=n)

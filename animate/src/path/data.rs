@@ -32,7 +32,7 @@ pub(crate) struct Subpath {
 }
 
 impl Subpath {
-    #[allow(dead_code)] // used by Morph (task 8)
+    #[allow(dead_code)] // only used by this module's own tests
     pub(crate) fn start(&self) -> Point {
         self.segments[0].p0
     }
