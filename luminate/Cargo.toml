@@ -75,7 +75,7 @@ wayland = ["iced/wayland", "iced_texture_cache/wayland"]
 # Always enabled through `[dependencies]`; listed so it can be named.
 svg = ["iced/svg", "iced_texture_cache/svg"]
 image = ["iced/image", "iced_texture_cache/image"]
-canvas = ["iced/canvas", "iced_texture_cache/canvas"]
+canvas = ["iced/canvas", "iced_texture_cache/canvas", "iced_animate/geometry", "iced_animate/svg-path"]
 # Hot reloading of the iced application (`iced/hot`).
 hot = ["iced/hot"]
 strict-assertions = ["iced/strict-assertions", "iced_texture_cache/strict-assertions"]

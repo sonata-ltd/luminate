@@ -16,19 +16,42 @@
 //! Rotation is not offered: the compositor blits an axis-aligned rectangle,
 //! so a rotation has nowhere to live between the widget and the GPU.
 
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use iced::time::Instant;
 use iced::widget::scrollable;
-use iced_luminate::iced::widget::{column, text};
-use iced_luminate::iced::{Alignment, Length};
+use iced_luminate::animate::path::{DrawRange, Fit, MotionPath, PathData};
+use iced_luminate::animate::widget::path;
+use iced_luminate::animate::{
+    Curve, Easing, Motion, MotionKey, Repeat, SpringParams, curves::SMOOTH, key,
+};
+use iced_luminate::iced::widget::{column, stack, text};
+use iced_luminate::iced::{Alignment, Length, Point, Rectangle, Size};
 use iced_luminate::router::{Action, Page, Registry};
 use iced_luminate::texture::TextureCache;
 use iced_luminate::{Element, Luminate, Renderer, Theme};
-use luminate_examples_support::{CellStyle, MUTED, RebuildCounter, demo};
+use luminate_examples_support::{ACTIVE, CellStyle, IDLE, MUTED, RebuildCounter, cell, demo};
 
 use crate::hero::Hero;
 use crate::iso::scenes_flat;
+
+fn parsed(d: &str) -> Arc<PathData> {
+    Arc::new(PathData::parse(d).expect("a literal path parses"))
+}
+
+static CHECK: LazyLock<Arc<PathData>> = LazyLock::new(|| parsed("M4 12 L10 18 L20 6"));
+static BURGER: LazyLock<Arc<PathData>> =
+    LazyLock::new(|| parsed("M4 6 L20 6 M4 12 L20 12 M4 18 L20 18"));
+static CROSS: LazyLock<Arc<PathData>> =
+    LazyLock::new(|| parsed("M5 5 L19 19 M12 12 L12 12 M19 5 L5 19"));
+/// A ring centred in a 120 × 80 stage, in its pixels.
+static ORBIT: LazyLock<MotionPath> =
+    LazyLock::new(|| MotionPath::new(parsed("M90 40 A30 30 0 1 1 30 40 A30 30 0 1 1 90 40 Z")));
+static ARROW: LazyLock<Arc<PathData>> = LazyLock::new(|| parsed("M-6 -4 L6 0 L-6 4 Z"));
+
+/// One lap in four seconds, for ever.
+const LAP: Curve = Curve::ease(Easing::Linear, Duration::from_secs(4)).repeat(Repeat::forever());
 
 /// Code above the stage on this page.
 const STYLE: CellStyle = CellStyle {
@@ -44,7 +67,7 @@ pub(crate) enum Message {
     Tick,
 }
 
-/// Twelve one-idea animations.
+/// Fourteen one-idea animations.
 pub(crate) struct MotionPage {
     luminate: Luminate,
     on: bool,
@@ -53,6 +76,8 @@ pub(crate) struct MotionPage {
     /// the texture's identity, so it lives in page state, never in `view()`.
     caches: [TextureCache; 3],
     rebuilds: RebuildCounter,
+    /// Progress of the arrow's lap around [`ORBIT`], started once in `new`.
+    orbit: MotionKey,
 }
 
 impl Page for MotionPage {
@@ -63,12 +88,17 @@ impl Page for MotionPage {
     type Renderer = Renderer;
 
     fn new(luminate: &Luminate, _: &Registry) -> Self {
+        let orbit = key!();
+        // Started once: `play` in `view()` would restart the lap on every rebuild.
+        let _ = luminate.motion().play(orbit, LAP, 0.0_f32, 1.0);
+
         Self {
             luminate: luminate.clone(),
             on: false,
             last_tick: Instant::now(),
             caches: std::array::from_fn(|_| TextureCache::new()),
             rebuilds: RebuildCounter::new(),
+            orbit,
         }
     }
 
@@ -105,6 +135,9 @@ impl Page for MotionPage {
             demo::property_set(m, on, STYLE),
             demo::spring_vs_ease(m, on, STYLE),
             demo::staggered(m, on, STYLE),
+            drawn(m, on),
+            morphed(on),
+            orbiting(m, self.orbit),
         ]
         .height(Length::Shrink)
         .spacing(16);
@@ -132,4 +165,71 @@ impl Page for MotionPage {
         )
         .build()
     }
+}
+
+fn drawn<'a>(m: &Motion, on: bool) -> Element<'a, Message> {
+    let range = m.to(
+        key!(),
+        SMOOTH,
+        if on {
+            DrawRange::FULL
+        } else {
+            DrawRange::EMPTY
+        },
+    );
+
+    cell(
+        "Draw",
+        "path(&CHECK).stroke(ACTIVE, 2.5)\n    \
+         .draw(m.to(key!(), SMOOTH, if on { FULL } else { EMPTY }))",
+        path(&*CHECK)
+            .width(48)
+            .height(48)
+            .stroke(ACTIVE, 2.5)
+            .draw(range)
+            .into(),
+        STYLE,
+    )
+}
+
+fn morphed<'a>(on: bool) -> Element<'a, Message> {
+    cell(
+        "Morph",
+        "path(if on { &CROSS } else { &BURGER }).stroke(ACTIVE, 2.5)\n    \
+         .morph(SpringParams::default()).carry_velocity(true)",
+        path(if on { &*CROSS } else { &*BURGER })
+            .width(48)
+            .height(48)
+            .stroke(ACTIVE, 2.5)
+            .morph(SpringParams::default())
+            .carry_velocity(true)
+            .into(),
+        STYLE,
+    )
+}
+
+fn orbiting<'a>(m: &Motion, lap: MotionKey) -> Element<'a, Message> {
+    let lap = m.get::<f32>(lap).unwrap_or_else(|| 0.0.into());
+    let stage = Rectangle::new(Point::ORIGIN, Size::new(120.0, 80.0));
+
+    cell(
+        "Motion path",
+        "path(&ARROW).fill(ACTIVE)\n    \
+         .pose(lap.map(|u| ORBIT.pose_at(u)))  // lap repeats forever",
+        stack![
+            path(ORBIT.path())
+                .width(120)
+                .height(80)
+                .view_box(stage)
+                .fit(Fit::None)
+                .stroke(IDLE, 1.5),
+            path(&*ARROW)
+                .width(120)
+                .height(80)
+                .fill(ACTIVE)
+                .pose(lap.map(|u| ORBIT.pose_at(u))),
+        ]
+        .into(),
+        STYLE,
+    )
 }
