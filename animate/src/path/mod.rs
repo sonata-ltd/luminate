@@ -12,6 +12,9 @@ mod cubic;
 mod data;
 mod length;
 
+#[cfg(feature = "svg-path")]
+mod parse;
+
 pub use data::{PathBuilder, PathData, PathError};
 
 #[allow(unused_imports)]

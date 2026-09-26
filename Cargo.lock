@@ -1658,6 +1658,7 @@ dependencies = [
  "iced_test",
  "log",
  "luminate_examples_support",
+ "svgtypes",
 ]
 
 [[package]]

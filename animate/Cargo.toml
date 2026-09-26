@@ -20,6 +20,7 @@ workspace = true
 [dependencies]
 iced_core.workspace = true
 log.workspace = true
+svgtypes = { workspace = true, optional = true }
 
 [dev-dependencies]
 # `tiny-skia` gives `iced_test::Simulator` a headless renderer; `wgpu`, the
@@ -29,6 +30,10 @@ log.workspace = true
 iced = { workspace = true, features = ["tiny-skia", "wgpu", "thread-pool", "x11", "wayland"] }
 iced_test.workspace = true
 luminate_examples_support.workspace = true
+
+[features]
+# `PathData::parse`: SVG path data (`d`) into cubics.
+svg-path = ["dep:svgtypes"]
 
 [package.metadata.docs.rs]
 all-features = true
