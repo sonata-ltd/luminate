@@ -55,6 +55,17 @@ The first release. What each crate provides:
   that, one frame spends at most 1/15 s, so a stall — a pipeline compiling, a
   window returning from behind another — resumes an animation where it stopped
   instead of teleporting it to the end.
+- `path`: vector paths normalised into cubics (`PathData`, `PathBuilder`,
+  `PathData::parse` behind `svg-path`), `DrawRange`, `Morph`, `MotionPath`,
+  `Pose`, `Fit` and `Placement`.
+- `widget::path` (feature `geometry`): a path whose stroke, fill, drawn range,
+  morph and pose are resolved in `draw`, with its geometry cached while
+  nothing moves; `.morph(params)` follows a changing target, optionally
+  carrying velocity across a retarget.
+- `Anim::map`: a handle derived from another track's value, holding that
+  track like any handle.
+- `Repeat` and `Curve::repeat`: runs counted in total, `alternate` in reversed
+  time, `gap` between runs; a forever track is collected like a settled one.
 - Widgets `widget::{Shape, Sized, Host}` with `shape()`, `sized()`, `host()`
   (under `widget` only; the engine and value types live at the root).
 - `Shape::pixel_snap(PixelSnap::{Auto, Always, Never})`: when the quad is
@@ -203,3 +214,4 @@ The first release. What each crate provides:
 - Re-exports `iced`, `iced_animate` (as `animate`), `iced_page_router` (as
   `router`) and `iced_texture_cache` (as `texture`); `Element`, `Renderer`,
   `Router` aliases.
+- `canvas` now also enables `iced_animate`'s `geometry` and `svg-path`.

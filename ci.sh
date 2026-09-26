@@ -21,6 +21,8 @@ run cargo build --workspace --examples --all-features
 # Each crate alone, so feature unification cannot hide a missing feature.
 run cargo test -p iced_animate
 run cargo check -p iced_animate --no-default-features
+run cargo test -p iced_animate --all-features
+run cargo clippy -p iced_animate --all-targets --all-features -- -D warnings
 run cargo test -p iced_texture_cache
 # One backend alone, under clippy so the cfg split stays warning-free. On
 # Linux, softbuffer (behind iced_tiny_skia) needs a platform feature, so the

@@ -170,6 +170,81 @@ fn main() {
                 .hint("Hint"),
         )
     });
+
+    #[cfg(feature = "canvas")]
+    paths(&mut bench, &kit);
+}
+
+/// A 24 px icon at rest, mid-draw and mid-morph, and a 500-segment path
+/// mid-morph. A counter moves the animated value on every build, so the
+/// moving cases rebuild their geometry every frame, as a running animation
+/// does; the resting case hits the cache.
+#[cfg(feature = "canvas")]
+fn paths(bench: &mut Bench, kit: &Luminate) {
+    use std::cell::Cell;
+    use std::sync::{Arc, LazyLock};
+
+    use iced_luminate::animate::path::{DrawRange, Morph, PathData};
+    use iced_luminate::animate::widget::path;
+
+    static ICON: LazyLock<Arc<PathData>> = LazyLock::new(|| {
+        Arc::new(PathData::parse("M4 6 L20 6 M4 12 L20 12 M4 18 L20 18").expect("literal"))
+    });
+    static ICON_MORPH: LazyLock<Arc<Morph>> = LazyLock::new(|| {
+        let cross = PathData::parse("M5 5 L19 19 M12 12 L12 12 M19 5 L5 19").expect("literal");
+        Arc::new(Morph::new(&ICON, &cross))
+    });
+    static BIG_MORPH: LazyLock<Arc<Morph>> = LazyLock::new(|| {
+        let ring = |r: f32, phase: f32| {
+            let mut builder = PathData::builder().move_to(iced::Point::new(r, 0.0));
+            for k in 1..500 {
+                let a = k as f32 / 500.0 * std::f32::consts::TAU + phase;
+                builder = builder.line_to(iced::Point::new(r * a.cos(), r * a.sin()));
+            }
+            builder.close().build().expect("a ring")
+        };
+        Arc::new(Morph::new(&ring(10.0, 0.0), &ring(12.0, 0.3)))
+    });
+
+    let tick = Cell::new(0_u32);
+    let phase = move || {
+        tick.set(tick.get().wrapping_add(1));
+        (tick.get() % 100) as f32 / 100.0
+    };
+    let phase = &phase;
+
+    header("path — a 24 px icon at rest, mid-draw and mid-morph; 500 segments mid-morph");
+    bench.run("path at rest", kit, |_| {
+        path(&*ICON)
+            .width(24)
+            .height(24)
+            .stroke(iced::Color::BLACK, 2.0)
+            .into()
+    });
+    bench.run("… mid-draw", kit, |_| {
+        path(&*ICON)
+            .width(24)
+            .height(24)
+            .stroke(iced::Color::BLACK, 2.0)
+            .draw(DrawRange::new(0.0, phase()))
+            .into()
+    });
+    bench.run("… mid-morph", kit, |_| {
+        path(&*ICON_MORPH)
+            .width(24)
+            .height(24)
+            .stroke(iced::Color::BLACK, 2.0)
+            .progress(phase())
+            .into()
+    });
+    bench.run("500 segments mid-morph", kit, |_| {
+        path(&*BIG_MORPH)
+            .width(24)
+            .height(24)
+            .stroke(iced::Color::BLACK, 2.0)
+            .progress(phase())
+            .into()
+    });
 }
 
 /// The `iced` button the kit's button wraps, built exactly the way

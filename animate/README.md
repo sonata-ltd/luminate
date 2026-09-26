@@ -126,6 +126,11 @@ pointer-driven interface reads the same motion as unhurried at these lengths.
 1.6× brisker again, for interfaces that want to feel immediate. Switch a whole
 interface, not half of one.
 
+A curve can run more than once: `Curve::repeat(Repeat::forever().alternate())`
+pulses, `Repeat::times(3).gap(ms)` plays three runs with a pause between.
+`times(n)` counts runs in total. A curve repeating for ever asks for a frame
+on every frame while it is on screen.
+
 ### Widget-owned values
 
 `Motion` is for values that outlive the widget tree. A value that lives in a
@@ -144,9 +149,25 @@ width, height, padding and collapse are animated; resolved in `layout`.
 `widget::Host` (`host(motion, content)`): the clock. All three are generic over
 iced's `Theme` and `Renderer`.
 
+### Paths
+
+A path cannot be animated as a value — it holds far too many numbers — so
+what moves is a scalar and the geometry follows it where it is drawn
+(`iced_animate::path`):
+
+| anime.js | here |
+|---|---|
+| `createDrawable` | `path(&data).draw(Anim<DrawRange>)` |
+| `morphTo` | `path(Arc<Morph>).progress(Anim<f32>)`, or `path(&target).morph(params)` to morph whenever the target changes |
+| `createMotionPath` | `MotionPath::pose_at` / `offset_at`, fed a progress through `Anim::map` |
+
+`PathData::parse` reads SVG path data (feature `svg-path`); the `path()`
+widget needs the `geometry` feature and a renderer with iced's `canvas`.
+
 ## Feature flags
 
-None. The crate depends on `iced_core` and `log` only.
+- `geometry` — the `path()` widget (draws through `iced_graphics::geometry`).
+- `svg-path` — `PathData::parse` for SVG path data.
 
 ## Limitations
 
