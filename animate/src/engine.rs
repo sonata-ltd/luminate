@@ -350,6 +350,8 @@ impl Motion {
     /// [`to`]: Self::to
     #[must_use = "the handle is what a widget reads; discarding it leaves a track nothing binds"]
     pub fn enter<T: Animatable>(&self, key: MotionKey, curve: Curve, from: T, to: T) -> Anim<T> {
+        let requested = curve;
+        let curve = curve.once();
         const { assert!(T::COMPONENTS <= MAX_COMPONENTS) };
         let mut start = [0.0; MAX_COMPONENTS];
         let mut goal = [0.0; MAX_COMPONENTS];
@@ -357,6 +359,9 @@ impl Motion {
         to.write(&mut goal);
 
         let (track, created) = self.track_for(key, curve, start, T::COMPONENTS);
+        if !requested.repetition().is_once() {
+            track.warn_ignored_repeat();
+        }
 
         track.touch();
 
@@ -391,11 +396,16 @@ impl Motion {
     /// [`presence`]: Self::presence
     #[must_use = "the handle is what a widget reads; discarding it leaves a track nothing binds"]
     pub fn retire<T: Animatable>(&self, key: MotionKey, curve: Curve, to: T) -> Anim<T> {
+        let requested = curve;
+        let curve = curve.once();
         const { assert!(T::COMPONENTS <= MAX_COMPONENTS) };
         let mut goal = [0.0; MAX_COMPONENTS];
         to.write(&mut goal);
 
         let (track, _) = self.track_for(key, curve, goal, T::COMPONENTS);
+        if !requested.repetition().is_once() {
+            track.warn_ignored_repeat();
+        }
 
         track.touch();
         track.set_phase(Phase::Exiting);
@@ -567,8 +577,12 @@ impl Motion {
                 Step::Holding => status.animating = true,
                 Step::Moved => {
                     status.animating = true;
+                    let layout = track.tier() == Some(Tier::Layout);
                     // Unmarked reads as Paint: a redraw, never a relayout.
-                    status.layout_invalid |= track.tier() == Some(Tier::Layout);
+                    status.layout_invalid |= layout;
+                    if layout && track.is_forever() {
+                        track.warn_forever_layout();
+                    }
                 }
             }
         }
@@ -625,8 +639,9 @@ impl Motion {
         }
     }
 
-    /// Drops tracks that have settled, that no [`Anim`] handle references,
-    /// and that no view build has touched for a few builds.
+    /// Drops tracks that have settled (a track repeating for ever counts as
+    /// settled here), that no [`Anim`] handle references, and that no view
+    /// build has touched for a few builds.
     ///
     /// Keys are derived from call sites and runtime data, so a long-running
     /// application would otherwise accumulate a track per element it ever
@@ -647,7 +662,7 @@ impl Motion {
         // count is what makes a stored `Anim` a real reference.
         tracks.retain(|_, track| {
             Arc::strong_count(track) > 1
-                || !track.is_settled()
+                || (!track.is_settled() && !track.is_forever())
                 || build.saturating_sub(track.last_touched()) < GC_IDLE_BUILDS
         });
     }

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 pub use iced_core::animation::Easing;
 
+use crate::repeat::Repeat;
 use crate::spring::{Spring, SpringParams};
 use crate::value::MAX_COMPONENTS;
 
@@ -34,6 +35,7 @@ pub enum CurveKind {
 pub struct Curve {
     kind: CurveKind,
     delay: Duration,
+    repeat: Repeat,
 }
 
 impl Curve {
@@ -43,6 +45,7 @@ impl Curve {
         Self {
             kind: CurveKind::Spring(params),
             delay: Duration::ZERO,
+            repeat: Repeat::ONCE,
         }
     }
 
@@ -52,6 +55,7 @@ impl Curve {
         Self {
             kind: CurveKind::Ease { easing, duration },
             delay: Duration::ZERO,
+            repeat: Repeat::ONCE,
         }
     }
 
@@ -79,6 +83,26 @@ impl Curve {
     #[must_use]
     pub const fn delay(self) -> Duration {
         self.delay
+    }
+
+    /// Runs this curve more than once; see [`Repeat`].
+    #[must_use]
+    pub const fn repeat(mut self, repeat: Repeat) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
+    /// How this curve repeats: [`Repeat::ONCE`] unless
+    /// [`repeat`](Self::repeat) said otherwise.
+    #[must_use]
+    pub const fn repetition(self) -> Repeat {
+        self.repeat
+    }
+
+    /// The same curve, run once.
+    pub(crate) const fn once(mut self) -> Self {
+        self.repeat = Repeat::ONCE;
+        self
     }
 }
 
@@ -168,6 +192,7 @@ enum Solver {
         duration: Duration,
         from: [f32; MAX_COMPONENTS],
         elapsed: f32,
+        reversed: bool,
     },
 }
 
@@ -183,6 +208,7 @@ impl Solver {
                 duration,
                 from: *start,
                 elapsed: 0.0,
+                reversed: false,
             },
         }
     }
@@ -214,6 +240,19 @@ struct State {
     target: [f32; MAX_COMPONENTS],
     /// Time left before the curve starts moving, in seconds.
     delay_left: f32,
+    /// The repeat the caller asked for; what `retarget` compares, so that a
+    /// view restating it every build changes nothing.
+    requested: Repeat,
+    /// The repeat in force: `requested`, or once for a cycle between a
+    /// value and itself, which would ask for frames and move nothing.
+    repeat: Repeat,
+    /// Where the cycle starts and where it was told to go. `target` is where
+    /// the run in progress is headed: `declared` on odd runs, `origin` on
+    /// the even runs of an alternating cycle.
+    origin: [f32; MAX_COMPONENTS],
+    declared: [f32; MAX_COMPONENTS],
+    /// The run in progress, counted from 1.
+    run: u32,
 }
 
 /// Replaces every non-finite component of `values` (among the first
@@ -236,6 +275,131 @@ fn sanitise(
     }
 
     replaced
+}
+
+/// The most runs one tick crosses. Only a very short curve under a long
+/// frame gets near it, and a forever cycle drops whole pairs of runs first.
+const MAX_RUNS_PER_TICK: u32 = 64;
+
+/// Bit-for-bit equality of the first `components` slots.
+fn same(a: &[f32; MAX_COMPONENTS], b: &[f32; MAX_COMPONENTS], components: usize) -> bool {
+    a[..components]
+        .iter()
+        .zip(&b[..components])
+        .all(|(a, b)| a.to_bits() == b.to_bits())
+}
+
+/// Advances the run in progress by `dt`: the new value, whether the run is
+/// over, and the time the frame ran past its end — always zero for a
+/// spring, whose end is a tolerance rather than an instant.
+fn solve(
+    state: &mut State,
+    dt: f32,
+    components: usize,
+    current: &[f32; MAX_COMPONENTS],
+) -> ([f32; MAX_COMPONENTS], bool, f32) {
+    let mut next = *current;
+    let goals = state.target;
+
+    match &mut state.solver {
+        Solver::Spring { springs, .. } => {
+            let mut all_settled = true;
+
+            for (i, spring) in springs.iter_mut().enumerate().take(components) {
+                spring.tick(dt);
+
+                if spring.is_settled() {
+                    spring.snap();
+                } else {
+                    all_settled = false;
+                }
+
+                next[i] = spring.position();
+            }
+
+            (next, all_settled, 0.0)
+        }
+        Solver::Ease {
+            easing,
+            duration,
+            from,
+            elapsed,
+            reversed,
+        } => {
+            *elapsed += dt;
+
+            let total = duration.as_secs_f32().max(f32::EPSILON);
+            let progress = (*elapsed / total).clamp(0.0, 1.0);
+            // Backwards is reversed time, as CSS `alternate` is: an ease-out
+            // on the way out is an ease-in on the way back.
+            let eased = if *reversed {
+                1.0 - easing.value(1.0 - progress)
+            } else {
+                easing.value(progress)
+            };
+
+            for i in 0..components {
+                next[i] = from[i] + (goals[i] - from[i]) * eased;
+            }
+
+            (next, progress >= 1.0, (*elapsed - total).max(0.0))
+        }
+    }
+}
+
+/// Sets the solver up for the run after the one that just ended.
+fn start_next_run(state: &mut State, components: usize) {
+    // `u32::MAX` is odd, so wrapping to 2 keeps the direction of a forever
+    // cycle that outlives the counter.
+    state.run = state.run.checked_add(1).unwrap_or(2);
+
+    let repeat = state.repeat;
+    let reversed = repeat.is_reversed(state.run);
+    let (from, to) = if reversed {
+        (state.declared, state.origin)
+    } else {
+        (state.origin, state.declared)
+    };
+    state.target = to;
+
+    match &mut state.solver {
+        Solver::Spring { params, springs } => {
+            for (i, spring) in springs.iter_mut().enumerate().take(components) {
+                // Alternating, the spring is already at rest on `from` and
+                // turns round there; otherwise it jumps back and starts over.
+                if !repeat.is_alternate() {
+                    *spring = Spring::new(*params, from[i]);
+                }
+                spring.set_target(to[i]);
+            }
+        }
+        Solver::Ease {
+            from: start,
+            elapsed,
+            reversed: backwards,
+            ..
+        } => {
+            *start = from;
+            *elapsed = 0.0;
+            *backwards = reversed;
+        }
+    }
+}
+
+/// For a cycle that never ends, drops whole pairs of runs a long frame
+/// swallowed. A pair keeps the direction of the run in progress.
+fn skip_whole_cycles(state: &State, leftover: f32) -> f32 {
+    if !state.repeat.is_forever() {
+        return leftover;
+    }
+
+    let Solver::Ease { duration, .. } = &state.solver else {
+        return leftover;
+    };
+
+    let pair =
+        2.0 * (duration.as_secs_f32().max(f32::EPSILON) + state.repeat.pause().as_secs_f32());
+    leftover % pair
 }
 
 /// What one [`Track::tick`] did.
@@ -271,6 +435,9 @@ pub(crate) struct Track {
     last_touched: AtomicU64,
     phase: AtomicU8,
     warned_non_finite: AtomicBool,
+    forever: AtomicBool,
+    warned_ignored_repeat: AtomicBool,
+    warned_forever_layout: AtomicBool,
     state: Mutex<State>,
 }
 
@@ -309,11 +476,19 @@ impl Track {
             last_touched: AtomicU64::new(build),
             phase: AtomicU8::new(Phase::Present as u8),
             warned_non_finite: AtomicBool::new(false),
+            forever: AtomicBool::new(false),
+            warned_ignored_repeat: AtomicBool::new(false),
+            warned_forever_layout: AtomicBool::new(false),
             state: Mutex::new(State {
                 solver: Solver::new(curve, &start),
                 delay: curve.delay,
                 target: start,
                 delay_left: 0.0,
+                requested: Repeat::ONCE,
+                repeat: Repeat::ONCE,
+                origin: start,
+                declared: start,
+                run: 1,
             }),
         }
     }
@@ -393,6 +568,62 @@ impl Track {
         }
     }
 
+    /// Starts a cycle from `origin` to `declared` and publishes where it
+    /// will rest, for `Anim::target`.
+    fn begin_cycle(
+        &self,
+        state: &mut State,
+        requested: Repeat,
+        origin: [f32; MAX_COMPONENTS],
+        declared: [f32; MAX_COMPONENTS],
+    ) {
+        let repeat = if same(&origin, &declared, self.components) {
+            Repeat::ONCE
+        } else {
+            requested
+        };
+
+        state.requested = requested;
+        state.repeat = repeat;
+        state.origin = origin;
+        state.declared = declared;
+        state.run = 1;
+
+        let rest = if repeat.rests_at_start() {
+            origin
+        } else {
+            declared
+        };
+        for (slot, component) in self.target.iter().zip(rest.iter()) {
+            slot.store(component.to_bits(), Ordering::Relaxed);
+        }
+        self.forever.store(repeat.is_forever(), Ordering::Relaxed);
+    }
+
+    /// Whether the track cycles for ever; such a track is never settled, and
+    /// the collector treats it as if it were.
+    pub(crate) fn is_forever(&self) -> bool {
+        self.forever.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn warn_ignored_repeat(&self) {
+        if !self.warned_ignored_repeat.swap(true, Ordering::Relaxed) {
+            log::warn!(
+                "a repeating curve was given to `enter` or `retire`; an entrance and an exit \
+                 run once, so the repeat is ignored"
+            );
+        }
+    }
+
+    pub(crate) fn warn_forever_layout(&self) {
+        if !self.warned_forever_layout.swap(true, Ordering::Relaxed) {
+            log::warn!(
+                "a track read during layout repeats for ever: the layout is recomputed on every \
+                 frame for as long as it is on screen"
+            );
+        }
+    }
+
     /// Points the track at a new target, keeping its current motion.
     ///
     /// A no-op when the target and curve are unchanged, so this is safe to
@@ -417,10 +648,8 @@ impl Track {
 
         let unchanged = state.solver.kind() == curve.kind
             && state.delay == curve.delay
-            && state.target[..components]
-                .iter()
-                .zip(target[..components].iter())
-                .all(|(current, next)| current.to_bits() == next.to_bits());
+            && state.requested == curve.repeat
+            && same(&state.declared, &target, components);
 
         if unchanged {
             return;
@@ -434,9 +663,7 @@ impl Track {
         state.target = target;
         state.delay_left = curve.delay.as_secs_f32();
 
-        for (slot, component) in self.target.iter().zip(target.iter()) {
-            slot.store(component.to_bits(), Ordering::Relaxed);
-        }
+        self.begin_cycle(&mut state, curve.repeat, current, target);
 
         // `target` is `Copy`; taking it out of `state` first keeps the solver
         // borrow below exclusive.
@@ -473,6 +700,7 @@ impl Track {
                 duration,
                 from,
                 elapsed,
+                reversed,
             } => {
                 if let CurveKind::Ease {
                     easing: new_easing,
@@ -485,6 +713,7 @@ impl Track {
 
                 *from = current;
                 *elapsed = 0.0;
+                *reversed = false;
             }
         }
 
@@ -532,9 +761,7 @@ impl Track {
 
         // Mirrored for `Anim::target`, as `retarget` does; without it an
         // entrance reports its starting pose as its target.
-        for (slot, component) in self.target.iter().zip(goal.iter()) {
-            slot.store(component.to_bits(), Ordering::Relaxed);
-        }
+        self.begin_cycle(&mut state, curve.repeat, start, goal);
 
         let goals = state.target;
 
@@ -580,52 +807,43 @@ impl Track {
     fn advance(&self, state: &mut State, dt: f32) -> Step {
         let components = self.components;
         let before = self.value();
-        let mut next = before;
-        let goals = state.target;
+        let mut dt = dt;
+        let mut hops = 0;
 
-        let settled = match &mut state.solver {
-            Solver::Spring { springs, .. } => {
-                let mut all_settled = true;
+        let settled = loop {
+            let (mut next, finished, leftover) = solve(state, dt, components, &self.value());
 
-                for (i, spring) in springs.iter_mut().enumerate().take(components) {
-                    spring.tick(dt);
-
-                    if spring.is_settled() {
-                        spring.snap();
-                    } else {
-                        all_settled = false;
-                    }
-
-                    next[i] = spring.position();
-                }
-
-                all_settled
+            if !finished {
+                self.publish(&next);
+                break false;
             }
-            Solver::Ease {
-                easing,
-                duration,
-                from,
-                elapsed,
-            } => {
-                *elapsed += dt;
 
-                let total = duration.as_secs_f32().max(f32::EPSILON);
-                let progress = (*elapsed / total).clamp(0.0, 1.0);
-                let eased = easing.value(progress);
+            // The run is over: land exactly on its end.
+            next[..components].copy_from_slice(&state.target[..components]);
+            self.publish(&next);
 
-                for i in 0..components {
-                    next[i] = from[i] + (goals[i] - from[i]) * eased;
-                }
-
-                progress >= 1.0
+            if !state.repeat.has_run_after(state.run) {
+                break true;
             }
+
+            start_next_run(state, components);
+
+            // What the frame has left pays the gap first, then the next run.
+            let gap = state.repeat.pause().as_secs_f32();
+            let mut leftover = skip_whole_cycles(state, leftover);
+            if leftover < gap {
+                state.delay_left = gap - leftover;
+                break false;
+            }
+            leftover -= gap;
+
+            hops += 1;
+            if leftover <= 0.0 || hops >= MAX_RUNS_PER_TICK {
+                break false;
+            }
+            dt = leftover;
         };
 
-        if settled {
-            next[..components].copy_from_slice(&goals[..components]);
-        }
-
-        self.publish(&next);
         self.settled.store(settled, Ordering::Release);
 
         // An entrance is over the moment its track comes to rest; doing it
@@ -634,9 +852,10 @@ impl Track {
             self.set_phase(Phase::Present);
         }
 
+        let after = self.value();
         let changed = before[..components]
             .iter()
-            .zip(&next[..components])
+            .zip(&after[..components])
             .any(|(a, b)| a.to_bits() != b.to_bits());
 
         if changed {

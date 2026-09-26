@@ -14,6 +14,7 @@ mod key;
 mod length;
 #[cfg(feature = "geometry")]
 mod path_widget;
+mod repeat;
 mod set;
 mod shape;
 mod sized;
@@ -25,6 +26,7 @@ pub use decay::Decay;
 pub use engine::{Motion, Presence, TickStatus};
 pub use key::MotionKey;
 pub use length::AnimLength;
+pub use repeat::Repeat;
 pub use set::MotionSet;
 pub use spring::{Spring, SpringParams};
 pub use track::{Curve, CurveKind, Easing, Tier};
