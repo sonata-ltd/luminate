@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod curves;
+pub mod path;
 pub mod widget;
 
 #[doc(hidden)]
