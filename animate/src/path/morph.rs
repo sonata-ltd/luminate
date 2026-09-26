@@ -206,6 +206,150 @@ fn align_loop(from: &[Cubic], to: Vec<Cubic>) -> Vec<Cubic> {
     (0..n).map(|i| source[(i + shift) % n]).collect()
 }
 
+/// The most velocity, in morph progress per second, a retarget carries into
+/// the next morph. A retarget onto a shape almost where the current one is
+/// would otherwise turn a gentle motion into a lurch.
+#[cfg(any(test, feature = "geometry"))]
+pub(crate) const MAX_CARRIED_VELOCITY: f32 = 8.0;
+
+/// How many points along the paths compare the old motion with the new.
+#[cfg(any(test, feature = "geometry"))]
+const VELOCITY_SAMPLES: usize = 64;
+
+/// A morph that follows a target: the high-level API of the path widget.
+///
+/// It rests at its target. A new target starts a morph from the shape on
+/// screen right now — mid-flight included — so a retarget never jumps back.
+/// Its progress is a widget-owned [`Spring`](crate::Spring) from `0` to `1`.
+#[cfg(any(test, feature = "geometry"))]
+#[derive(Debug, Clone)]
+pub(crate) struct MorphDriver {
+    params: crate::SpringParams,
+    carry: bool,
+    target: std::sync::Arc<PathData>,
+    /// `None` at rest on `target`.
+    morph: Option<Morph>,
+    spring: crate::Spring,
+    /// Bumped on every change of shape, for the widget's geometry cache.
+    generation: u64,
+}
+
+#[cfg(any(test, feature = "geometry"))]
+impl MorphDriver {
+    pub(crate) fn new(
+        target: std::sync::Arc<PathData>,
+        params: crate::SpringParams,
+        carry: bool,
+    ) -> Self {
+        Self {
+            params,
+            carry,
+            target,
+            morph: None,
+            spring: crate::Spring::new(params, 1.0),
+            generation: 0,
+        }
+    }
+
+    /// Takes the view's current tuning; applies from the next retarget.
+    #[allow(dead_code)] // only called by the path widget (feature `geometry`)
+    pub(crate) fn set_tuning(&mut self, params: crate::SpringParams, carry: bool) {
+        self.params = params;
+        self.carry = carry;
+    }
+
+    pub(crate) fn retarget(&mut self, target: std::sync::Arc<PathData>) {
+        if std::sync::Arc::ptr_eq(&target, &self.target) || *target == *self.target {
+            return;
+        }
+
+        let snapshot = self.shape();
+        let velocity = if self.carry {
+            self.carried_velocity(&snapshot, &target)
+        } else {
+            0.0
+        };
+
+        self.morph = Some(Morph::new(&snapshot, &target));
+        self.spring = crate::Spring::new(self.params, 0.0).with_velocity(velocity);
+        self.spring.set_target(1.0);
+        self.target = target;
+        self.generation += 1;
+    }
+
+    pub(crate) fn tick(&mut self, dt: f32) {
+        if self.morph.is_none() {
+            return;
+        }
+
+        self.spring.tick(dt);
+        if self.spring.is_settled() {
+            self.spring.snap();
+            self.morph = None;
+        }
+        self.generation += 1;
+    }
+
+    pub(crate) fn is_settled(&self) -> bool {
+        self.morph.is_none()
+    }
+
+    pub(crate) fn shape(&self) -> PathData {
+        match &self.morph {
+            Some(morph) => morph.at(self.spring.position()),
+            None => (*self.target).clone(),
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The progress velocity of a new morph that keeps the shape's points
+    /// moving as they were.
+    ///
+    /// The old progress and the new one measure different displacements
+    /// (`to_old − from_old` against `target − snapshot`), and their nodes no
+    /// longer correspond after the new matching, so both are sampled at
+    /// equal fractions of arc length and the old point velocities are
+    /// projected onto the new displacement by least squares.
+    fn carried_velocity(&self, snapshot: &PathData, target: &PathData) -> f32 {
+        let Some(morph) = &self.morph else {
+            return 0.0;
+        };
+
+        let old = displacements(&morph.at(0.0), &morph.at(1.0));
+        let new = displacements(snapshot, target);
+        let v = self.spring.velocity();
+
+        let along: f32 = old
+            .iter()
+            .zip(&new)
+            .map(|(a, b)| v * (a.x * b.x + a.y * b.y))
+            .sum();
+        let norm: f32 = new.iter().map(|b| b.x * b.x + b.y * b.y).sum();
+
+        if norm <= f32::EPSILON {
+            return 0.0;
+        }
+
+        (along / norm).clamp(0.0, MAX_CARRIED_VELOCITY)
+    }
+}
+
+/// Point by point, at equal fractions of each path's length, how far `to`
+/// is from `from`.
+#[cfg(any(test, feature = "geometry"))]
+fn displacements(from: &PathData, to: &PathData) -> Vec<iced_core::Vector> {
+    let (a, b) = (super::ArcLength::new(from), super::ArcLength::new(to));
+    (0..VELOCITY_SAMPLES)
+        .map(|k| {
+            let u = k as f32 / (VELOCITY_SAMPLES - 1) as f32;
+            b.point_at(to, u) - a.point_at(from, u)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use iced_core::Point;
@@ -325,5 +469,103 @@ mod tests {
             "the open end wins below one half"
         );
         assert!(morph.at(0.8).is_closed_loop(), "the closed end wins above");
+    }
+
+    use std::sync::Arc;
+
+    use super::{MAX_CARRIED_VELOCITY, MorphDriver};
+    use crate::SpringParams;
+
+    const DT: f32 = 1.0 / 60.0;
+
+    fn centred_square(side: f32) -> Arc<PathData> {
+        let h = side / 2.0;
+        Arc::new(polygon(&[(-h, -h), (h, -h), (h, h), (-h, h)], true))
+    }
+
+    fn width(driver: &MorphDriver) -> f32 {
+        driver.shape().bounds().width
+    }
+
+    /// How fast the shape grows in the frame before a retarget, against its
+    /// instantaneous speed right after.
+    ///
+    /// "After" is sampled over a 1 ms tick rather than a full `DT` frame: a
+    /// 400 ms spring's velocity changes fast enough that a 16.67 ms average
+    /// blurs the very thing being measured (the speed the instant the new
+    /// morph starts), so the reported speed for "after" is not what a
+    /// same-length "before" average would suggest.
+    fn growth_around_a_retarget(carry: bool) -> (f32, f32) {
+        const INSTANT: f32 = 0.001;
+
+        let params = SpringParams::new(0.0, std::time::Duration::from_millis(400));
+        let mut driver = MorphDriver::new(centred_square(10.0), params, carry);
+        driver.retarget(centred_square(20.0));
+        for _ in 0..9 {
+            driver.tick(DT);
+        }
+        let before = width(&driver);
+        driver.tick(DT);
+        let speed_before = (width(&driver) - before) / DT;
+
+        driver.retarget(centred_square(30.0));
+        let at_retarget = width(&driver);
+        driver.tick(INSTANT);
+        let speed_after = (width(&driver) - at_retarget) / INSTANT;
+
+        (speed_before, speed_after)
+    }
+
+    #[test]
+    fn carrying_velocity_keeps_the_shape_moving_through_a_retarget() {
+        let (before, after) = growth_around_a_retarget(true);
+        assert!(before > 1.0, "mid-flight: {before}");
+        assert!(
+            after > 0.6 * before && after < 1.6 * before,
+            "carried: {before} then {after}"
+        );
+    }
+
+    #[test]
+    fn without_carrying_a_retarget_starts_from_rest() {
+        let (before, after) = growth_around_a_retarget(false);
+        assert!(after < 0.35 * before, "from rest: {before} then {after}");
+    }
+
+    #[test]
+    fn a_retarget_does_not_jump_and_the_same_target_changes_nothing() {
+        let params = SpringParams::default();
+        let mut driver = MorphDriver::new(centred_square(10.0), params, false);
+        driver.retarget(centred_square(20.0));
+        for _ in 0..6 {
+            driver.tick(DT);
+        }
+        let shape = driver.shape();
+        driver.retarget(centred_square(30.0));
+        assert!((driver.shape().bounds().width - shape.bounds().width).abs() < 1e-3);
+
+        let generation = driver.generation();
+        driver.retarget(centred_square(30.0));
+        assert_eq!(
+            driver.generation(),
+            generation,
+            "an equal target is not a retarget"
+        );
+
+        for _ in 0..600 {
+            driver.tick(DT);
+        }
+        assert!(driver.is_settled());
+        assert_eq!(driver.shape(), *centred_square(30.0));
+    }
+
+    #[test]
+    fn a_carried_velocity_is_bounded() {
+        const {
+            assert!(
+                MAX_CARRIED_VELOCITY > 3.0,
+                "room for the mid-flight speed above"
+            );
+        };
     }
 }

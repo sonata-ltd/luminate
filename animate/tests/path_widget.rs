@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use iced::advanced::renderer::{self, Headless};
 use iced::widget::canvas;
-use iced::{Color, Font, Pixels, Point, Rectangle, Size, mouse};
-use iced_animate::path::{DrawRange, Fit, PathData};
+use iced::{Color, Event, Font, Pixels, Point, Rectangle, Size, mouse, window};
+use iced_animate::path::{DrawRange, Fit, Morph, PathData};
 use iced_animate::testing::{self, FrameClock};
 use iced_animate::widget::path;
-use iced_animate::{Curve, Easing, Motion, key};
-use iced_test::runtime::user_interface::{self, UserInterface};
+use iced_animate::{Curve, Easing, Motion, SpringParams, key};
+use iced_test::runtime::user_interface::{self, State, UserInterface};
 
 const SIDE: u32 = 100;
 const SIZE: Size = Size::new(100.0, 100.0);
@@ -78,6 +78,28 @@ fn curve() -> Arc<PathData> {
 /// Widget pixels are path units: the view box is the widget's own square.
 fn one_to_one() -> Rectangle {
     Rectangle::new(Point::ORIGIN, SIZE)
+}
+
+/// A vertical bar near the left edge.
+fn left_bar() -> Arc<PathData> {
+    Arc::new(
+        PathData::builder()
+            .move_to(Point::new(20.0, 10.0))
+            .line_to(Point::new(20.0, 90.0))
+            .build()
+            .unwrap(),
+    )
+}
+
+/// A vertical bar near the right edge.
+fn right_bar() -> Arc<PathData> {
+    Arc::new(
+        PathData::builder()
+            .move_to(Point::new(80.0, 10.0))
+            .line_to(Point::new(80.0, 90.0))
+            .build()
+            .unwrap(),
+    )
 }
 
 #[test]
@@ -259,4 +281,84 @@ fn a_posed_path_is_drawn_about_its_origin_at_the_pose() {
         "and the old corner is gone"
     );
     assert_eq!(pixel(&rgba, 10, 10), [255, 255, 255]);
+}
+
+#[test]
+fn a_morph_draws_its_ends_at_zero_and_one() {
+    let morph = Arc::new(Morph::new(&left_bar(), &right_bar()));
+    let mut backend = backend();
+
+    for (progress, dark, light) in [(0.0, 20, 80), (1.0, 80, 20)] {
+        let root = path(&morph)
+            .width(100.0)
+            .height(100.0)
+            .view_box(one_to_one())
+            .fit(Fit::None)
+            .stroke(Color::BLACK, 6.0)
+            .progress(progress)
+            .into();
+        let mut ui = build(root, &mut backend);
+        let rgba = draw(&mut ui, &mut backend);
+        assert_eq!(pixel(&rgba, dark, 50), [0, 0, 0], "progress {progress}");
+        assert_eq!(
+            pixel(&rgba, light, 50),
+            [255, 255, 255],
+            "progress {progress}"
+        );
+    }
+}
+
+#[test]
+fn a_new_target_asks_for_frames_until_the_morph_settles() {
+    let mut backend = backend();
+    let view = |target: Arc<PathData>| -> iced::Element<'static, ()> {
+        path(target)
+            .width(100.0)
+            .height(100.0)
+            .view_box(one_to_one())
+            .fit(Fit::None)
+            .stroke(Color::BLACK, 6.0)
+            .morph(SpringParams::default())
+            .into()
+    };
+
+    let first = build(view(left_bar()), &mut backend);
+    let mut ui = UserInterface::build(view(right_bar()), SIZE, first.into_cache(), &mut backend);
+
+    let mut now = iced::time::Instant::now();
+    let mut requests = Vec::new();
+    for _ in 0..120 {
+        let mut messages = Vec::new();
+        let (state, _) = ui.update(
+            &[Event::Window(window::Event::RedrawRequested(now))],
+            mouse::Cursor::Unavailable,
+            &mut backend,
+            &mut iced::advanced::clipboard::Null,
+            &mut messages,
+        );
+        let State::Updated { redraw_request, .. } = state else {
+            panic!("nothing here invalidates widgets");
+        };
+        requests.push(redraw_request);
+        now += Duration::from_millis(16);
+    }
+
+    assert_eq!(
+        requests[0],
+        window::RedrawRequest::NextFrame,
+        "the retarget asks for frames"
+    );
+    let settled = requests
+        .iter()
+        .position(|r| *r == window::RedrawRequest::Wait)
+        .expect("a 400 ms spring settles within two seconds");
+    assert!(settled > 3, "settled suspiciously early at frame {settled}");
+    assert!(
+        requests[settled..]
+            .iter()
+            .all(|r| *r == window::RedrawRequest::Wait)
+    );
+
+    let rgba = draw(&mut ui, &mut backend);
+    assert_eq!(pixel(&rgba, 80, 50), [0, 0, 0], "at rest on the new target");
 }

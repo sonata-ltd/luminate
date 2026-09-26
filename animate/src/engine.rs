@@ -60,7 +60,7 @@ const NEVER: u64 = u64::MAX;
 /// The cap is deliberately generous. A machine genuinely running at 20 FPS is
 /// under it, and keeps animating in real time; only an actual hitch is
 /// clipped.
-const MAX_FRAME: f32 = 1.0 / 15.0;
+pub(crate) const MAX_FRAME: f32 = 1.0 / 15.0;
 
 /// What one [`Motion::tick`] changed, and therefore what the host must
 /// invalidate.

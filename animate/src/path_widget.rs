@@ -5,19 +5,24 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
+use iced_core::time::Instant;
 use iced_core::widget::{Tree, tree};
-use iced_core::{Color, Element, Length, Rectangle, Size, Vector};
+use iced_core::{Clipboard, Color, Element, Event, Length, Rectangle, Shell, Size, Vector, window};
 use iced_core::{Layout, Widget, layout, mouse, renderer};
 use iced_graphics::geometry::{self, Fill, Frame, Stroke, Style};
 
 pub use iced_graphics::geometry::fill::Rule as FillRule;
 pub use iced_graphics::geometry::{LineCap, LineJoin};
 
-use crate::path::{ArcLength, DrawRange, Fit, PathData, Placement, Pose, Subpath};
+use crate::SpringParams;
+use crate::path::{
+    ArcLength, DrawRange, Fit, Morph, MorphDriver, PathData, Placement, Pose, Subpath,
+};
 use crate::shape::clamped_color;
 use crate::{Anim, AnimLength, Tier};
 
-/// Creates a widget that draws `source`, a [`PathData`].
+/// Creates a widget that draws `source`, a [`PathData`], or a prepared
+/// [`Morph`] driven by [`progress`](PathShape::progress).
 ///
 /// The widget has no intrinsic size, like [`shape()`](crate::widget::shape):
 /// give it a `width` and a `height`. It draws nothing until it has a
@@ -42,6 +47,10 @@ pub struct PathSource(Source);
 #[derive(Debug, Clone)]
 enum Source {
     Static(Arc<PathData>),
+    Morph {
+        morph: Arc<Morph>,
+        progress: Anim<f32>,
+    },
 }
 
 impl From<Arc<PathData>> for PathSource {
@@ -59,6 +68,27 @@ impl From<&Arc<PathData>> for PathSource {
 impl From<PathData> for PathSource {
     fn from(data: PathData) -> Self {
         Self(Source::Static(Arc::new(data)))
+    }
+}
+
+impl From<Arc<Morph>> for PathSource {
+    fn from(morph: Arc<Morph>) -> Self {
+        Self(Source::Morph {
+            morph,
+            progress: Anim::constant(0.0),
+        })
+    }
+}
+
+impl From<&Arc<Morph>> for PathSource {
+    fn from(morph: &Arc<Morph>) -> Self {
+        Self::from(Arc::clone(morph))
+    }
+}
+
+impl From<Morph> for PathSource {
+    fn from(morph: Morph) -> Self {
+        Self::from(Arc::new(morph))
     }
 }
 
@@ -87,6 +117,8 @@ pub struct PathShape {
     draw: Anim<DrawRange>,
     fill_follows_draw: bool,
     pose: Option<Anim<Pose>>,
+    clamp_progress: bool,
+    morph_to: Option<(SpringParams, bool)>,
 }
 
 impl PathShape {
@@ -105,6 +137,8 @@ impl PathShape {
             draw: Anim::constant(DrawRange::FULL),
             fill_follows_draw: true,
             pose: None,
+            clamp_progress: false,
+            morph_to: None,
         }
     }
 
@@ -204,6 +238,55 @@ impl PathShape {
         self
     }
 
+    /// How far a [`Morph`] source has got, which may be animated: `0` draws
+    /// its `from`, `1` its `to`. Values outside `[0, 1]` extrapolate unless
+    /// [`clamp_progress`](Self::clamp_progress) is set. Ignored for a plain
+    /// path.
+    #[must_use]
+    pub fn progress(mut self, progress: impl Into<Anim<f32>>) -> Self {
+        if let Source::Morph { progress: slot, .. } = &mut self.source {
+            *slot = progress.into();
+        }
+        self
+    }
+
+    /// Clamps a morph's progress to `[0, 1]`, so an overshooting spring
+    /// stops at the end shapes instead of exaggerating them.
+    #[must_use]
+    pub fn clamp_progress(mut self, clamp: bool) -> Self {
+        self.clamp_progress = clamp;
+        self
+    }
+
+    /// Morphs to this path whenever it changes, with a spring of `params`.
+    ///
+    /// The widget remembers the path it last drew. When a rebuild hands it
+    /// a different one (compared by `Arc`, then by value) it morphs from the
+    /// shape on screen — mid-flight included — to the new one, and asks for
+    /// frames until it arrives. The first path a widget is built with is
+    /// drawn as it is. Only for a plain path source.
+    #[must_use]
+    pub fn morph(mut self, params: SpringParams) -> Self {
+        let carry = self.morph_to.is_some_and(|(_, carry)| carry);
+        self.morph_to = Some((params, carry));
+        self
+    }
+
+    /// Whether a retarget mid-morph keeps the shape's points moving at the
+    /// speed they had (`true`) or starts the new morph from rest (`false`,
+    /// the default). Only has an effect together with [`morph`](Self::morph).
+    ///
+    /// Calling this without [`morph`](Self::morph) turns morphing on with
+    /// [`SpringParams::default`].
+    #[must_use]
+    pub fn carry_velocity(mut self, carry: bool) -> Self {
+        let params = self
+            .morph_to
+            .map_or(SpringParams::default(), |(params, _)| params);
+        self.morph_to = Some((params, carry));
+        self
+    }
+
     /// `true` while any of the path's values is in motion.
     #[must_use]
     pub fn is_animating(&self) -> bool {
@@ -216,6 +299,7 @@ impl PathShape {
                 .as_ref()
                 .is_some_and(|(color, width)| color.is_animating() || width.is_animating())
             || self.pose.as_ref().is_some_and(Anim::is_animating)
+            || matches!(&self.source, Source::Morph { progress, .. } if progress.is_animating())
     }
 
     fn mark_tiers(&self) {
@@ -233,10 +317,27 @@ impl PathShape {
         if let Some(pose) = &self.pose {
             pose.mark_tier(Tier::Paint);
         }
+        if let Source::Morph { progress, .. } = &self.source {
+            progress.mark_tier(Tier::Paint);
+        }
     }
 
-    /// Every animated value, read once for this frame.
-    fn resolve(&self) -> Resolved {
+    /// Every animated value, read once for this frame. `driver` is the
+    /// widget-owned morph, when the source follows a target rather than a
+    /// fixed [`Morph`].
+    fn resolve(&self, driver: Option<&MorphDriver>) -> Resolved {
+        let progress = match &self.source {
+            Source::Morph { progress, .. } => {
+                let t = progress.get();
+                if self.clamp_progress {
+                    t.clamp(0.0, 1.0)
+                } else {
+                    t
+                }
+            }
+            Source::Static(_) => 0.0,
+        };
+
         Resolved {
             range: self.draw.get().clamped(),
             stroke: self
@@ -245,6 +346,8 @@ impl PathShape {
                 .map(|(color, width)| (clamped_color(color.get()), width.get().max(0.0))),
             fill: self.fill.as_ref().map(|fill| clamped_color(fill.get())),
             pose: self.pose.as_ref().map(Anim::get),
+            progress,
+            generation: driver.map_or(0, MorphDriver::generation),
         }
     }
 
@@ -252,6 +355,18 @@ impl PathShape {
     fn source_id(&self) -> usize {
         match &self.source {
             Source::Static(data) => Arc::as_ptr(data) as usize,
+            Source::Morph { morph, .. } => Arc::as_ptr(morph) as usize,
+        }
+    }
+
+    /// The driver a fresh state should start with: `Some` only when a plain
+    /// path source asks to be morphed to.
+    fn initial_driver(&self) -> Option<MorphDriver> {
+        match (&self.source, self.morph_to) {
+            (Source::Static(target), Some((params, carry))) => {
+                Some(MorphDriver::new(Arc::clone(target), params, carry))
+            }
+            _ => None,
         }
     }
 
@@ -320,6 +435,10 @@ struct Resolved {
     stroke: Option<(Color, f32)>,
     fill: Option<Color>,
     pose: Option<Pose>,
+    /// A morph's progress: `0` at `from`, `1` at `to`. `0` for a plain path.
+    progress: f32,
+    /// The driver's generation, for the geometry cache key; `0` without one.
+    generation: u64,
 }
 
 /// How many `f32` values [`Resolved::bits`] packs.
@@ -345,6 +464,7 @@ impl Resolved {
             self.pose.map_or(0.0, |p| p.position.x),
             self.pose.map_or(0.0, |p| p.position.y),
             self.pose.map_or(f32::NAN, |p| p.angle.0),
+            self.progress,
         ];
 
         let mut bits = [0; VALUES];
@@ -361,6 +481,10 @@ struct Key {
     size: [u32; 2],
     source: usize,
     values: [u32; VALUES],
+    /// The driver's generation: a morph mid-flight changes shape every frame
+    /// without any of `values` moving, since progress lives in the spring,
+    /// not in a value the view rebuilds with.
+    generation: u64,
 }
 
 struct State<Renderer: geometry::Renderer> {
@@ -369,17 +493,27 @@ struct State<Renderer: geometry::Renderer> {
     /// Keeps the drawn path alive while its address is in `key`, so the
     /// address cannot be reused by another path the cache would mistake for it.
     held: RefCell<Option<Arc<PathData>>>,
+    /// Keeps a morph source alive while its address is in `key`.
+    held_morph: RefCell<Option<Arc<Morph>>>,
     /// The length table of the static path, reused while it is the same `Arc`.
     table: RefCell<Option<(Arc<PathData>, ArcLength)>>,
+    /// The high-level morph, when the widget follows a target.
+    driver: RefCell<Option<MorphDriver>>,
+    /// The frame the driver was last ticked on; `None` at rest, so the
+    /// stretch before a retarget is not charged to the morph.
+    last_frame: Cell<Option<Instant>>,
 }
 
 impl<Renderer: geometry::Renderer> State<Renderer> {
-    fn new() -> Self {
+    fn new(driver: Option<MorphDriver>) -> Self {
         Self {
             cache: geometry::Cache::new(),
             key: Cell::new(None),
             held: RefCell::new(None),
+            held_morph: RefCell::new(None),
             table: RefCell::new(None),
+            driver: RefCell::new(driver),
+            last_frame: Cell::new(None),
         }
     }
 
@@ -429,7 +563,23 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::<Renderer>::new())
+        tree::State::new(State::<Renderer>::new(self.initial_driver()))
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        let state = tree.state.downcast_mut::<State<Renderer>>();
+        let driver = state.driver.get_mut();
+
+        match (&self.source, self.morph_to) {
+            (Source::Static(target), Some((params, carry))) => match driver {
+                Some(driver) => {
+                    driver.set_tuning(params, carry);
+                    driver.retarget(Arc::clone(target));
+                }
+                None => *driver = Some(MorphDriver::new(Arc::clone(target), params, carry)),
+            },
+            _ => *driver = None,
+        }
     }
 
     fn size(&self) -> Size<Length> {
@@ -451,6 +601,39 @@ where
         layout::atomic(limits, self.width.resolve(), self.height.resolve())
     }
 
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        _viewport: &Rectangle,
+    ) {
+        let Event::Window(window::Event::RedrawRequested(now)) = event else {
+            return;
+        };
+        let state = tree.state.downcast_mut::<State<Renderer>>();
+        let Some(driver) = state.driver.get_mut() else {
+            return;
+        };
+
+        if driver.is_settled() {
+            state.last_frame.set(None);
+            return;
+        }
+
+        let dt = state.last_frame.replace(Some(*now)).map_or(0.0, |last| {
+            now.saturating_duration_since(last)
+                .as_secs_f32()
+                .min(crate::engine::MAX_FRAME)
+        });
+        driver.tick(dt);
+        shell.request_redraw();
+    }
+
     fn draw(
         &self,
         tree: &Tree,
@@ -467,22 +650,35 @@ where
         }
 
         let state = tree.state.downcast_ref::<State<Renderer>>();
-        let resolved = self.resolve();
+        let driver = state.driver.borrow();
+        let resolved = self.resolve(driver.as_ref());
         let key = Key {
             size: [bounds.width.to_bits(), bounds.height.to_bits()],
             source: self.source_id(),
             values: resolved.bits(),
+            generation: resolved.generation,
         };
         if state.key.replace(Some(key)) != Some(key) {
             state.cache.clear();
         }
 
-        let Source::Static(data) = &self.source;
-        *state.held.borrow_mut() = Some(Arc::clone(data));
-
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
             crate::testing::note_path_geometry_build();
-            self.paint(frame, data, || state.table_for(data), &resolved);
+            match (&self.source, driver.as_ref()) {
+                (_, Some(driver)) => {
+                    let shape = driver.shape();
+                    self.paint(frame, &shape, || ArcLength::new(&shape), &resolved);
+                }
+                (Source::Static(data), None) => {
+                    *state.held.borrow_mut() = Some(Arc::clone(data));
+                    self.paint(frame, data, || state.table_for(data), &resolved);
+                }
+                (Source::Morph { morph, .. }, None) => {
+                    *state.held_morph.borrow_mut() = Some(Arc::clone(morph));
+                    let shape = morph.at(resolved.progress);
+                    self.paint(frame, &shape, || ArcLength::new(&shape), &resolved);
+                }
+            }
         });
 
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {

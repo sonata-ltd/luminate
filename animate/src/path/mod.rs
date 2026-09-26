@@ -30,3 +30,7 @@ pub(crate) use cubic::Cubic;
 #[allow(unused_imports)] // used by the path widget (feature `geometry`)
 pub(crate) use data::Subpath;
 pub(crate) use length::ArcLength;
+// Only the path widget (feature `geometry`) reaches `MorphDriver` through
+// this path; `morph`'s own tests use `super::MorphDriver` directly.
+#[cfg(feature = "geometry")]
+pub(crate) use morph::MorphDriver;
