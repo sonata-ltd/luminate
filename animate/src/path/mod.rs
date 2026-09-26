@@ -12,6 +12,7 @@ mod cubic;
 mod data;
 mod fit;
 mod length;
+mod motion;
 mod values;
 
 #[cfg(feature = "svg-path")]
@@ -19,11 +20,11 @@ mod parse;
 
 pub use data::{PathBuilder, PathData, PathError};
 pub use fit::{Fit, Placement};
+pub use motion::MotionPath;
 pub use values::{DrawRange, Pose};
 
-#[allow(unused_imports)]
+#[allow(unused_imports)] // not yet used outside `path`
 pub(crate) use cubic::Cubic;
-#[allow(unused_imports)]
+#[allow(unused_imports)] // used by the path widget (feature `geometry`)
 pub(crate) use data::Subpath;
-#[allow(unused_imports)] // used by tasks 5, 7
 pub(crate) use length::ArcLength;

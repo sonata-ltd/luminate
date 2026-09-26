@@ -13,7 +13,7 @@ use iced_graphics::geometry::{self, Fill, Frame, Stroke, Style};
 pub use iced_graphics::geometry::fill::Rule as FillRule;
 pub use iced_graphics::geometry::{LineCap, LineJoin};
 
-use crate::path::{ArcLength, DrawRange, Fit, PathData, Placement, Subpath};
+use crate::path::{ArcLength, DrawRange, Fit, PathData, Placement, Pose, Subpath};
 use crate::shape::clamped_color;
 use crate::{Anim, AnimLength, Tier};
 
@@ -86,6 +86,7 @@ pub struct PathShape {
     fill_rule: FillRule,
     draw: Anim<DrawRange>,
     fill_follows_draw: bool,
+    pose: Option<Anim<Pose>>,
 }
 
 impl PathShape {
@@ -103,6 +104,7 @@ impl PathShape {
             fill_rule: FillRule::NonZero,
             draw: Anim::constant(DrawRange::FULL),
             fill_follows_draw: true,
+            pose: None,
         }
     }
 
@@ -187,6 +189,21 @@ impl PathShape {
         self
     }
 
+    /// Places the path by `pose`, which may be animated: the path's own
+    /// origin goes to `pose.position` (the widget's logical pixels) and the
+    /// path turns by `pose.angle` about it.
+    ///
+    /// A posed path ignores [`fit`](Self::fit) and
+    /// [`view_box`](Self::view_box): one path unit is one pixel, so a marker
+    /// drawn round its origin and an orbit drawn with [`Fit::None`] share one
+    /// coordinate system. Derive the pose from a progress with
+    /// [`MotionPath::pose_at`](crate::path::MotionPath::pose_at).
+    #[must_use]
+    pub fn pose(mut self, pose: impl Into<Anim<Pose>>) -> Self {
+        self.pose = Some(pose.into());
+        self
+    }
+
     /// `true` while any of the path's values is in motion.
     #[must_use]
     pub fn is_animating(&self) -> bool {
@@ -198,6 +215,7 @@ impl PathShape {
                 .stroke
                 .as_ref()
                 .is_some_and(|(color, width)| color.is_animating() || width.is_animating())
+            || self.pose.as_ref().is_some_and(Anim::is_animating)
     }
 
     fn mark_tiers(&self) {
@@ -212,6 +230,9 @@ impl PathShape {
             color.mark_tier(Tier::Paint);
             width.mark_tier(Tier::Paint);
         }
+        if let Some(pose) = &self.pose {
+            pose.mark_tier(Tier::Paint);
+        }
     }
 
     /// Every animated value, read once for this frame.
@@ -223,6 +244,7 @@ impl PathShape {
                 .as_ref()
                 .map(|(color, width)| (clamped_color(color.get()), width.get().max(0.0))),
             fill: self.fill.as_ref().map(|fill| clamped_color(fill.get())),
+            pose: self.pose.as_ref().map(Anim::get),
         }
     }
 
@@ -242,8 +264,14 @@ impl PathShape {
         table: impl FnOnce() -> ArcLength,
         resolved: &Resolved,
     ) {
-        let view_box = self.view_box.unwrap_or(shape.bounds());
-        let placement = self.fit.placement(view_box, frame.size());
+        let placement = if let Some(pose) = resolved.pose {
+            frame.translate(Vector::new(pose.position.x, pose.position.y));
+            frame.rotate(pose.angle);
+            Placement::IDENTITY
+        } else {
+            let view_box = self.view_box.unwrap_or(shape.bounds());
+            self.fit.placement(view_box, frame.size())
+        };
         let range = resolved.range;
 
         if let Some(color) = resolved.fill
@@ -291,6 +319,7 @@ struct Resolved {
     range: DrawRange,
     stroke: Option<(Color, f32)>,
     fill: Option<Color>,
+    pose: Option<Pose>,
 }
 
 /// How many `f32` values [`Resolved::bits`] packs.
@@ -313,6 +342,9 @@ impl Resolved {
             fill.b,
             fill.a,
             if self.fill.is_some() { 1.0 } else { 0.0 },
+            self.pose.map_or(0.0, |p| p.position.x),
+            self.pose.map_or(0.0, |p| p.position.y),
+            self.pose.map_or(f32::NAN, |p| p.angle.0),
         ];
 
         let mut bits = [0; VALUES];

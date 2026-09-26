@@ -218,3 +218,45 @@ fn geometry_is_rebuilt_only_when_a_value_changes() {
         "a moved range rebuilds it once"
     );
 }
+
+#[test]
+fn a_posed_path_is_drawn_about_its_origin_at_the_pose() {
+    use iced::Radians;
+    use iced_animate::path::Pose;
+
+    // A 10 px square centred on the path's origin.
+    let marker = PathData::builder()
+        .move_to(Point::new(-5.0, -5.0))
+        .line_to(Point::new(5.0, -5.0))
+        .line_to(Point::new(5.0, 5.0))
+        .line_to(Point::new(-5.0, 5.0))
+        .close()
+        .build()
+        .unwrap();
+
+    let mut backend = backend();
+    let root = path(marker)
+        .width(100.0)
+        .height(100.0)
+        .fill(Color::BLACK)
+        .pose(Pose {
+            position: Point::new(70.0, 30.0),
+            angle: Radians(std::f32::consts::FRAC_PI_4),
+        })
+        .into();
+    let mut ui = build(root, &mut backend);
+    let rgba = draw(&mut ui, &mut backend);
+
+    assert_eq!(pixel(&rgba, 70, 30), [0, 0, 0], "centred on the pose");
+    assert_eq!(
+        pixel(&rgba, 70, 25),
+        [0, 0, 0],
+        "turned 45°: a corner points up"
+    );
+    assert_eq!(
+        pixel(&rgba, 65, 25),
+        [255, 255, 255],
+        "and the old corner is gone"
+    );
+    assert_eq!(pixel(&rgba, 10, 10), [255, 255, 255]);
+}

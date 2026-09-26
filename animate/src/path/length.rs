@@ -21,7 +21,6 @@ struct Sample {
 /// maps to a parameter that moves at constant speed along the curve rather
 /// than at the curve's own uneven pace.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // used by the path widget (task 5) and MotionPath (task 7)
 pub(crate) struct ArcLength {
     /// `(subpath, segment)` for every segment, in drawing order.
     segments: Vec<(usize, usize)>,
@@ -31,7 +30,6 @@ pub(crate) struct ArcLength {
     length: f32,
 }
 
-#[allow(dead_code)] // used by the path widget (task 5) and MotionPath (task 7)
 impl ArcLength {
     /// Builds an arc length table for a path.
     pub(crate) fn new(path: &PathData) -> Self {
@@ -138,6 +136,7 @@ impl ArcLength {
     /// Empty when `u1 ≤ u0` after clamping to `[0, 1]`, or when the path has
     /// no length — so a drawn range of zero draws nothing, not even the dot
     /// a round cap would leave.
+    #[allow(dead_code)] // used by the path widget (feature `geometry`, task 5)
     pub(crate) fn trim(&self, path: &PathData, u0: f32, u1: f32) -> Vec<Subpath> {
         let (u0, u1) = (u0.clamp(0.0, 1.0), u1.clamp(0.0, 1.0));
         if u1 <= u0 || self.length <= 0.0 {
@@ -174,7 +173,6 @@ impl ArcLength {
     }
 }
 
-#[allow(dead_code)]
 fn unit(v: Vector) -> Option<Vector> {
     let length = (v.x * v.x + v.y * v.y).sqrt();
     (length > 1e-6).then(|| Vector::new(v.x / length, v.y / length))

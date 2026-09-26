@@ -71,7 +71,6 @@ impl Cubic {
     }
 
     /// The derivative at parameter `t`.
-    #[allow(dead_code)] // used by ArcLength (task 2)
     pub(crate) fn derivative(&self, t: f32) -> Vector {
         let u = 1.0 - t;
         let d0 = self.p1 - self.p0;

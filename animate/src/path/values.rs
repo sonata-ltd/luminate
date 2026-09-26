@@ -83,9 +83,11 @@ impl Animatable for DrawRange {
 /// A position and a heading: where something on a path is and which way it
 /// faces. Animatable as three components.
 ///
-/// It is usually derived from a progress track with `MotionPath::pose_at`, not animated
-/// on its own: a track interpolating the angle directly would turn the long
-/// way round across `±π`.
+/// It is usually derived from a progress track with
+/// [`Anim::map`](crate::Anim::map) and
+/// [`MotionPath::pose_at`](crate::path::MotionPath::pose_at), not animated on
+/// its own: a track interpolating the angle directly would turn the long way
+/// round across `±π`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pose {
     /// Where the origin of what is posed goes.
