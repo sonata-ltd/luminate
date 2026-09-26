@@ -3391,7 +3391,7 @@ impl State {
     /// retarget. `Motion::to` starts a track it has never seen at whatever
     /// it is first asked for, so a bar whose first call was the one that
     /// reveals it would cut in at full strength instead of fading.
-    fn new(motion: Option<&Motion>, curves: Curves) -> Self {
+    fn new(motion: Option<&Motion>, curves: &Curves) -> Self {
         let keys = Axes {
             vertical: MotionKey::unique(),
             horizontal: MotionKey::unique(),
@@ -3927,7 +3927,7 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::new(self.motion.as_ref(), self.curves))
+        tree::State::new(State::new(self.motion.as_ref(), &self.curves))
     }
 
     fn children(&self) -> Vec<Tree> {
