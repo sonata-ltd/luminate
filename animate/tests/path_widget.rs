@@ -10,7 +10,7 @@ use iced::widget::canvas;
 use iced::{Color, Event, Font, Pixels, Point, Rectangle, Size, mouse, window};
 use iced_animate::path::{DrawRange, Fit, Morph, PathData};
 use iced_animate::testing::{self, FrameClock};
-use iced_animate::widget::path;
+use iced_animate::widget::{FillRule, LineCap, path};
 use iced_animate::{Curve, Easing, Motion, SpringParams, key};
 use iced_test::runtime::user_interface::{self, State, UserInterface};
 
@@ -100,6 +100,48 @@ fn right_bar() -> Arc<PathData> {
             .build()
             .unwrap(),
     )
+}
+
+/// A vertical bar down the middle.
+fn middle_bar() -> Arc<PathData> {
+    Arc::new(
+        PathData::builder()
+            .move_to(Point::new(50.0, 10.0))
+            .line_to(Point::new(50.0, 90.0))
+            .build()
+            .unwrap(),
+    )
+}
+
+/// A filled square, in widget pixels.
+fn square() -> PathData {
+    PathData::builder()
+        .move_to(Point::new(20.0, 20.0))
+        .line_to(Point::new(80.0, 20.0))
+        .line_to(Point::new(80.0, 80.0))
+        .line_to(Point::new(20.0, 80.0))
+        .close()
+        .build()
+        .unwrap()
+}
+
+/// Two squares wound the same way, one inside the other: solid under
+/// [`FillRule::NonZero`] (winding 2 in the middle is still non-zero), with a
+/// hole in the middle under [`FillRule::EvenOdd`] (winding 2 is even).
+fn nested_squares() -> PathData {
+    PathData::builder()
+        .move_to(Point::new(10.0, 10.0))
+        .line_to(Point::new(90.0, 10.0))
+        .line_to(Point::new(90.0, 90.0))
+        .line_to(Point::new(10.0, 90.0))
+        .close()
+        .move_to(Point::new(30.0, 30.0))
+        .line_to(Point::new(70.0, 30.0))
+        .line_to(Point::new(70.0, 70.0))
+        .line_to(Point::new(30.0, 70.0))
+        .close()
+        .build()
+        .unwrap()
 }
 
 #[test]
@@ -361,4 +403,295 @@ fn a_new_target_asks_for_frames_until_the_morph_settles() {
 
     let rgba = draw(&mut ui, &mut backend);
     assert_eq!(pixel(&rgba, 80, 50), [0, 0, 0], "at rest on the new target");
+}
+
+#[test]
+fn a_moved_view_box_is_not_masked_by_a_stale_cache() {
+    // Review probe: the same `Arc`, only the view box moved. If the cache
+    // key does not cover `view_box`, the rebuild is mistaken for a cache hit
+    // and the bar stays drawn at the old place.
+    let mut backend = backend();
+    let shape = bar();
+    let view = move |view_box: Rectangle| -> iced::Element<'static, ()> {
+        path(&shape)
+            .width(100.0)
+            .height(100.0)
+            .view_box(view_box)
+            .fit(Fit::None)
+            .stroke(Color::BLACK, 6.0)
+            .into()
+    };
+
+    let mut first = build(view(one_to_one()), &mut backend);
+    let _ = draw(&mut first, &mut backend);
+    let moved = Rectangle::new(Point::new(0.0, 30.0), SIZE);
+    let mut ui = UserInterface::build(view(moved), SIZE, first.into_cache(), &mut backend);
+    let rgba = draw(&mut ui, &mut backend);
+
+    assert_eq!(
+        pixel(&rgba, 50, 20),
+        [0, 0, 0],
+        "the bar follows the moved view box"
+    );
+    assert_eq!(
+        pixel(&rgba, 50, 50),
+        [255, 255, 255],
+        "not stuck at the old place"
+    );
+}
+
+#[test]
+fn a_different_line_cap_is_not_masked_by_a_stale_cache() {
+    // Review probe: Round to Butt on the same `Arc`. A cache key missing
+    // `line_cap` would keep drawing the old, rounded end.
+    let mut backend = backend();
+    let shape = bar();
+    let view = move |cap: LineCap| -> iced::Element<'static, ()> {
+        path(&shape)
+            .width(100.0)
+            .height(100.0)
+            .view_box(one_to_one())
+            .fit(Fit::None)
+            .stroke(Color::BLACK, 8.0)
+            .line_cap(cap)
+            .into()
+    };
+
+    let mut ui = build(view(LineCap::Round), &mut backend);
+    let round = draw(&mut ui, &mut backend);
+    assert_eq!(
+        pixel(&round, 7, 50),
+        [0, 0, 0],
+        "a round cap extends past the end"
+    );
+
+    let mut ui = UserInterface::build(view(LineCap::Butt), SIZE, ui.into_cache(), &mut backend);
+    let butt = draw(&mut ui, &mut backend);
+    assert_eq!(
+        pixel(&butt, 7, 50),
+        [255, 255, 255],
+        "a butt cap does not extend past the end"
+    );
+}
+
+#[test]
+fn fill_paints_the_interior() {
+    let mut backend = backend();
+    let root = path(square())
+        .width(100.0)
+        .height(100.0)
+        .view_box(one_to_one())
+        .fit(Fit::None)
+        .fill(Color::BLACK)
+        .into();
+    let mut ui = build(root, &mut backend);
+    let rgba = draw(&mut ui, &mut backend);
+
+    assert_eq!(pixel(&rgba, 50, 50), [0, 0, 0], "the interior is filled");
+    assert_eq!(pixel(&rgba, 5, 5), [255, 255, 255], "outside stays white");
+}
+
+#[test]
+fn fill_follows_draw_hides_the_fill_under_a_partial_range_by_default() {
+    let mut backend = backend();
+    let root = path(square())
+        .width(100.0)
+        .height(100.0)
+        .view_box(one_to_one())
+        .fit(Fit::None)
+        .fill(Color::BLACK)
+        .draw(DrawRange::new(0.0, 0.5))
+        .into();
+    let mut ui = build(root, &mut backend);
+    let rgba = draw(&mut ui, &mut backend);
+
+    assert_eq!(
+        pixel(&rgba, 50, 50),
+        [255, 255, 255],
+        "the fill waits for the whole range by default"
+    );
+}
+
+#[test]
+fn fill_follows_draw_false_shows_the_fill_under_a_partial_range() {
+    let mut backend = backend();
+    let root = path(square())
+        .width(100.0)
+        .height(100.0)
+        .view_box(one_to_one())
+        .fit(Fit::None)
+        .fill(Color::BLACK)
+        .draw(DrawRange::new(0.0, 0.5))
+        .fill_follows_draw(false)
+        .into();
+    let mut ui = build(root, &mut backend);
+    let rgba = draw(&mut ui, &mut backend);
+
+    assert_eq!(
+        pixel(&rgba, 50, 50),
+        [0, 0, 0],
+        "fill_follows_draw(false) paints regardless of the drawn range"
+    );
+}
+
+#[test]
+fn even_odd_fill_rule_leaves_a_hole_where_non_zero_fills_solid() {
+    let mut backend = backend();
+
+    let root = path(nested_squares())
+        .width(100.0)
+        .height(100.0)
+        .view_box(one_to_one())
+        .fit(Fit::None)
+        .fill(Color::BLACK)
+        .into();
+    let mut ui = build(root, &mut backend);
+    let non_zero = draw(&mut ui, &mut backend);
+    assert_eq!(
+        pixel(&non_zero, 50, 50),
+        [0, 0, 0],
+        "non-zero fills the doubly-wound inner square too"
+    );
+
+    let root = path(nested_squares())
+        .width(100.0)
+        .height(100.0)
+        .view_box(one_to_one())
+        .fit(Fit::None)
+        .fill(Color::BLACK)
+        .fill_rule(FillRule::EvenOdd)
+        .into();
+    let mut ui = build(root, &mut backend);
+    let even_odd = draw(&mut ui, &mut backend);
+    assert_eq!(
+        pixel(&even_odd, 50, 50),
+        [255, 255, 255],
+        "even-odd leaves the doubly-wound inner square as a hole"
+    );
+    assert_eq!(
+        pixel(&even_odd, 20, 20),
+        [0, 0, 0],
+        "the singly-wound annulus is still filled"
+    );
+}
+
+#[test]
+fn a_settled_morph_reuses_its_geometry_across_redraws() {
+    let mut backend = backend();
+    let view = |target: Arc<PathData>| -> iced::Element<'static, ()> {
+        path(target)
+            .width(100.0)
+            .height(100.0)
+            .view_box(one_to_one())
+            .fit(Fit::None)
+            .stroke(Color::BLACK, 6.0)
+            .morph(SpringParams::default())
+            .into()
+    };
+
+    let first = build(view(left_bar()), &mut backend);
+    let mut ui = UserInterface::build(view(right_bar()), SIZE, first.into_cache(), &mut backend);
+
+    let mut now = iced::time::Instant::now();
+    let mut settled = false;
+    for _ in 0..200 {
+        let mut messages = Vec::new();
+        let (state, _) = ui.update(
+            &[Event::Window(window::Event::RedrawRequested(now))],
+            mouse::Cursor::Unavailable,
+            &mut backend,
+            &mut iced::advanced::clipboard::Null,
+            &mut messages,
+        );
+        now += Duration::from_millis(16);
+        let State::Updated { redraw_request, .. } = state else {
+            panic!("nothing here invalidates widgets");
+        };
+        if redraw_request == window::RedrawRequest::Wait {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "a 400 ms spring settles within a few seconds");
+
+    let start = testing::path_geometry_builds();
+    let _ = draw(&mut ui, &mut backend);
+    let _ = draw(&mut ui, &mut backend);
+    assert_eq!(
+        testing::path_geometry_builds() - start,
+        1,
+        "a settled morph reuses its geometry across redraws"
+    );
+}
+
+#[test]
+fn a_retarget_mid_flight_settles_on_the_third_target_without_jumping_back() {
+    let mut backend = backend();
+    let view = |target: Arc<PathData>| -> iced::Element<'static, ()> {
+        path(target)
+            .width(100.0)
+            .height(100.0)
+            .view_box(one_to_one())
+            .fit(Fit::None)
+            .stroke(Color::BLACK, 6.0)
+            .morph(SpringParams::default())
+            .into()
+    };
+
+    let first = build(view(left_bar()), &mut backend);
+    let mut ui = UserInterface::build(view(right_bar()), SIZE, first.into_cache(), &mut backend);
+
+    let mut now = iced::time::Instant::now();
+    // A few ticks into the first morph: retargeting below happens mid-flight.
+    for _ in 0..3 {
+        let mut messages = Vec::new();
+        let _ = ui.update(
+            &[Event::Window(window::Event::RedrawRequested(now))],
+            mouse::Cursor::Unavailable,
+            &mut backend,
+            &mut iced::advanced::clipboard::Null,
+            &mut messages,
+        );
+        now += Duration::from_millis(16);
+    }
+
+    let mut ui = UserInterface::build(view(middle_bar()), SIZE, ui.into_cache(), &mut backend);
+
+    let mut settled = false;
+    for _ in 0..200 {
+        let mut messages = Vec::new();
+        let (state, _) = ui.update(
+            &[Event::Window(window::Event::RedrawRequested(now))],
+            mouse::Cursor::Unavailable,
+            &mut backend,
+            &mut iced::advanced::clipboard::Null,
+            &mut messages,
+        );
+        now += Duration::from_millis(16);
+        let State::Updated { redraw_request, .. } = state else {
+            panic!("nothing here invalidates widgets");
+        };
+        if redraw_request == window::RedrawRequest::Wait {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "a 400 ms spring settles within a few seconds");
+
+    let rgba = draw(&mut ui, &mut backend);
+    assert_eq!(
+        pixel(&rgba, 50, 50),
+        [0, 0, 0],
+        "settled on the third target"
+    );
+    assert_eq!(
+        pixel(&rgba, 20, 50),
+        [255, 255, 255],
+        "not the first target"
+    );
+    assert_eq!(
+        pixel(&rgba, 80, 50),
+        [255, 255, 255],
+        "not stuck on the second target"
+    );
 }

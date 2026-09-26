@@ -185,6 +185,7 @@ fn drawn<'a>(m: &Motion, on: bool) -> Element<'a, Message> {
         path(&*CHECK)
             .width(48)
             .height(48)
+            .view_box(Rectangle::new(Point::ORIGIN, Size::new(24.0, 24.0)))
             .stroke(ACTIVE, 2.5)
             .draw(range)
             .into(),
@@ -200,6 +201,7 @@ fn morphed<'a>(on: bool) -> Element<'a, Message> {
         path(if on { &*CROSS } else { &*BURGER })
             .width(48)
             .height(48)
+            .view_box(Rectangle::new(Point::ORIGIN, Size::new(24.0, 24.0)))
             .stroke(ACTIVE, 2.5)
             .morph(SpringParams::default())
             .carry_velocity(true)

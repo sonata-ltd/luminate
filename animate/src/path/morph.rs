@@ -20,9 +20,18 @@ const ALIGN_BUDGET: usize = 256;
 ///
 /// Because the matching splits cubics rather than resampling points, curves
 /// stay curves at every `t` and every scale.
+///
+/// Subpaths are paired by bounding-box area, largest first, before matching
+/// (`pair_subpaths` below). A partial `draw` range on a morphing path with
+/// more than one subpath therefore walks them in that area order, which need
+/// not be the order either source path listed them in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Morph {
     pairs: Vec<Pair>,
+    /// The union of `from`'s and `to`'s bounds: a still target for a path
+    /// widget's default view box, since the in-between shape's own bounds
+    /// shrink and grow every frame while it moves.
+    bounds: Rectangle,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,8 +50,21 @@ impl Morph {
             .into_iter()
             .map(|(a, b)| match_pair(&a, &b))
             .collect();
+        let bounds = from.bounds().union(&to.bounds());
 
-        Self { pairs }
+        Self { pairs, bounds }
+    }
+
+    /// The union of `from`'s and `to`'s bounds.
+    ///
+    /// The default view box for a path drawn from this morph: the
+    /// in-between shape's own bounds shrink and grow as it moves, so fitting
+    /// to them every frame would re-fit the view box every frame too, and an
+    /// icon would appear to hold still on screen while it changed shape
+    /// underneath the frame.
+    #[must_use]
+    pub fn bounds(&self) -> Rectangle {
+        self.bounds
     }
 
     /// The shape at `t`: `from` at `0`, `to` at `1`.
@@ -305,6 +327,17 @@ impl MorphDriver {
         self.generation
     }
 
+    /// The default view box for the shape currently on screen: the morph's
+    /// own bounds while mid-flight, or the target's once settled. Using the
+    /// morph's bounds mid-flight keeps the box still while the shape
+    /// changes underneath it, the same reason [`Morph::bounds`] exists.
+    #[allow(dead_code)] // only called by the path widget (feature `geometry`)
+    pub(crate) fn view_box(&self) -> Rectangle {
+        self.morph
+            .as_ref()
+            .map_or_else(|| self.target.bounds(), Morph::bounds)
+    }
+
     /// The progress velocity of a new morph that keeps the shape's points
     /// moving as they were.
     ///
@@ -378,6 +411,17 @@ mod tests {
 
     fn near(a: &[Point], b: &[Point]) -> bool {
         a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.distance(*b) < 1e-3)
+    }
+
+    #[test]
+    fn the_default_view_box_is_the_union_of_both_ends_bounds() {
+        // Neither end contains the other, so the union is a real test of
+        // both being taken into account, not just the larger one winning.
+        let from = polygon(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], true);
+        let to = polygon(&[(5.0, 5.0), (25.0, 5.0), (25.0, 15.0), (5.0, 15.0)], true);
+        let expected = from.bounds().union(&to.bounds());
+
+        assert_eq!(Morph::new(&from, &to).bounds(), expected);
     }
 
     #[test]

@@ -157,7 +157,9 @@ impl PathShape {
     }
 
     /// The part of path space fitted into the widget. Defaults to the
-    /// bounds of the path being drawn.
+    /// bounds of the path being drawn — for a [`Morph`] source or a
+    /// [`morph`](Self::morph) target, the union of both ends' bounds, so the
+    /// box does not shift as the in-between shape grows and shrinks.
     #[must_use]
     pub fn view_box(mut self, view_box: Rectangle) -> Self {
         self.view_box = Some(view_box);
@@ -288,6 +290,12 @@ impl PathShape {
     }
 
     /// `true` while any of the path's values is in motion.
+    ///
+    /// A [`morph`](Self::morph) retarget in flight is invisible to this: the
+    /// spring driving it lives in the widget's own tree state, not in any
+    /// `Anim` this struct holds, so a settled view built with a fresh target
+    /// still reports `false` here even though the widget keeps asking for
+    /// frames until it arrives.
     #[must_use]
     pub fn is_animating(&self) -> bool {
         self.width.is_animating()
@@ -371,12 +379,17 @@ impl PathShape {
     }
 
     /// Paints `shape` into `frame`. `table` measures `shape` when a partial
-    /// range has to be trimmed out of it.
+    /// range has to be trimmed out of it. `default_view_box` is used when no
+    /// [`view_box`](Self::view_box) was set: the caller works this out from
+    /// the source rather than `shape.bounds()`, because a morph's
+    /// in-between shape shrinks and grows every frame and would otherwise
+    /// re-fit the view box to it on every frame too.
     fn paint<Renderer: geometry::Renderer>(
         &self,
         frame: &mut Frame<Renderer>,
         shape: &PathData,
         table: impl FnOnce() -> ArcLength,
+        default_view_box: Rectangle,
         resolved: &Resolved,
     ) {
         let placement = if let Some(pose) = resolved.pose {
@@ -384,7 +397,7 @@ impl PathShape {
             frame.rotate(pose.angle);
             Placement::IDENTITY
         } else {
-            let view_box = self.view_box.unwrap_or(shape.bounds());
+            let view_box = self.view_box.unwrap_or(default_view_box);
             self.fit.placement(view_box, frame.size())
         };
         let range = resolved.range;
@@ -476,6 +489,11 @@ impl Resolved {
 }
 
 /// What the cached geometry was built from.
+///
+/// Besides the resolved animated values, this must cover every non-animated
+/// setting `paint` reads: `view_box`, `fit`, the line cap and join, the fill
+/// rule and whether the fill follows the drawn range. Leaving one out means
+/// a rebuild that only changes it would draw the old geometry unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Key {
     size: [u32; 2],
@@ -485,6 +503,35 @@ struct Key {
     /// without any of `values` moving, since progress lives in the spring,
     /// not in a value the view rebuilds with.
     generation: u64,
+    /// `view_box`'s bits, or `None` for the source's own bounds. `f32` is not
+    /// `Eq`, so the rectangle is packed the way `Resolved::bits` packs colours.
+    view_box: Option<[u32; 4]>,
+    fit: Fit,
+    /// `LineCap` has no `PartialEq`, so its variant is packed as a small
+    /// discriminant instead.
+    line_cap: u8,
+    /// `LineJoin` has no `PartialEq`; see `line_cap`.
+    line_join: u8,
+    fill_rule: FillRule,
+    fill_follows_draw: bool,
+}
+
+/// A `LineCap`'s variant, since the type itself has no `PartialEq`.
+fn line_cap_key(cap: LineCap) -> u8 {
+    match cap {
+        LineCap::Butt => 0,
+        LineCap::Square => 1,
+        LineCap::Round => 2,
+    }
+}
+
+/// A `LineJoin`'s variant, since the type itself has no `PartialEq`.
+fn line_join_key(join: LineJoin) -> u8 {
+    match join {
+        LineJoin::Miter => 0,
+        LineJoin::Round => 1,
+        LineJoin::Bevel => 2,
+    }
 }
 
 struct State<Renderer: geometry::Renderer> {
@@ -657,6 +704,19 @@ where
             source: self.source_id(),
             values: resolved.bits(),
             generation: resolved.generation,
+            view_box: self.view_box.map(|r| {
+                [
+                    r.x.to_bits(),
+                    r.y.to_bits(),
+                    r.width.to_bits(),
+                    r.height.to_bits(),
+                ]
+            }),
+            fit: self.fit,
+            line_cap: line_cap_key(self.line_cap),
+            line_join: line_join_key(self.line_join),
+            fill_rule: self.fill_rule,
+            fill_follows_draw: self.fill_follows_draw,
         };
         if state.key.replace(Some(key)) != Some(key) {
             state.cache.clear();
@@ -667,16 +727,34 @@ where
             match (&self.source, driver.as_ref()) {
                 (_, Some(driver)) => {
                     let shape = driver.shape();
-                    self.paint(frame, &shape, || ArcLength::new(&shape), &resolved);
+                    self.paint(
+                        frame,
+                        &shape,
+                        || ArcLength::new(&shape),
+                        driver.view_box(),
+                        &resolved,
+                    );
                 }
                 (Source::Static(data), None) => {
                     *state.held.borrow_mut() = Some(Arc::clone(data));
-                    self.paint(frame, data, || state.table_for(data), &resolved);
+                    self.paint(
+                        frame,
+                        data,
+                        || state.table_for(data),
+                        data.bounds(),
+                        &resolved,
+                    );
                 }
                 (Source::Morph { morph, .. }, None) => {
                     *state.held_morph.borrow_mut() = Some(Arc::clone(morph));
                     let shape = morph.at(resolved.progress);
-                    self.paint(frame, &shape, || ArcLength::new(&shape), &resolved);
+                    self.paint(
+                        frame,
+                        &shape,
+                        || ArcLength::new(&shape),
+                        morph.bounds(),
+                        &resolved,
+                    );
                 }
             }
         });
