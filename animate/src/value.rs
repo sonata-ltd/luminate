@@ -274,7 +274,10 @@ impl<T: Animatable> Anim<T> {
     }
 
     /// Re-types a single-component handle. Both types must read and write
-    /// slot `0` only, so the track is shared as-is.
+    /// slot `0` only. A `Live` handle shares the track as-is, since the
+    /// track's own bits are what changes type; a `Derived` one keeps its
+    /// track too, but wraps its existing projection in `convert` rather than
+    /// sharing it unchanged.
     pub(crate) fn retype<U: Animatable>(
         self,
         convert: impl Fn(T) -> U + Send + Sync + 'static,

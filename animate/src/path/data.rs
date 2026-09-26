@@ -96,6 +96,10 @@ impl PathData {
 
     /// The path with every point moved by `f`. Exact for an affine map
     /// (scale, rotation, translation), which is what it is for.
+    ///
+    /// `f` is not validated: a map that produces a NaN or infinite point
+    /// yields a path whose bounds and geometry are themselves non-finite,
+    /// same as if it had been built that way directly.
     #[must_use]
     pub fn map(&self, f: impl Fn(Point) -> Point) -> Self {
         Self::from_subpaths_unchecked(

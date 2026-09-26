@@ -172,7 +172,8 @@ widget needs the `geometry` feature and a renderer with iced's `canvas`.
 ## Limitations
 
 * Values are interpolated per component (`Animatable`, at most
-  `MAX_COMPONENTS` = 4); there is no path or keyframe animation.
+  `MAX_COMPONENTS` = 4); a path is handled separately (see Paths, above) and
+  there is still no keyframe or timeline animation.
 * Non-finite targets are replaced by the current value and logged as an error.
 * A track is advanced only while a `Host` is in the view; without one, nothing
   moves. One `Motion` per window: two hosts ticking one engine in the same
