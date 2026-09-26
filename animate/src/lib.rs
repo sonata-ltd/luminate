@@ -12,6 +12,8 @@ mod engine;
 mod host;
 mod key;
 mod length;
+#[cfg(feature = "geometry")]
+mod path_widget;
 mod set;
 mod shape;
 mod sized;

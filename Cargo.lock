@@ -1655,6 +1655,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_core",
+ "iced_graphics",
  "iced_test",
  "log",
  "luminate_examples_support",

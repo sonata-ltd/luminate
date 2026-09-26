@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 iced_core.workspace = true
+iced_graphics = { workspace = true, optional = true }
 log.workspace = true
 svgtypes = { workspace = true, optional = true }
 
@@ -26,14 +27,23 @@ svgtypes = { workspace = true, optional = true }
 # `tiny-skia` gives `iced_test::Simulator` a headless renderer; `wgpu`, the
 # executor and the Linux window features exist only for `examples/tiers.rs`,
 # which `cargo test` builds too (dev-dependency features cannot be scoped to
-# one example, and iced 0.14 refuses to build without an executor).
-iced = { workspace = true, features = ["tiny-skia", "wgpu", "thread-pool", "x11", "wayland"] }
+# one example, and iced 0.14 refuses to build without an executor). `canvas`
+# is what makes `iced::Renderer` implement `geometry::Renderer`, which the
+# `path_widget` test needs to build a reference canvas.
+iced = { workspace = true, features = ["tiny-skia", "wgpu", "thread-pool", "x11", "wayland", "canvas"] }
 iced_test.workspace = true
 luminate_examples_support.workspace = true
 
 [features]
 # `PathData::parse`: SVG path data (`d`) into cubics.
 svg-path = ["dep:svgtypes"]
+# The `path()` widget: draws through `iced_graphics::geometry`, which a
+# renderer offers when iced's `canvas` feature is on.
+geometry = ["dep:iced_graphics", "iced_graphics/geometry"]
 
 [package.metadata.docs.rs]
 all-features = true
+
+[[test]]
+name = "path_widget"
+required-features = ["geometry"]

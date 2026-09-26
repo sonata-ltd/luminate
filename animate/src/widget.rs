@@ -11,6 +11,7 @@
 //! | [`Shape`] | `draw` | fill, border, corner radius (and its own size) |
 //! | [`Sized`] | `layout` | width, height, padding and collapse of any child |
 //! | [`Host`] | `update` | nothing, it advances the clock for everything below it |
+//! | `PathShape` | `draw` | stroke, fill, drawn range, morph, pose of a vector path (feature `geometry`) |
 //!
 //! Each has a free-function constructor in iced's style: [`shape()`],
 //! [`sized()`], [`host()`].
@@ -18,5 +19,7 @@
 //! [`Anim`]: crate::Anim
 
 pub use crate::host::{Host, host};
+#[cfg(feature = "geometry")]
+pub use crate::path_widget::{FillRule, LineCap, LineJoin, PathShape, PathSource, path};
 pub use crate::shape::{PixelSnap, Shape, shape};
 pub use crate::sized::{Sized, sized};

@@ -40,7 +40,7 @@ use crate::{Anim, AnimLength, Tier};
 
 /// A bouncy spring may push a channel outside `0.0..=1.0`; the renderer's
 /// blending is undefined there.
-fn clamped_color(color: Color) -> Color {
+pub(crate) fn clamped_color(color: Color) -> Color {
     Color {
         r: color.r.clamp(0.0, 1.0),
         g: color.g.clamp(0.0, 1.0),

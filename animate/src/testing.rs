@@ -16,6 +16,26 @@ pub const FRAME: Duration = Duration::from_micros(16_667);
 /// How many frames [`FrameClock::run_until_settled`] tries before giving up.
 const MAX_FRAMES: usize = 10_000;
 
+#[cfg(feature = "geometry")]
+thread_local! {
+    static PATH_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times a path widget has built its geometry on this thread.
+///
+/// Diagnostics only: tests use it to prove that a frame whose values did not
+/// change reuses the cached geometry.
+#[cfg(feature = "geometry")]
+#[must_use]
+pub fn path_geometry_builds() -> u64 {
+    PATH_BUILDS.with(std::cell::Cell::get)
+}
+
+#[cfg(feature = "geometry")]
+pub(crate) fn note_path_geometry_build() {
+    PATH_BUILDS.with(|builds| builds.set(builds.get() + 1));
+}
+
 /// A monotonic 60 Hz clock bound to one engine.
 ///
 /// The engine derives its delta from the timestamps it is handed, so a helper
