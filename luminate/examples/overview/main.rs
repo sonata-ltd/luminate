@@ -44,7 +44,11 @@ fn main() -> iced::Result {
     // process-wide, so a page that sets it in passing changes the whole app.
     set_filter_quality(FilterQuality::CatmullRom);
 
-    let app = iced::application(App::new, App::update, App::view)
+    // The bundled Inter faces (feature `bundled-font`, on by default), before
+    // the application starts: text shaped earlier would not see them.
+    Luminate::load_fonts();
+
+    iced::application(App::new, App::update, App::view)
         .title("iced_luminate: overview")
         // Triangle primitives, which is what a canvas emits, are drawn with
         // no multisampling unless this is on. Without it the isometric icons
@@ -52,12 +56,7 @@ fn main() -> iced::Result {
         .antialiasing(true)
         .theme(|app: &App| *app.luminate.theme())
         .default_font(FONT)
-        .subscription(App::subscription);
-
-    // The bundled Inter faces (feature `bundled-font`, on by default).
-    Luminate::fonts()
-        .into_iter()
-        .fold(app, iced_luminate::iced::Application::font)
+        .subscription(App::subscription)
         .run()
 }
 

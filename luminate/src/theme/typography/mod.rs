@@ -7,8 +7,8 @@
 //!
 //! Every style requests the family [`FAMILY`]. With the default
 //! `bundled-font` feature the two Inter faces are embedded as
-//! `FONT_INTER` and `FONT_INTER_ITALIC`; load them with
-//! [`Luminate::fonts`](crate::Luminate::fonts) and set [`FONT`] as the
+//! `FONT_INTER` and `FONT_INTER_ITALIC`; register them with
+//! [`Luminate::load_fonts`](crate::Luminate::load_fonts) and set [`FONT`] as the
 //! application's default font. Without the feature, install Inter on the
 //! system or the renderer falls back to its default sans-serif.
 //!
@@ -20,16 +20,25 @@ use iced::font::{Family, Stretch, Style, Weight};
 use iced::widget::text::{LineHeight, Shaping, Text};
 use iced::{Font, Pixels};
 
+#[cfg(feature = "bundled-font")]
+use std::sync::Arc;
+
+#[cfg(feature = "bundled-font")]
+use iced::advanced::graphics::text::cosmic_text::fontdb;
+
 /// The upright Inter variable font (weights 100-900, optical sizes 14-32;
 /// 880 KB). Family name [`FAMILY`]. See `assets/OFL.txt` for the OFL-1.1 licence.
+///
+/// A `static`, not a `const`: [`declare_faces`] hands the text stack these
+/// very bytes, and a `const` may be inlined as a separate copy at each use.
 #[cfg(feature = "bundled-font")]
-pub const FONT_INTER: &[u8] = include_bytes!("./assets/InterVariable.ttf");
+pub static FONT_INTER: &[u8] = include_bytes!("./assets/InterVariable.ttf");
 
 /// The italic Inter variable font (same axes; 910 KB). Family name
 /// [`FAMILY`]; matched by [`TextStyle::italic`]. OFL-1.1, see
 /// `assets/OFL.txt`.
 #[cfg(feature = "bundled-font")]
-pub const FONT_INTER_ITALIC: &[u8] = include_bytes!("./assets/InterVariable-Italic.ttf");
+pub static FONT_INTER_ITALIC: &[u8] = include_bytes!("./assets/InterVariable-Italic.ttf");
 
 /// Family name every [`TextStyle`] requests: the `name` table entry of the
 /// bundled files (`tests/fonts.rs` asserts it resolves).
@@ -39,17 +48,21 @@ pub const FAMILY: &str = "Inter Variable";
 /// variable font carries by default.
 ///
 /// The text stack picks a face by exact declared weight, and only then by
-/// family: it collects every installed face whose `OS/2.usWeightClass` equals
-/// the requested weight and looks for the requested family among *those*. A
+/// family: it collects every installed face whose declared weight equals the
+/// requested one and looks for the requested family among *those*. A
 /// variable font declares one weight, so asking a bundled face for
 /// [`Weight::Medium`] found no exact match and the text silently came out in
-/// some system font that happens to ship a 500 face.
+/// some system font that happens to ship a 500 face. (cosmic-text 0.15, which
+/// iced 0.14 uses, takes the default family only at an exact weight:
+/// `FontFallbackIter::default_font_match_key`. 0.19 matches the `wght` range
+/// instead, and with it these entries become unnecessary.)
 ///
-/// [`Luminate::fonts`](crate::Luminate::fonts) therefore hands the text stack
-/// one extra copy of each face per weight listed here, differing only in that
-/// field. The copies keep their `fvar`/`gvar` tables, so a copy is still a
-/// variable font: selected at 500, it is *also* the face that renders 437 or
-/// 612 when a weight is animated between them.
+/// [`declare_faces`] therefore registers one extra entry per face for each
+/// weight listed here, differing only in that field and reading the same
+/// bytes. So an entry is still the variable font: selected at 500, it is
+/// *also* the face that renders 437 or 612 when a weight is animated between
+/// them. An entry costs a few hundred bytes; the file copies it replaced
+/// cost 900 KB each, and iced kept two of every one.
 ///
 /// Every round hundred is listed because those are the weights real fonts
 /// declare: leave one out and it is the one weight of the nine at which the
@@ -67,43 +80,35 @@ pub const FAMILY: &str = "Inter Variable";
 #[cfg(feature = "bundled-font")]
 pub const DECLARED_WEIGHTS: [u16; 8] = [100, 200, 300, 500, 600, 700, 800, 900];
 
-/// `font` with `OS/2.usWeightClass` rewritten to `weight`, or `None` if the
-/// bytes are not an sfnt font with an `OS/2` table.
+/// Registers the two bundled faces in `db`, and one entry per face for each
+/// weight in [`DECLARED_WEIGHTS`] that reads the same bytes.
 ///
-/// Only those two bytes change: every table, including `fvar` and `gvar`,
-/// is carried over untouched. Table checksums are deliberately left stale —
-/// the copy is handed straight to the text stack, whose parser does not
-/// verify them, and never written back out.
+/// An entry is its face's metadata with only the declared weight changed.
+/// That field is all the text stack matches on, so an entry is chosen exactly
+/// where a copy of the file with a rewritten `OS/2.usWeightClass` would be.
+/// Rendering never reads it: the requested weight drives the `wght` axis
+/// (`tests/shaping.rs`). No byte is copied. Every entry shares its face's
+/// `Source`, which borrows the bytes embedded in the binary.
+///
+/// [`Luminate::load_fonts`](crate::Luminate::load_fonts) calls this on iced's
+/// font system. Call it directly to check the faces against a database of
+/// your own.
 #[cfg(feature = "bundled-font")]
-#[must_use]
-pub(crate) fn with_declared_weight(font: &[u8], weight: u16) -> Option<Vec<u8>> {
-    /// sfnt header: version, table count, then three fields we don't need.
-    const HEADER: usize = 12;
-    /// One table directory record: tag, checksum, offset, length.
-    const RECORD: usize = 16;
-    /// `usWeightClass` sits after `version` and `xAvgCharWidth`.
-    const US_WEIGHT_CLASS: usize = 4;
+pub fn declare_faces(db: &mut fontdb::Database) {
+    for face in [FONT_INTER, FONT_INTER_ITALIC] {
+        let ids = db.load_font_source(fontdb::Source::Binary(Arc::new(face)));
+        let Some(info) = ids.first().and_then(|id| db.face(*id)).cloned() else {
+            continue;
+        };
 
-    let version = font.get(..4)?;
-    if version != 0x0001_0000_u32.to_be_bytes() && version != *b"OTTO" {
-        return None;
+        for weight in DECLARED_WEIGHTS {
+            // `push_face_info` assigns the id.
+            db.push_face_info(fontdb::FaceInfo {
+                weight: fontdb::Weight(weight),
+                ..info.clone()
+            });
+        }
     }
-
-    let count = u16::from_be_bytes(font.get(4..6)?.try_into().ok()?) as usize;
-    let directory = font.get(HEADER..HEADER.checked_add(count.checked_mul(RECORD)?)?)?;
-    let record = directory
-        .as_chunks::<RECORD>()
-        .0
-        .iter()
-        .find(|record| record[..4] == *b"OS/2")?;
-    let table = u32::from_be_bytes(record[8..12].try_into().ok()?) as usize;
-    let field = table.checked_add(US_WEIGHT_CLASS)?;
-
-    let mut out = font.to_vec();
-    out.get_mut(field..field.checked_add(2)?)?
-        .copy_from_slice(&weight.to_be_bytes());
-
-    Some(out)
 }
 
 /// [`FAMILY`] at normal weight and slant: the application's default font
@@ -464,55 +469,34 @@ mod tests {
 
     #[cfg(feature = "bundled-font")]
     #[test]
-    fn a_declared_weight_copy_changes_two_bytes_and_nothing_else() {
-        assert_eq!(declared_weight(FONT_INTER), 400, "the shipped face is 400");
-
-        for weight in DECLARED_WEIGHTS {
-            let copy = with_declared_weight(FONT_INTER, weight).expect("a valid sfnt");
-
-            assert_eq!(declared_weight(&copy), weight);
-            assert_eq!(copy.len(), FONT_INTER.len(), "no table was resized");
-
-            let differing = copy.iter().zip(FONT_INTER).filter(|(a, b)| a != b).count();
-            assert!(
-                differing <= 2,
-                "{weight}: {differing} bytes differ, expected only usWeightClass"
-            );
-        }
+    fn the_bundled_faces_declare_400() {
+        assert_eq!(declared_weight(FONT_INTER), 400);
+        assert_eq!(declared_weight(FONT_INTER_ITALIC), 400);
     }
 
-    /// The copies are still variable fonts: that is what lets one of them
-    /// render an animated weight between the declared ones.
+    /// Every entry, declared weights included, reads the bytes embedded in
+    /// the binary: two sources and no copies.
     #[cfg(feature = "bundled-font")]
     #[test]
-    fn a_declared_weight_copy_keeps_its_variation_tables() {
-        let copy = with_declared_weight(FONT_INTER, 700).expect("a valid sfnt");
-        let count = u16::from_be_bytes(copy[4..6].try_into().unwrap()) as usize;
-        let tags: Vec<[u8; 4]> = copy[12..12 + count * 16]
-            .as_chunks::<16>()
-            .0
-            .iter()
-            .map(|record| record[..4].try_into().unwrap())
+    fn declared_faces_share_the_bundled_bytes() {
+        let mut db = fontdb::Database::new();
+        declare_faces(&mut db);
+
+        assert_eq!(db.len(), 2 * (1 + DECLARED_WEIGHTS.len()));
+
+        let mut sources: Vec<*const u8> = db
+            .faces()
+            .map(|face| match &face.source {
+                fontdb::Source::Binary(data) => AsRef::<[u8]>::as_ref(&**data).as_ptr(),
+                _ => panic!("{} is not an in-memory face", face.post_script_name),
+            })
             .collect();
+        sources.sort();
+        sources.dedup();
 
-        for tag in [b"fvar", b"gvar", b"HVAR"] {
-            assert!(
-                tags.contains(tag),
-                "{} is missing",
-                str::from_utf8(tag).unwrap()
-            );
-        }
-    }
-
-    #[cfg(feature = "bundled-font")]
-    #[test]
-    fn nonsense_bytes_are_not_patched() {
-        assert!(with_declared_weight(b"not a font", 500).is_none());
-        assert!(with_declared_weight(&[], 500).is_none());
-        // A plausible header whose table count runs off the end.
-        let mut truncated = FONT_INTER[..64].to_vec();
-        truncated[4..6].copy_from_slice(&9999_u16.to_be_bytes());
-        assert!(with_declared_weight(&truncated, 500).is_none());
+        let mut bundled = vec![FONT_INTER.as_ptr(), FONT_INTER_ITALIC.as_ptr()];
+        bundled.sort();
+        assert_eq!(sources, bundled);
     }
 
     #[cfg(feature = "bundled-font")]

@@ -1,6 +1,5 @@
 //! [`Luminate`]: the kit that turns descriptors into elements.
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use iced_animate::Motion;
@@ -86,53 +85,44 @@ impl Luminate {
         self.motion.host(content).into()
     }
 
-    /// The font files to load: pass each to `iced::application(..).font(..)`.
-    /// Empty without the `bundled-font` feature.
+    /// Registers the bundled Inter faces with iced's text stack. Does nothing
+    /// without the `bundled-font` feature, and nothing on a second call.
     ///
-    /// The two bundled faces come first, upright then italic, followed by one
-    /// copy of each per weight in
+    /// Call it in `main`, before `iced::application(..)`. The faces go
+    /// straight into iced's process-wide font system rather than through
+    /// `Application::font`, which copies every buffer it is handed and keeps
+    /// the original too. Registering there does not bump the font system's
+    /// version, so text shaped before the call would not see the faces.
+    ///
+    /// Besides the two faces, this declares each at the weights in
     #[cfg_attr(
         feature = "bundled-font",
-        doc = "[`DECLARED_WEIGHTS`](crate::theme::typography::DECLARED_WEIGHTS) —"
+        doc = "[`DECLARED_WEIGHTS`](crate::theme::typography::DECLARED_WEIGHTS),"
     )]
-    #[cfg_attr(not(feature = "bundled-font"), doc = "`DECLARED_WEIGHTS` —")]
-    /// eighteen buffers in all. The copies exist so the text stack can select
-    /// the kit's family by exact weight; see `DECLARED_WEIGHTS` for why, and
-    /// note that each costs about 900 KB of memory — some 14 MB for the set,
-    /// and about 9 ms to build and register, measured in a release build.
-    /// That is what it costs to own all nine weights of the family rather
-    /// than lose one of them to whatever else is installed; an application
-    /// pays it once, at startup, and nothing per frame.
+    #[cfg_attr(not(feature = "bundled-font"), doc = "`DECLARED_WEIGHTS`,")]
+    /// as entries that read the same bytes, so the text stack selects the
+    /// kit's family at every round weight; see `DECLARED_WEIGHTS` for why.
+    /// Nothing is copied: the faces are read from the bytes embedded in the
+    /// binary.
     ///
     /// ```
     /// use iced_luminate::Luminate;
     ///
-    /// let fonts = Luminate::fonts();
-    /// assert_eq!(fonts.len(), if cfg!(feature = "bundled-font") { 18 } else { 0 });
+    /// Luminate::load_fonts();
+    /// Luminate::load_fonts(); // already registered: does nothing
     /// ```
-    #[must_use]
-    pub fn fonts() -> Vec<Cow<'static, [u8]>> {
+    pub fn load_fonts() {
         #[cfg(feature = "bundled-font")]
         {
-            use crate::theme::typography::{
-                DECLARED_WEIGHTS, FONT_INTER, FONT_INTER_ITALIC, with_declared_weight,
-            };
+            static ONCE: std::sync::Once = std::sync::Once::new();
 
-            let faces = [FONT_INTER, FONT_INTER_ITALIC];
-            let mut fonts: Vec<Cow<'static, [u8]>> =
-                faces.iter().map(|face| Cow::Borrowed(*face)).collect();
+            ONCE.call_once(|| {
+                let mut system = iced::advanced::graphics::text::font_system()
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-            fonts.extend(faces.iter().flat_map(|face| {
-                DECLARED_WEIGHTS
-                    .iter()
-                    .filter_map(move |weight| with_declared_weight(face, *weight).map(Cow::Owned))
-            }));
-
-            fonts
-        }
-        #[cfg(not(feature = "bundled-font"))]
-        {
-            Vec::new()
+                crate::theme::typography::declare_faces(system.raw().db_mut());
+            });
         }
     }
 }

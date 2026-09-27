@@ -60,8 +60,8 @@ fn an_italic_query_resolves_to_the_italic_face() {
 
 /// The text stack picks a face by *exact* declared weight, and falls back to
 /// whatever other family declares it when the requested one does not. A
-/// variable font declares a single weight, so without the copies
-/// `Luminate::fonts` makes, asking the kit's family for anything but 400
+/// variable font declares a single weight, so without the entries
+/// `declare_faces` adds, asking the kit's family for anything but 400
 /// silently rendered in a system font.
 ///
 /// This is the regression: every weight the kit and its animations reach for
@@ -69,9 +69,7 @@ fn an_italic_query_resolves_to_the_italic_face() {
 #[test]
 fn every_declared_weight_resolves_within_the_family() {
     let mut db = Database::new();
-    for font in iced_luminate::Luminate::fonts() {
-        db.load_font_data(font.into_owned());
-    }
+    iced_luminate::theme::typography::declare_faces(&mut db);
 
     for weight in [400].into_iter().chain(DECLARED_WEIGHTS) {
         for (style, label) in [(Style::Normal, "upright"), (Style::Italic, "italic")] {

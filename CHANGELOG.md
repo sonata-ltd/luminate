@@ -172,21 +172,24 @@ The first release. What each crate provides:
 #### iced_luminate
 
 - `Luminate`: theme + motion engine; `host`, `button`, `input`, `sidebar`,
-  `card`, `pager`; `Luminate::fonts()`.
-- `Luminate::fonts()` returns eighteen buffers, not two: the upright and
-  italic faces, plus one copy of each per weight in
-  `typography::DECLARED_WEIGHTS` (every round hundred but the native 400),
-  differing only in `OS/2.usWeightClass`. The text stack collects the faces
-  whose declared weight matches *exactly* and looks for the requested family
-  among those alone, and a variable font declares one weight — so without the
-  copies, asking the kit's family for Medium silently rendered in a system
-  font, and any hundred left undeclared lost to whatever else ships it
-  (DejaVu Sans at 200, Noto Sans at 900). The weights *between* the hundreds
-  need no copy: nothing declares 437, so the exact-match set is empty for
-  every family at once and the family query decides. The copies keep their
-  `fvar`/`gvar` tables, so each is still the variable face that renders an
-  animated weight between the declared ones. Each costs about 900 KB, some
-  14 MB for the set.
+  `card`, `pager`; `Luminate::load_fonts()`.
+- `Luminate::load_fonts()` registers the upright and italic faces straight
+  into iced's font system, called once in `main` before `iced::application`,
+  and declares each again at every weight in `typography::DECLARED_WEIGHTS`
+  (every round hundred but the native 400). The text stack (cosmic-text 0.15)
+  takes the default family only at an exact declared weight, and a variable
+  font declares one weight. So without the extra entries, asking the kit's
+  family for Medium silently rendered in a system font, and any hundred left
+  undeclared lost to whatever else ships it (DejaVu Sans at 200, Noto Sans
+  at 900). The weights *between* the hundreds need no entry: nothing
+  declares 437, so the exact-match set is empty for every family at once
+  and the family query decides. The entries (`typography::declare_faces`)
+  differ from their face only in the declared weight and read the same
+  embedded bytes, so each is still the variable face that renders an
+  animated weight between the declared ones, and none copies the file.
+  Sixteen patched copies handed to `Application::font` instead cost about
+  30 MB, since iced keeps each buffer and copies it again into its font
+  database.
 - `descriptor::{Button, ButtonContent, ButtonHierarchy, ButtonSize, Input,
   Sidebar, Axis, Card, Pager}` as plain data with builders.
 - `theme::Theme` (`LIGHT`, `DARK`) implementing `iced::theme::Base` and the

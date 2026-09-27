@@ -55,14 +55,13 @@ impl App {
 }
 
 fn main() -> iced::Result {
-    let app = iced::application(App::new, App::update, App::view)
+    // Before the application starts: text shaped earlier would not see them.
+    Luminate::load_fonts();
+
+    iced::application(App::new, App::update, App::view)
         // The kit's theme is the application's theme (`Theme` is `Copy`).
         .theme(|app: &App| *app.luminate.theme())
-        .default_font(FONT);
-
-    Luminate::fonts()
-        .into_iter()
-        .fold(app, |app, font| app.font(font))
+        .default_font(FONT)
         .run()
 }
 ```
@@ -113,8 +112,8 @@ with `Theme::light` or `Theme::dark`.
 ### Fonts
 
 The kit ships Inter (variable, upright and italic) under the SIL Open Font
-License 1.1 (feature `bundled-font`, on by default). `Luminate::fonts()` returns
-the bytes to register with `iced::application(..).font(..)`;
+License 1.1 (feature `bundled-font`, on by default). `Luminate::load_fonts()`
+registers them with iced's text stack (call it before `iced::application`);
 `typography::FONT` is the matching `iced::Font` for `default_font`. The licence
 text is at
 <https://github.com/sonata-ltd/luminate/blob/master/luminate/src/theme/typography/assets/OFL.txt>.
@@ -140,7 +139,7 @@ the usual way in.
 
 | Feature | Default | Effect |
 |---|---|---|
-| `bundled-font` | yes | Embeds Inter and enables `Luminate::fonts()`. |
+| `bundled-font` | yes | Embeds Inter and enables `Luminate::load_fonts()`. |
 | `wgpu`, `tiny-skia` | yes | Backends, passed to `iced` and `iced_texture_cache`. |
 | `crisp`, `web-colors`, `thread-pool`, `linux-theme-detection`, `x11`, `wayland` | yes | iced's own defaults, passed through. |
 | `svg` | always on | The kit draws icons with `svg`. |

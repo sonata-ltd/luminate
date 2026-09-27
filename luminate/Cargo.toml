@@ -59,7 +59,8 @@ default = [
 ]
 # Embeds InterVariable.ttf and InterVariable-Italic.ttf (1.8 MB together) and
 # exposes `theme::typography::{FONT_INTER, FONT_INTER_ITALIC}`. Off,
-# `Luminate::fonts()` is empty and the application must install Inter itself.
+# `Luminate::load_fonts()` does nothing and the application must install
+# Inter itself.
 bundled-font = []
 # Pass-throughs to `iced` and, where the feature exists there, to
 # `iced_texture_cache`, so `default-features = false` here keeps control of

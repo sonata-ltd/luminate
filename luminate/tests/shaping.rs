@@ -17,7 +17,7 @@
 
 #![cfg(feature = "bundled-font")]
 
-use std::sync::{Mutex, MutexGuard, Once};
+use std::sync::{Mutex, MutexGuard};
 
 use iced_luminate::animate::testing::FrameClock;
 use iced_luminate::animate::{Anim, Motion, MotionKey, Tier, curves::QUICK};
@@ -39,17 +39,7 @@ use iced_test::runtime::user_interface::{self, UserInterface};
 /// The bundled faces, in the process-wide font system the simulator draws
 /// with. Without them every measurement below is of a fallback font.
 fn load_fonts() {
-    static ONCE: Once = Once::new();
-
-    ONCE.call_once(|| {
-        let mut system = iced::advanced::graphics::text::font_system()
-            .write()
-            .expect("the font system is not poisoned");
-
-        for font in Luminate::fonts() {
-            system.load_font(font);
-        }
-    });
+    Luminate::load_fonts();
 }
 
 /// Building a [`Simulator`] builds a renderer, and two threads reaching a
