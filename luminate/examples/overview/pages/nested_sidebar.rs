@@ -114,6 +114,6 @@ impl Page for NestedSidebar {
                 container(content).padding(15),
             ],
         )
-        .build()
+        .view()
     }
 }

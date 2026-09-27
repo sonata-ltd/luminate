@@ -123,6 +123,6 @@ impl Page for ShowcasePage {
             ]
             .spacing(20),
         )
-        .build()
+        .view()
     }
 }

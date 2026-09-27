@@ -66,7 +66,7 @@ impl Page for SnapshotPage {
             ]
             .spacing(theme.spacing.xl),
         )
-        .build()
+        .view()
     }
 
     fn into_snapshot(self) -> Option<Box<dyn Any>> {

@@ -517,7 +517,7 @@ impl Page for SvgToolsetPage {
             "Morphing, line drawing and motion paths",
             body,
         )
-        .build()
+        .view()
     }
 }
 

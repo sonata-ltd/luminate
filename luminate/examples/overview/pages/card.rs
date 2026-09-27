@@ -130,7 +130,7 @@ impl Page for CardPage {
             .height(Length::Fill)
             .spacing(15),
         )
-        .build()
+        .view()
     }
 }
 

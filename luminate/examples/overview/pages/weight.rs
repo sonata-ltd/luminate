@@ -73,7 +73,7 @@ impl Page for WeightPage {
             "The variable font weight axis",
             self.axis(),
         )
-        .build()
+        .view()
     }
 }
 

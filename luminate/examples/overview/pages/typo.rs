@@ -80,7 +80,7 @@ impl Page for Typography {
             )
             .center_x(Length::Fill),
         )
-        .build()
+        .view()
     }
 }
 

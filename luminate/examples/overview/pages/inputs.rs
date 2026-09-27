@@ -11,20 +11,29 @@ use iced_luminate::iced::widget::column;
 use iced_luminate::router::{Action, Lifecycle, Page, Registry};
 use iced_luminate::{Element, Luminate, Renderer, Theme};
 
-use crate::hero::Hero;
+use crate::hero::{Hero, category};
 use crate::iso::scenes_flat;
 
 /// Messages of the inputs page.
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
-    /// The draft changed.
-    InputChanged(String),
+    /// The mail draft changed.
+    Mail(String),
+    /// The search draft changed.
+    Search(String),
+    /// The name draft changed.
+    Name(String),
+    /// The comment draft changed.
+    Comment(String),
 }
 
 /// One input bound to a shared draft.
 pub(crate) struct InputsPage {
     luminate: Luminate,
-    draft: String,
+    mail_draft: String,
+    search_draft: String,
+    name_draft: String,
+    comment_draft: String,
 }
 
 impl Page for InputsPage {
@@ -40,14 +49,26 @@ impl Page for InputsPage {
     fn new(luminate: &Luminate, _: &Registry) -> Self {
         Self {
             luminate: luminate.clone(),
-            draft: String::new(),
+            mail_draft: String::from("mail@domain.com"),
+            search_draft: String::new(),
+            name_draft: String::new(),
+            comment_draft: String::new(),
         }
     }
 
     fn update(&mut self, message: Message) -> Action<Message> {
         match message {
-            Message::InputChanged(value) => {
-                self.draft = value;
+            Message::Mail(value) => {
+                self.mail_draft = value;
+            }
+            Message::Search(value) => {
+                self.search_draft = value;
+            }
+            Message::Name(value) => {
+                self.name_draft = value;
+            }
+            Message::Comment(value) => {
+                self.comment_draft = value;
             }
         }
 
@@ -57,32 +78,49 @@ impl Page for InputsPage {
     fn view(&self) -> Element<'_, Message> {
         let luminate = &self.luminate;
 
+        let error_message = (!self.mail_draft.contains('@')).then_some("Needs an @");
+
         Hero::new(
             luminate,
             &scenes_flat::INPUTS,
             "Inputs",
             "Text fields, labels and validation",
-            inputs(&self.luminate, &self.draft),
+            example(self),
         )
-        .build()
+        .showcase(
+            luminate.input(
+                Input::new("main@domain.com", &self.mail_draft)
+                    .hint("The error bubble goes away once the value has an @")
+                    .error(error_message)
+                    .on_input(Message::Mail),
+            ),
+        )
+        .view()
     }
 }
 
-fn inputs<'a>(luminate: &Luminate, draft: &'a str) -> Element<'a, Message> {
-    column![
-        luminate.input(Input::new("Type something", draft).on_input(Message::InputChanged)),
-        luminate.input(
-            Input::new("Type something", draft)
-                .label("Draft")
-                .on_input(Message::InputChanged)
-        ),
-        luminate.input(
-            Input::new("Type something", draft)
-                .label("Draft")
-                .hint("A hint to help user")
-                .on_input(Message::InputChanged)
-        )
-    ]
-    .spacing(luminate.theme().spacing.xl)
-    .into()
+fn example(data: &InputsPage) -> Element<'_, Message> {
+    let luminate = &data.luminate;
+
+    category(
+        luminate,
+        "Variants",
+        column![
+            luminate.input(
+                Input::new("Search components", &data.search_draft).on_input(Message::Search)
+            ),
+            luminate.input(
+                Input::new("Name", &data.name_draft)
+                    .label("Display Name")
+                    .on_input(Message::Name)
+            ),
+            luminate.input(
+                Input::new("Your message", &data.comment_draft)
+                    .label("Comment")
+                    .hint("Your comment will be visible to all users")
+                    .on_input(Message::Comment)
+            ),
+        ]
+        .spacing(luminate.theme().spacing.xl),
+    )
 }

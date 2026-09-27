@@ -163,7 +163,7 @@ impl Page for MotionPage {
             .spacing(14)
             .align_x(Alignment::Start),
         )
-        .build()
+        .view()
     }
 }
 

@@ -27,6 +27,7 @@ use crate::pages::{
     svg_toolset::SvgToolsetPage, weight::WeightPage,
 };
 
+mod assets;
 mod hero;
 mod iso;
 mod pages;
