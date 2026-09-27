@@ -226,7 +226,7 @@ impl ArcLength {
     /// short there.
     #[allow(dead_code)] // used by the path widget (feature `geometry`)
     pub(crate) fn trim_around(&self, path: &PathData, u0: f32, u1: f32) -> Vec<Piece> {
-        let wraps = path.is_closed_loop() && u0 < 0.0 && u1 > 0.0 && u1 - u0 < 1.0;
+        let wraps = path.is_closed_loop() && u0 < 0.0 && u1 >= 0.0 && u1 - u0 < 1.0;
         if !wraps {
             return self.trim_pieces(path, u0, u1);
         }
@@ -423,6 +423,19 @@ mod tests {
         let clamped = ArcLength::new(&open).trim_around(&open, -0.25, 0.25);
         assert_eq!(clamped.len(), 1);
         assert_eq!(clamped[0].gap, None, "an open path clamps as before");
+    }
+
+    #[test]
+    fn a_trail_whose_head_is_exactly_at_the_start_keeps_its_tail() {
+        let round = circle(10.0);
+        let table = ArcLength::new(&round);
+
+        let pieces = table.trim_around(&round, -0.25, 0.0);
+        assert_eq!(pieces.len(), 1, "the loop's final quarter");
+        let tail = PathData::from_subpaths(vec![pieces[0].subpath.clone()]).unwrap();
+        let length = ArcLength::new(&tail).length();
+        assert!((length - table.length() / 4.0).abs() < 0.1, "{length}");
+        assert!((pieces[0].gap.unwrap() - table.length() * 0.75).abs() < 1e-3);
     }
 
     #[test]

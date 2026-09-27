@@ -15,8 +15,11 @@ const ALIGN_BUDGET: usize = 256;
 /// Building a morph does the work: subpaths are paired, each pair is given
 /// the same number of segments by splitting the longest ones, and each
 /// closed pair is rotated and, if need be, reversed so that corresponding
-/// nodes are as close as they can be. [`at`](Self::at) is then a lerp of
-/// control points, cheap enough for every frame.
+/// nodes are as close as they can be. Whether the target loops run
+/// backwards is one choice for the whole path: reversing some of them but
+/// not others would change their winding relative to each other, and with
+/// it what the nonzero rule fills at `t = 1`. [`at`](Self::at) is then a
+/// lerp of control points, cheap enough for every frame.
 ///
 /// Because the matching splits cubics rather than resampling points, curves
 /// stay curves at every `t` and every scale.
@@ -46,10 +49,21 @@ impl Morph {
     /// Matches `from` against `to`.
     #[must_use]
     pub fn new(from: &PathData, to: &PathData) -> Self {
-        let pairs = pair_subpaths(&from.subpaths, &to.subpaths)
+        let matched: Vec<Matched> = pair_subpaths(&from.subpaths, &to.subpaths)
             .into_iter()
             .map(|(a, b)| match_pair(&a, &b))
             .collect();
+
+        // One direction for every target loop, whichever costs less in all:
+        // reversing some but not others would change their winding relative
+        // to each other, and with it the target's nonzero fill.
+        let (forward, backward) = matched
+            .iter()
+            .filter_map(|m| m.alignment.as_ref())
+            .fold((0.0, 0.0), |(f, b), a| (f + a.forward.0, b + a.reversed.0));
+        let reverse = backward < forward;
+
+        let pairs = matched.into_iter().map(|m| m.into_pair(reverse)).collect();
         let bounds = from.bounds().union(&to.bounds());
 
         Self { pairs, bounds }
@@ -158,20 +172,20 @@ fn pair_subpaths(from: &[Subpath], to: &[Subpath]) -> Vec<(Subpath, Subpath)> {
     pairs
 }
 
-fn match_pair(a: &Subpath, b: &Subpath) -> Pair {
+fn match_pair(a: &Subpath, b: &Subpath) -> Matched {
     let n = a.segments.len().max(b.segments.len());
     let from = subdivide_to(&a.segments, n);
-    let mut to = subdivide_to(&b.segments, n);
+    let to = subdivide_to(&b.segments, n);
+    let alignment = (a.closed && b.closed).then(|| Alignment::of(&from, &to));
 
-    if a.closed && b.closed {
-        to = align_loop(&from, to);
-    }
-
-    Pair {
-        from,
-        to,
-        from_closed: a.closed,
-        to_closed: b.closed,
+    Matched {
+        pair: Pair {
+            from,
+            to,
+            from_closed: a.closed,
+            to_closed: b.closed,
+        },
+        alignment,
     }
 }
 
@@ -197,35 +211,72 @@ fn subdivide_to(segments: &[Cubic], n: usize) -> Vec<Cubic> {
     out
 }
 
-/// The rotation, and direction, of the loop `to` whose nodes sit closest to
-/// those of `from`.
-fn align_loop(from: &[Cubic], to: Vec<Cubic>) -> Vec<Cubic> {
-    let n = to.len();
-    let backwards: Vec<Cubic> = to.iter().rev().map(Cubic::reversed).collect();
-    let stride = n.div_ceil(ALIGN_BUDGET).max(1);
+/// A pair matched in structure, its loop alignment still an open choice.
+struct Matched {
+    pair: Pair,
+    /// For a pair of closed loops; open subpaths are left as they lie.
+    alignment: Option<Alignment>,
+}
 
-    let cost = |candidate: &[Cubic], shift: usize| -> f32 {
-        (0..n)
-            .map(|i| {
-                let d = from[i].p0 - candidate[(i + shift) % n].p0;
-                d.x * d.x + d.y * d.y
-            })
-            .sum()
-    };
+impl Matched {
+    /// The pair with its alignment applied, `to` run backwards or not as the
+    /// whole path decided.
+    fn into_pair(self, reverse: bool) -> Pair {
+        let Some(alignment) = self.alignment else {
+            return self.pair;
+        };
+        let mut pair = self.pair;
+        let (_, shift) = if reverse {
+            alignment.reversed
+        } else {
+            alignment.forward
+        };
+        let source = if reverse {
+            pair.to.iter().rev().map(Cubic::reversed).collect()
+        } else {
+            pair.to
+        };
+        let n = source.len();
+        pair.to = (0..n).map(|i| source[(i + shift) % n]).collect();
+        pair
+    }
+}
 
-    let mut best = (f32::INFINITY, 0, false);
-    for (candidate, reversed) in [(&to, false), (&backwards, true)] {
-        for shift in (0..n).step_by(stride) {
-            let c = cost(candidate, shift);
-            if c < best.0 {
-                best = (c, shift, reversed);
-            }
+/// The cheapest rotation of the loop `to` against `from` — the summed
+/// squared distance between corresponding nodes — taken once for each
+/// direction of `to`.
+struct Alignment {
+    forward: (f32, usize),
+    reversed: (f32, usize),
+}
+
+impl Alignment {
+    fn of(from: &[Cubic], to: &[Cubic]) -> Self {
+        let n = to.len();
+        let stride = n.div_ceil(ALIGN_BUDGET).max(1);
+
+        let best = |candidate: &[Cubic]| -> (f32, usize) {
+            (0..n)
+                .step_by(stride)
+                .map(|shift| {
+                    let cost: f32 = (0..n)
+                        .map(|i| {
+                            let d = from[i].p0 - candidate[(i + shift) % n].p0;
+                            d.x * d.x + d.y * d.y
+                        })
+                        .sum();
+                    (cost, shift)
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .expect("a subpath has at least one segment")
+        };
+
+        let backwards: Vec<Cubic> = to.iter().rev().map(Cubic::reversed).collect();
+        Self {
+            forward: best(to),
+            reversed: best(&backwards),
         }
     }
-
-    let (_, shift, reversed) = best;
-    let source = if reversed { backwards } else { to };
-    (0..n).map(|i| source[(i + shift) % n]).collect()
 }
 
 /// The most velocity, in morph progress per second, a retarget carries into
@@ -252,6 +303,9 @@ pub(crate) struct MorphDriver {
     /// `None` at rest on `target`.
     morph: Option<Morph>,
     spring: crate::Spring,
+    /// The default view box at the moment of the last retarget: where
+    /// [`view_box`](Self::view_box) sets out from.
+    from_box: Rectangle,
     /// Bumped on every change of shape, for the widget's geometry cache.
     generation: u64,
 }
@@ -263,12 +317,14 @@ impl MorphDriver {
         params: crate::SpringParams,
         carry: bool,
     ) -> Self {
+        let from_box = target.bounds();
         Self {
             params,
             carry,
             target,
             morph: None,
             spring: crate::Spring::new(params, 1.0),
+            from_box,
             generation: 0,
         }
     }
@@ -292,6 +348,9 @@ impl MorphDriver {
             0.0
         };
 
+        // The box on screen right now: with default fitting, a box that
+        // jumped here would move the rendered shape before any time passed.
+        self.from_box = self.view_box();
         self.morph = Some(Morph::new(&snapshot, &target));
         self.spring = crate::Spring::new(self.params, 0.0).with_velocity(velocity);
         self.spring.set_target(1.0);
@@ -327,15 +386,34 @@ impl MorphDriver {
         self.generation
     }
 
-    /// The default view box for the shape currently on screen: the morph's
-    /// own bounds while mid-flight, or the target's once settled. Using the
-    /// morph's bounds mid-flight keeps the box still while the shape
-    /// changes underneath it, the same reason [`Morph::bounds`] exists.
+    /// The default view box for the shape currently on screen: the target's
+    /// bounds at rest, and mid-flight a lerp from the box at the moment of
+    /// the retarget to the target's bounds, riding the same spring as the
+    /// shape. It sets out from where the box already was and arrives exactly
+    /// on the target's, so with default fitting neither a retarget nor
+    /// settling moves the rendered shape by itself. It deliberately never
+    /// tracks the in-between shape's own bounds, which shrink and grow every
+    /// frame, the same reason [`Morph::bounds`] exists.
     #[allow(dead_code)] // only called by the path widget (feature `geometry`)
     pub(crate) fn view_box(&self) -> Rectangle {
-        self.morph
-            .as_ref()
-            .map_or_else(|| self.target.bounds(), Morph::bounds)
+        let target = self.target.bounds();
+        if self.morph.is_none() {
+            return target;
+        }
+
+        // Clamped: an overshooting spring must not turn the box inside out.
+        let t = self.spring.position().clamp(0.0, 1.0);
+        let lerp = |a: f32, b: f32| a * (1.0 - t) + b * t;
+        Rectangle::new(
+            Point::new(
+                lerp(self.from_box.x, target.x),
+                lerp(self.from_box.y, target.y),
+            ),
+            Size::new(
+                lerp(self.from_box.width, target.width),
+                lerp(self.from_box.height, target.height),
+            ),
+        )
     }
 
     /// The progress velocity of a new morph that keeps the shape's points
@@ -454,6 +532,52 @@ mod tests {
                 "halfway between one square and the same square is that square"
             );
         }
+    }
+
+    #[test]
+    fn matching_keeps_the_targets_relative_winding() {
+        // Both source squares wind the same way; the target's inner square
+        // winds the other way, cutting a hole under the nonzero rule.
+        // Reversing only that loop during matching would fill the hole at
+        // `t = 1`, so the direction must be one choice for the whole path.
+        let two_squares = |inner: &[(f32, f32)]| -> PathData {
+            let mut builder = PathData::builder()
+                .move_to(Point::new(0.0, 0.0))
+                .line_to(Point::new(10.0, 0.0))
+                .line_to(Point::new(10.0, 10.0))
+                .line_to(Point::new(0.0, 10.0))
+                .close()
+                .move_to(Point::new(inner[0].0, inner[0].1));
+            for &(x, y) in &inner[1..] {
+                builder = builder.line_to(Point::new(x, y));
+            }
+            builder.close().build().unwrap()
+        };
+        let same_winding = two_squares(&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)]);
+        let with_hole = two_squares(&[(3.0, 3.0), (3.0, 7.0), (7.0, 7.0), (7.0, 3.0)]);
+
+        // Twice the shoelace area over the segment endpoints: its sign is
+        // the loop's winding.
+        let winding = |subpath: &crate::path::Subpath| -> f32 {
+            subpath
+                .segments
+                .iter()
+                .map(|s| s.p0.x * s.p3.y - s.p3.x * s.p0.y)
+                .sum()
+        };
+
+        let end = Morph::new(&same_winding, &with_hole).at(1.0);
+        assert_eq!(end.subpath_count(), 2);
+        assert!(
+            winding(&end.subpaths[0]) * winding(&end.subpaths[1]) < 0.0,
+            "the hole still winds against the outline"
+        );
+
+        let start = Morph::new(&same_winding, &with_hole).at(0.0);
+        assert!(
+            winding(&start.subpaths[0]) * winding(&start.subpaths[1]) > 0.0,
+            "and the source is untouched"
+        );
     }
 
     #[test]
@@ -601,6 +725,50 @@ mod tests {
         }
         assert!(driver.is_settled());
         assert_eq!(driver.shape(), *centred_square(30.0));
+    }
+
+    #[test]
+    fn the_default_view_box_is_continuous_across_retarget_and_settle() {
+        // The ends overlap without containing each other, so under the old
+        // union box both the retarget (10 wide to 25) and settling (25 to
+        // 20) would snap the box, moving a default-fitted shape in one frame.
+        let params = SpringParams::new(0.0, std::time::Duration::from_millis(400));
+        let from = Arc::new(polygon(
+            &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            true,
+        ));
+        let to = Arc::new(polygon(
+            &[(5.0, 5.0), (25.0, 5.0), (25.0, 15.0), (5.0, 15.0)],
+            true,
+        ));
+
+        let mut driver = MorphDriver::new(Arc::clone(&from), params, false);
+        let resting = driver.view_box();
+        driver.retarget(Arc::clone(&to));
+        assert_eq!(driver.view_box(), resting, "a retarget holds the box");
+
+        let mut previous = driver.view_box();
+        let mut largest = 0.0_f32;
+        for _ in 0..600 {
+            driver.tick(DT);
+            let now = driver.view_box();
+            for (a, b) in [
+                (now.x, previous.x),
+                (now.y, previous.y),
+                (now.width, previous.width),
+                (now.height, previous.height),
+            ] {
+                largest = largest.max((a - b).abs());
+            }
+            previous = now;
+            if driver.is_settled() {
+                break;
+            }
+        }
+
+        assert!(driver.is_settled());
+        assert_eq!(driver.view_box(), to.bounds(), "and it lands on the target");
+        assert!(largest < 3.0, "no frame jumps the box: {largest}");
     }
 
     #[test]

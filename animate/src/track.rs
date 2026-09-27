@@ -278,7 +278,7 @@ fn sanitise(
 }
 
 /// The most runs one tick crosses. Only a very short curve under a long
-/// frame gets near it, and a forever cycle drops whole pairs of runs first.
+/// frame gets near it, and an eased repeat drops whole pairs of runs first.
 const MAX_RUNS_PER_TICK: u32 = 64;
 
 /// Bit-for-bit equality of the first `components` slots.
@@ -386,20 +386,28 @@ fn start_next_run(state: &mut State, components: usize) {
     }
 }
 
-/// For a cycle that never ends, drops whole pairs of runs a long frame
-/// swallowed. A pair keeps the direction of the run in progress.
-fn skip_whole_cycles(state: &State, leftover: f32) -> f32 {
-    if !state.repeat.is_forever() {
-        return leftover;
-    }
-
+/// Drops whole pairs of eased runs a long frame swallowed. A pair keeps the
+/// direction of the run in progress; a finite repeat also counts the dropped
+/// runs, and only drops pairs it still has ahead of the run in progress, so
+/// the elapsed time past its last run is not lost.
+fn skip_whole_cycles(state: &mut State, leftover: f32) -> f32 {
     let Solver::Ease { duration, .. } = &state.solver else {
         return leftover;
     };
 
     let pair =
         2.0 * (duration.as_secs_f32().max(f32::EPSILON) + state.repeat.pause().as_secs_f32());
-    leftover % pair
+
+    match state.repeat.runs() {
+        None => leftover % pair,
+        Some(runs) => {
+            let ahead = runs.saturating_sub(state.run) / 2;
+            let pairs = ((leftover / pair) as u32).min(ahead);
+            state.run += 2 * pairs;
+            // `max`: rounding must not leave a hair of negative time.
+            (leftover - pairs as f32 * pair).max(0.0)
+        }
+    }
 }
 
 /// What one [`Track::tick`] did.

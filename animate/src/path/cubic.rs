@@ -116,23 +116,28 @@ impl Cubic {
     }
 
     /// Whether the segment is a straight line: both controls lie on the
-    /// chord (within a hundredth of a unit), as every `line_to` leaves them.
-    /// A projection maps a straight line to a straight line, so such a
-    /// segment needs neither splitting nor flattening.
+    /// chord, between its ends (within a hundredth of a unit), as every
+    /// `line_to` leaves them. A control collinear with the chord but past an
+    /// end still bends the parameterisation out beyond that end, so
+    /// collinearity alone is not enough. A projection maps a straight line
+    /// to a straight line, so such a segment needs neither splitting nor
+    /// flattening.
     #[allow(dead_code)] // used by the path widget (feature "geometry")
     pub(crate) fn is_line(&self) -> bool {
         const SLACK: f32 = 0.01;
         let chord = self.p3 - self.p0;
         let length = (chord.x * chord.x + chord.y * chord.y).sqrt();
-        let off = |p: Point| {
+        let on_chord = |p: Point| {
             let d = p - self.p0;
             if length > f32::EPSILON {
-                (d.x * chord.y - d.y * chord.x).abs() / length
+                let along = (d.x * chord.x + d.y * chord.y) / length;
+                (d.x * chord.y - d.y * chord.x).abs() / length <= SLACK
+                    && (-SLACK..=length + SLACK).contains(&along)
             } else {
-                (d.x * d.x + d.y * d.y).sqrt()
+                (d.x * d.x + d.y * d.y).sqrt() <= SLACK
             }
         };
-        off(self.p1) <= SLACK && off(self.p2) <= SLACK
+        on_chord(self.p1) && on_chord(self.p2)
     }
 
     /// The same curve, traversed from the other end.
@@ -325,6 +330,16 @@ mod tests {
             Point::new(10.0, 0.0),
         );
         assert!(!bend.is_line());
+
+        // Collinear, but the controls overshoot the chord: the curve leaves
+        // the chord's span and comes back, so it is not a line.
+        let excursion = Cubic::new(
+            Point::new(10.0, 50.0),
+            Point::new(90.0, 50.0),
+            Point::new(90.0, 50.0),
+            Point::new(20.0, 50.0),
+        );
+        assert!(!excursion.is_line());
     }
 
     #[test]

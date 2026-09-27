@@ -477,10 +477,14 @@ impl PathShape {
         };
 
         // A range reaching back before zero on a single closed loop wraps
-        // across the loop's start instead of being clamped there.
+        // across the loop's start instead of being clamped there. An end of
+        // exactly zero still wraps: a trail whose head lands on the loop's
+        // start keeps its tail rather than blinking out for that frame.
         let raw = resolved.range;
-        let wraps =
-            shape.is_closed_loop() && raw.start < 0.0 && raw.end > 0.0 && raw.end - raw.start < 1.0;
+        let wraps = shape.is_closed_loop()
+            && raw.start < 0.0
+            && raw.end >= 0.0
+            && raw.end - raw.start < 1.0;
         let range = raw.clamped();
         let (start, end) = if wraps {
             (raw.start, raw.end)

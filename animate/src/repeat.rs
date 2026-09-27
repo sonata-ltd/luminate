@@ -187,6 +187,29 @@ mod tests {
     }
 
     #[test]
+    fn many_very_short_runs_stay_in_phase_and_end_on_time() {
+        // One 16.7 ms frame swallows a hundred-odd 100 µs runs at once:
+        // whole pairs of runs are dropped, not the elapsed time.
+        let m = Motion::new();
+        let mut clock = FrameClock::new(&m);
+        let curve = Curve::ease(Easing::Linear, Duration::from_micros(100));
+        let value = m.play(key!(), curve.repeat(Repeat::times(1000)), 0.0_f32, 1.0);
+
+        let _ = clock.run(1); // starts the clock
+        let _ = clock.run(1);
+        let expected = (FRAME.as_secs_f64() / 1e-4).fract() as f32;
+        assert!(
+            (value.get() - expected).abs() < 2e-2,
+            "{} vs {expected}",
+            value.get()
+        );
+
+        // 0.1 s in all: over within seven frames, not 1000 / 64.
+        assert!(clock.run_until_settled() <= 7);
+        assert_eq!(value.get(), 1.0);
+    }
+
+    #[test]
     fn an_alternate_run_comes_back_in_reversed_time() {
         let m = Motion::new();
         let mut clock = FrameClock::new(&m);
