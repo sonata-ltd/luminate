@@ -36,7 +36,7 @@ pub(crate) fn note_path_geometry_build() {
     PATH_BUILDS.with(|builds| builds.set(builds.get() + 1));
 }
 
-#[cfg(feature = "wgpu")]
+#[cfg(all(feature = "wgpu", feature = "geometry"))]
 thread_local! {
     static PATH_PROJECTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -47,13 +47,13 @@ thread_local! {
 /// the projected centrelines, so tests use it to prove that a redraw whose
 /// values did not change reuses the projected mesh too, not just the flat
 /// tessellation that [`path_geometry_builds`] counts.
-#[cfg(feature = "wgpu")]
+#[cfg(all(feature = "wgpu", feature = "geometry"))]
 #[must_use]
 pub fn path_mesh_projections() -> u64 {
     PATH_PROJECTIONS.with(std::cell::Cell::get)
 }
 
-#[cfg(feature = "wgpu")]
+#[cfg(all(feature = "wgpu", feature = "geometry"))]
 pub(crate) fn note_path_mesh_projection() {
     PATH_PROJECTIONS.with(|projections| projections.set(projections.get() + 1));
 }
