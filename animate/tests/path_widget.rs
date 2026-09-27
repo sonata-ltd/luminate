@@ -967,3 +967,70 @@ fn on_wgpu_a_moving_perspective_reuses_the_flat_tessellation() {
         "no re-tessellation while only the perspective moves"
     );
 }
+
+/// The geometry cache's key names its source's address even while the mesh
+/// path draws something else, so it must keep that source alive itself: a
+/// shared retention slot would let the mesh path release it, and a later
+/// path allocated at the reused address would wear the stale geometry.
+/// Needs a GPU.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn on_wgpu_each_cache_retains_its_own_source() {
+    use iced_animate::path::Perspective;
+
+    let mut backend = wgpu_backend();
+    let first = bar();
+    let weak = Arc::downgrade(&first);
+
+    let flat: iced::Element<'_, ()> = path(first)
+        .width(100.0)
+        .height(100.0)
+        .stroke(Color::BLACK, 4.0)
+        .into();
+    let mut ui = build(flat, &mut backend);
+    let _ = draw(&mut ui, &mut backend);
+
+    let tilted: iced::Element<'_, ()> = path(left_bar())
+        .width(100.0)
+        .height(100.0)
+        .stroke(Color::BLACK, 4.0)
+        .perspective(Perspective::new(0.5, 0.0, 400.0))
+        .into();
+    let mut ui = UserInterface::build(tilted, SIZE, ui.into_cache(), &mut backend);
+    let _ = draw(&mut ui, &mut backend);
+
+    assert!(
+        weak.upgrade().is_some(),
+        "the geometry cache keeps its own source while its key names the address"
+    );
+}
+
+/// A redraw with nothing changed reuses the projected mesh, not just the
+/// flat tessellation: projecting re-strokes every stroke along the
+/// projected centreline, which is too much work for a frame in which
+/// neither the plan nor the perspective moved. Needs a GPU.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn on_wgpu_a_still_perspective_reuses_the_projected_mesh() {
+    use iced_animate::path::Perspective;
+
+    let mut backend = wgpu_backend();
+    let root = path(curve())
+        .width(100.0)
+        .height(100.0)
+        .stroke(Color::BLACK, 4.0)
+        .perspective(Perspective::new(0.4, 0.2, 400.0))
+        .into();
+    let mut ui = build(root, &mut backend);
+    let _ = draw(&mut ui, &mut backend);
+
+    let start = testing::path_mesh_projections();
+    for _ in 0..5 {
+        let _ = draw(&mut ui, &mut backend);
+    }
+    assert_eq!(
+        testing::path_mesh_projections(),
+        start,
+        "still frames reuse the projection"
+    );
+}

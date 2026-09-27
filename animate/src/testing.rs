@@ -36,6 +36,28 @@ pub(crate) fn note_path_geometry_build() {
     PATH_BUILDS.with(|builds| builds.set(builds.get() + 1));
 }
 
+#[cfg(feature = "wgpu")]
+thread_local! {
+    static PATH_PROJECTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times a path widget has projected its mesh on this thread.
+///
+/// Diagnostics only: projecting also re-strokes the plan's strokes along
+/// the projected centrelines, so tests use it to prove that a redraw whose
+/// values did not change reuses the projected mesh too, not just the flat
+/// tessellation that [`path_geometry_builds`] counts.
+#[cfg(feature = "wgpu")]
+#[must_use]
+pub fn path_mesh_projections() -> u64 {
+    PATH_PROJECTIONS.with(std::cell::Cell::get)
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) fn note_path_mesh_projection() {
+    PATH_PROJECTIONS.with(|projections| projections.set(projections.get() + 1));
+}
+
 /// A monotonic 60 Hz clock bound to one engine.
 ///
 /// The engine derives its delta from the timestamps it is handed, so a helper

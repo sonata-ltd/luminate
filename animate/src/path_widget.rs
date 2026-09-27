@@ -421,6 +421,15 @@ impl PathShape {
         }
     }
 
+    /// The `Arc` whose address [`source_id`](Self::source_id) names, cloned
+    /// for a cache to hold while its key carries that address.
+    fn retained(&self) -> Retained {
+        match &self.source {
+            Source::Static(data) => Retained::Path(Arc::clone(data)),
+            Source::Morph { morph, .. } => Retained::Morph(Arc::clone(morph)),
+        }
+    }
+
     /// The driver a fresh state should start with: `Some` only when a plain
     /// path source asks to be morphed to.
     fn initial_driver(&self) -> Option<MorphDriver> {
@@ -728,14 +737,37 @@ fn line_join_key(join: LineJoin) -> u8 {
     }
 }
 
+/// A source `Arc` a cache holds alive while the cache's key names the
+/// `Arc`'s address, so the address cannot be reused by another path the
+/// cache would mistake for it. Each cache retains its own: the geometry
+/// cache and the mesh cache outlive each other, so a shared slot would let
+/// whichever drew last release the other one's source.
+#[allow(dead_code)] // held for its `Drop`, never read
+enum Retained {
+    Path(Arc<PathData>),
+    Morph(Arc<Morph>),
+}
+
+/// What the mesh path keeps between frames: the flat tessellation, the last
+/// frame's projection of it, and the source whose address keys them.
+#[cfg(feature = "wgpu")]
+struct MeshCache {
+    /// The key of `flat`: the full key with the perspective left out.
+    key: Key,
+    flat: path_render::mesh::Flat,
+    /// The projected mesh of the last frame against the full key, so a
+    /// redraw with nothing changed reuses it instead of re-stroking the
+    /// projection. `None` inside the pair when there was nothing to draw.
+    projected: Option<(Key, Option<mesh::Mesh>)>,
+    _held: Retained,
+}
+
 struct State<Renderer: geometry::Renderer> {
     cache: geometry::Cache<Renderer>,
     key: Cell<Option<Key>>,
-    /// Keeps the drawn path alive while its address is in `key`, so the
-    /// address cannot be reused by another path the cache would mistake for it.
-    held: RefCell<Option<Arc<PathData>>>,
-    /// Keeps a morph source alive while its address is in `key`.
-    held_morph: RefCell<Option<Arc<Morph>>>,
+    /// The geometry cache's [`Retained`] source, refreshed whenever `key`
+    /// changes.
+    held: RefCell<Option<Retained>>,
     /// The length table of the static path, reused while it is the same `Arc`.
     table: RefCell<Option<(Arc<PathData>, ArcLength)>>,
     /// The high-level morph, when the widget follows a target.
@@ -743,11 +775,9 @@ struct State<Renderer: geometry::Renderer> {
     /// The frame the driver was last ticked on; `None` at rest, so the
     /// stretch before a retarget is not charged to the morph.
     last_frame: Cell<Option<Instant>>,
-    /// The flat parts of the last plan drawn in perspective on a renderer
-    /// that draws meshes — the fills as triangles, the strokes as ops to
-    /// stroke per frame — and the key they were built for.
+    /// The mesh path's cache, on a renderer that draws meshes.
     #[cfg(feature = "wgpu")]
-    mesh: RefCell<Option<(Key, path_render::mesh::Flat)>>,
+    mesh: RefCell<Option<MeshCache>>,
 }
 
 impl<Renderer: geometry::Renderer> State<Renderer> {
@@ -756,7 +786,6 @@ impl<Renderer: geometry::Renderer> State<Renderer> {
             cache: geometry::Cache::new(),
             key: Cell::new(None),
             held: RefCell::new(None),
-            held_morph: RefCell::new(None),
             table: RefCell::new(None),
             driver: RefCell::new(driver),
             last_frame: Cell::new(None),
@@ -896,18 +925,14 @@ where
                     &resolved,
                 )
             }
-            (Source::Static(data), None) => {
-                *state.held.borrow_mut() = Some(Arc::clone(data));
-                self.plan(
-                    size,
-                    data,
-                    || state.table_for(data),
-                    data.bounds(),
-                    &resolved,
-                )
-            }
+            (Source::Static(data), None) => self.plan(
+                size,
+                data,
+                || state.table_for(data),
+                data.bounds(),
+                &resolved,
+            ),
             (Source::Morph { morph, .. }, None) => {
-                *state.held_morph.borrow_mut() = Some(Arc::clone(morph));
                 let shape = morph.at(resolved.progress);
                 self.plan(
                     size,
@@ -920,9 +945,10 @@ where
         };
 
         // In perspective on a renderer that draws meshes: fills tessellated
-        // once in the flat, keyed without the perspective, and only their
-        // corners projected on each frame the sway moves; strokes re-stroked
-        // along the projected centreline so their width is not foreshortened.
+        // once in the flat, keyed without the perspective, and their corners
+        // projected — with the strokes re-stroked along the projected
+        // centreline so their width is not foreshortened — on each frame the
+        // sway moves. A redraw with nothing changed reuses the projection too.
         #[cfg(feature = "wgpu")]
         if let Some(projector) = projector.as_ref()
             && renderer.draws_meshes()
@@ -932,22 +958,36 @@ where
                 ..key
             };
             let mut mesh = state.mesh.borrow_mut();
-            if mesh.as_ref().map(|(key, _)| *key) != Some(flat_key) {
+            if mesh.as_ref().map(|cache| cache.key) != Some(flat_key) {
                 crate::testing::note_path_geometry_build();
-                *mesh = Some((flat_key, path_render::mesh::tessellate(&plan())));
-            }
-            if let Some((_, flat)) = mesh.as_ref()
-                && let Some(projected) = path_render::mesh::project(flat, projector, size)
-            {
-                renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
-                    renderer.draw_mesh(projected);
+                *mesh = Some(MeshCache {
+                    key: flat_key,
+                    flat: path_render::mesh::tessellate(&plan()),
+                    projected: None,
+                    _held: self.retained(),
                 });
+            }
+            if let Some(cache) = mesh.as_mut() {
+                if cache.projected.as_ref().map(|(key, _)| *key) != Some(key) {
+                    crate::testing::note_path_mesh_projection();
+                    cache.projected = Some((
+                        key,
+                        path_render::mesh::project(&cache.flat, projector, size),
+                    ));
+                }
+                if let Some((_, Some(projected))) = &cache.projected {
+                    renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+                        renderer.draw_mesh(projected.clone());
+                    });
+                }
             }
             return;
         }
 
         if state.key.replace(Some(key)) != Some(key) {
             state.cache.clear();
+            // The retained source moves with the key that names its address.
+            *state.held.borrow_mut() = Some(self.retained());
         }
 
         // The near side of a tilted plane grows past the widget's box; give
