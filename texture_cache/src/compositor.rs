@@ -231,15 +231,23 @@ mod gpu {
 
         let surface = instance.create_surface(window).map_err(request_failed)?;
 
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::from_env()
-                    .unwrap_or(wgpu::PowerPreference::HighPerformance),
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .map_err(|e| request_failed(format!("no adapter: {e}")))?;
+        let adapter = if let Some(power_preference) = wgpu::PowerPreference::from_env() {
+            instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                })
+                .await
+                .map_err(|e| request_failed(format!("no adapter: {e}")))?
+        } else {
+            instance
+                .enumerate_adapters(backends)
+                .into_iter()
+                .filter(|adapter| adapter.is_surface_supported(&surface))
+                .min_by_key(|adapter| adapter.get_info().device_type == wgpu::DeviceType::Cpu)
+                .ok_or_else(|| request_failed("no adapter can present to the window"))?
+        };
 
         Ok((instance, surface, adapter))
     }
