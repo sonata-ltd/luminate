@@ -101,6 +101,40 @@ mod gpu {
         }
     }
 
+    /// The most samples a multisample target may take here. Eight already
+    /// gives eight coverage levels on an edge against four; sixteen costs a
+    /// frame-sized colour buffer twice as large again for a difference hard to
+    /// see, and few Vulkan drivers offer it.
+    const MAX_SAMPLES: u32 = 8;
+
+    /// The antialiasing to build the engine with: the finest MSAA up to
+    /// [`MAX_SAMPLES`] that `supported` allows, never coarser than
+    /// `requested`, and nothing when the application asked for none.
+    ///
+    /// iced's `antialiasing(true)` always asks for 4×. Tessellated paths
+    /// (canvas, `path()`) get their edges only from these samples, so 4× shows
+    /// as visible steps on thin curves; taking what the adapter offers is the
+    /// kit's policy, not a setting.
+    pub(crate) fn finest_antialiasing(
+        requested: Option<iced_graphics::Antialiasing>,
+        supported: impl Fn(u32) -> bool,
+    ) -> Option<iced_graphics::Antialiasing> {
+        use iced_graphics::Antialiasing;
+
+        let requested = requested?;
+        [
+            Antialiasing::MSAAx16,
+            Antialiasing::MSAAx8,
+            Antialiasing::MSAAx4,
+            Antialiasing::MSAAx2,
+        ]
+        .into_iter()
+        .filter(|candidate| candidate.sample_count() <= MAX_SAMPLES)
+        .filter(|candidate| candidate.sample_count() >= requested.sample_count())
+        .find(|candidate| supported(candidate.sample_count()))
+        .or(Some(requested))
+    }
+
     /// Requests a device from `adapter` (default limits first, then
     /// downlevel) and builds the shared GPU state around it.
     pub(crate) async fn request_gpu(
@@ -112,6 +146,24 @@ mod gpu {
     ) -> Result<GpuContext, Vec<String>> {
         let mut errors = Vec::new();
 
+        // Sample counts above 4 are adapter-specific: the device has to be
+        // asked for them, and only offers them per format.
+        let adapter_specific = adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+        let required_features = if adapter_specific {
+            wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        } else {
+            wgpu::Features::empty()
+        };
+        let format_flags = adapter.get_texture_format_features(format).flags;
+        let antialiasing = finest_antialiasing(antialiasing, |samples| {
+            (samples <= 4 || adapter_specific) && format_flags.sample_count_supported(samples)
+        });
+        if let Some(antialiasing) = antialiasing {
+            log::info!("antialiasing: {}x MSAA", antialiasing.sample_count());
+        }
+
         for limits in [wgpu::Limits::default(), wgpu::Limits::downlevel_defaults()] {
             let required_limits = wgpu::Limits {
                 max_bind_groups: 2,
@@ -122,7 +174,7 @@ mod gpu {
             match adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: Some(label),
-                    required_features: wgpu::Features::empty(),
+                    required_features,
                     required_limits: required_limits.clone(),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                     trace: wgpu::Trace::Off,
@@ -407,7 +459,38 @@ mod gpu {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use iced_graphics::Antialiasing as Aa;
         use wgpu::TextureFormat as F;
+
+        #[test]
+        fn antialiasing_takes_the_finest_supported_samples_up_to_eight() {
+            let up_to = |max: u32| move |samples: u32| samples <= max;
+
+            assert_eq!(
+                finest_antialiasing(Some(Aa::MSAAx4), up_to(8)),
+                Some(Aa::MSAAx8)
+            );
+            assert_eq!(
+                finest_antialiasing(Some(Aa::MSAAx4), up_to(16)),
+                Some(Aa::MSAAx8),
+                "capped at eight"
+            );
+            assert_eq!(
+                finest_antialiasing(Some(Aa::MSAAx4), up_to(4)),
+                Some(Aa::MSAAx4),
+                "an adapter without more keeps what was asked for"
+            );
+            assert_eq!(
+                finest_antialiasing(Some(Aa::MSAAx4), up_to(1)),
+                Some(Aa::MSAAx4),
+                "never below the request, even if the probe says no"
+            );
+            assert_eq!(
+                finest_antialiasing(None, up_to(16)),
+                None,
+                "none asked, none given"
+            );
+        }
 
         // Adapter orders observed on NVIDIA and Intel Vulkan/Wayland.
         const NVIDIA: [F; 6] = [
