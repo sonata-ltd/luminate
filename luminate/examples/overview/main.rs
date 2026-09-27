@@ -24,7 +24,7 @@ use crate::pages::typo::Typography;
 use crate::pages::{
     buttons::ButtonsPage, card::CardPage, inputs::InputsPage, motion::MotionPage,
     nested_sidebar::NestedSidebar, showcase::ShowcasePage, snapshot::SnapshotPage,
-    weight::WeightPage,
+    svg_toolset::SvgToolsetPage, weight::WeightPage,
 };
 
 mod hero;
@@ -90,6 +90,7 @@ impl App {
             .add::<SnapshotPage>("Snapshot")
             .add::<CardPage>("Card")
             .add::<MotionPage>("Motion")
+            .add::<SvgToolsetPage>("SVG toolset")
             .add::<WeightPage>("Weight")
             .add::<ShowcasePage>("Showcase")
             .add::<NestedSidebar>("Nested sidebar")
