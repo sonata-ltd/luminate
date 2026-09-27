@@ -1,12 +1,16 @@
 //! How a path widget's frame is drawn: a plan in the widget's own flat
 //! pixels, carried out either as iced geometry (projected on the CPU, every
-//! frame the plan or the perspective changes) or as a triangle mesh that is
-//! tessellated once in the flat and only has its vertices projected per frame.
+//! frame the plan or the perspective changes) or as a triangle mesh whose
+//! fills are tessellated once in the flat and only have their vertices
+//! projected per frame.
 //!
 //! The mesh path is what makes a scene sway in perspective cheaply: lyon's
 //! tessellators are the expensive part of drawing a path, and a projection
 //! maps straight lines to straight lines, so the flat triangles stay valid
-//! triangles once their corners are projected. Only a renderer that draws
+//! triangles once their corners are projected. Strokes are the exception:
+//! their triangles carry the stroke's width, which projecting would
+//! foreshorten, so they are stroked per frame along the projected
+//! centreline, as the geometry path does. Only a renderer that draws
 //! meshes takes it — iced's software renderer ignores meshes — so the
 //! renderer says so through [`MeshSupport`].
 
@@ -198,7 +202,9 @@ pub(crate) fn cap(kind: LineCap, at: Point, outward: Vector, half: f32, depth: f
     }
 }
 
-/// The mesh path: tessellation in the flat, projection per frame.
+/// The mesh path: fills tessellated in the flat and only their corners
+/// projected per frame; strokes tessellated per frame from the projected
+/// centreline, so their width stays the documented, unforeshortened one.
 #[cfg(feature = "wgpu")]
 pub(crate) mod mesh {
     use iced_core::{Point, Rectangle, Size, Transformation};
@@ -213,13 +219,28 @@ pub(crate) mod mesh {
     use super::{FillRule, LineCap, LineJoin, Op};
     use crate::path::{Projector, Subpath};
 
-    /// `ops` as triangles in the flat, in drawing order, every vertex
-    /// carrying its op's colour. Built once and reused while the plan does
-    /// not change, however the perspective moves.
-    pub(crate) fn tessellate(ops: &[Op]) -> Indexed<SolidVertex2D> {
+    /// What survives between frames while only the perspective moves: the
+    /// fills as flat triangles, and the strokes still as ops.
+    ///
+    /// A fill is an area, so projecting its triangles' corners is the fill
+    /// projected. A stroke's triangles carry its width, and projecting them
+    /// would foreshorten it — the geometry path strokes the projected
+    /// centreline at the requested width instead, and [`project`] does the
+    /// same, so a stroke looks alike on every backend.
+    pub(crate) struct Flat {
+        fills: Indexed<SolidVertex2D>,
+        strokes: Vec<Op>,
+    }
+
+    /// Splits `ops` for the mesh path: the fills as triangles in the flat,
+    /// in drawing order, every vertex carrying its op's colour; the strokes
+    /// kept back for [`project`]. Built once and reused while the plan does
+    /// not change, however the perspective moves. (A plan lists its fills
+    /// before its strokes, so drawing all fills first keeps the order.)
+    pub(crate) fn tessellate(ops: &[Op]) -> Flat {
         let mut buffers: VertexBuffers<SolidVertex2D, u32> = VertexBuffers::new();
         let mut fill = FillTessellator::new();
-        let mut stroke = StrokeTessellator::new();
+        let mut strokes = Vec::new();
 
         for op in ops {
             match op {
@@ -236,57 +257,67 @@ pub(crate) mod mesh {
                     // A path that does not tessellate draws nothing, as it
                     // would through iced's own frame.
                     let _ = fill.tessellate_path(
-                        &to_lyon(subpaths),
+                        &to_lyon(subpaths, None),
                         &options,
                         &mut BuffersBuilder::new(&mut buffers, colour),
                     );
                 }
-                Op::Stroke { subpaths, pen } => {
-                    let mut options = StrokeOptions::default();
-                    options.line_width = pen.width;
-                    options.start_cap = cap(pen.cap);
-                    options.end_cap = cap(pen.cap);
-                    options.line_join = join(pen.join);
-                    let colour = Colour(color::pack(pen.color));
-                    let _ = stroke.tessellate_path(
-                        &to_lyon(subpaths),
-                        &options,
-                        &mut BuffersBuilder::new(&mut buffers, colour),
-                    );
-                }
+                Op::Stroke { .. } => strokes.push(op.clone()),
             }
         }
 
-        Indexed {
-            vertices: buffers.vertices,
-            indices: buffers.indices,
+        Flat {
+            fills: Indexed {
+                vertices: buffers.vertices,
+                indices: buffers.indices,
+            },
+            strokes,
         }
     }
 
-    /// The flat mesh with every vertex projected, ready to draw at the
-    /// widget's origin. `None` for a mesh with nothing in it, which iced
-    /// asks never to be drawn.
-    pub(crate) fn project(
-        flat: &Indexed<SolidVertex2D>,
-        projector: &Projector,
-        size: Size,
-    ) -> Option<Mesh> {
-        if flat.indices.is_empty() {
-            return None;
+    /// The frame's mesh: the flat fills with every vertex projected, then
+    /// the strokes tessellated along their projected centrelines at their
+    /// own width, ready to draw at the widget's origin. `None` for a mesh
+    /// with nothing in it, which iced asks never to be drawn.
+    pub(crate) fn project(flat: &Flat, projector: &Projector, size: Size) -> Option<Mesh> {
+        let mut buffers = VertexBuffers {
+            vertices: flat
+                .fills
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    let [x, y] = vertex.position;
+                    let p = projector.project(Point::new(x, y));
+                    SolidVertex2D {
+                        position: [p.x, p.y],
+                        color: vertex.color,
+                    }
+                })
+                .collect(),
+            indices: flat.fills.indices.clone(),
+        };
+
+        let mut stroke = StrokeTessellator::new();
+        for op in &flat.strokes {
+            let Op::Stroke { subpaths, pen } = op else {
+                continue;
+            };
+            let mut options = StrokeOptions::default();
+            options.line_width = pen.width;
+            options.start_cap = cap(pen.cap);
+            options.end_cap = cap(pen.cap);
+            options.line_join = join(pen.join);
+            let colour = Colour(color::pack(pen.color));
+            let _ = stroke.tessellate_path(
+                &to_lyon(subpaths, Some(projector)),
+                &options,
+                &mut BuffersBuilder::new(&mut buffers, colour),
+            );
         }
 
-        let vertices = flat
-            .vertices
-            .iter()
-            .map(|vertex| {
-                let [x, y] = vertex.position;
-                let p = projector.project(Point::new(x, y));
-                SolidVertex2D {
-                    position: [p.x, p.y],
-                    color: vertex.color,
-                }
-            })
-            .collect();
+        if buffers.indices.is_empty() {
+            return None;
+        }
 
         // The near side of a tilted plane grows past the widget's box; a
         // margin of the box's own size on every side keeps it unclipped.
@@ -297,25 +328,37 @@ pub(crate) mod mesh {
 
         Some(Mesh::Solid {
             buffers: Indexed {
-                vertices,
-                indices: flat.indices.clone(),
+                vertices: buffers.vertices,
+                indices: buffers.indices,
             },
             transformation: Transformation::IDENTITY,
             clip_bounds,
         })
     }
 
-    fn to_lyon(subpaths: &[Subpath]) -> LyonPath {
+    /// `subpaths` as a lyon path, projected through `projector` if given,
+    /// by the same rules as `to_geometry`: lines stay lines, a curve is
+    /// split in quarters before its control points are projected.
+    fn to_lyon(subpaths: &[Subpath], projector: Option<&Projector>) -> LyonPath {
+        let map = |p: Point| projector.map_or(p, |projector| projector.project(p));
         let point = |p: Point| lyon_tessellation::math::point(p.x, p.y);
         let mut builder = LyonPath::builder();
         for subpath in subpaths {
             let Some(first) = subpath.segments.first() else {
                 continue;
             };
-            builder.begin(point(first.p0));
+            builder.begin(point(map(first.p0)));
             for segment in &subpath.segments {
                 if segment.is_line() {
-                    builder.line_to(point(segment.p3));
+                    builder.line_to(point(map(segment.p3)));
+                } else if projector.is_some() {
+                    for part in segment.quarters() {
+                        builder.cubic_bezier_to(
+                            point(map(part.p1)),
+                            point(map(part.p2)),
+                            point(map(part.p3)),
+                        );
+                    }
                 } else {
                     builder.cubic_bezier_to(
                         point(segment.p1),
@@ -367,5 +410,54 @@ pub(crate) mod mesh {
                 color: self.0,
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "wgpu"))]
+mod tests {
+    use iced_core::{Color, Point, Size};
+    use iced_graphics::mesh::Mesh;
+
+    use super::{LineCap, LineJoin, Op, Pen, mesh};
+    use crate::path::{Cubic, Perspective, Subpath};
+
+    #[test]
+    fn a_projected_stroke_keeps_its_width() {
+        // A 10-wide horizontal stroke on the tilt axis: its centreline does
+        // not move under the projection, so its width must stay 10, as the
+        // geometry path draws it. Projecting the flat stroke triangles
+        // instead would compress it to about 5.4.
+        let line = Subpath {
+            segments: vec![Cubic::line(Point::new(-50.0, 0.0), Point::new(50.0, 0.0))],
+            closed: false,
+        };
+        let op = Op::Stroke {
+            subpaths: vec![line],
+            pen: Pen {
+                color: Color::WHITE,
+                width: 10.0,
+                cap: LineCap::Butt,
+                join: LineJoin::Miter,
+            },
+        };
+
+        let flat = mesh::tessellate(std::slice::from_ref(&op));
+        let projector = Perspective::new(1.0, 0.0, 1000.0).projector(Point::ORIGIN);
+        let mesh = mesh::project(&flat, &projector, Size::new(100.0, 100.0))
+            .expect("a stroke is something to draw");
+        let Mesh::Solid { buffers, .. } = mesh else {
+            panic!("a solid mesh");
+        };
+
+        let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
+        for vertex in &buffers.vertices {
+            min = min.min(vertex.position[1]);
+            max = max.max(vertex.position[1]);
+        }
+        assert!(
+            (max - min - 10.0).abs() < 0.5,
+            "the stroke spans its width: {}",
+            max - min
+        );
     }
 }

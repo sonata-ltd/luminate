@@ -15,11 +15,12 @@ const ALIGN_BUDGET: usize = 256;
 /// Building a morph does the work: subpaths are paired, each pair is given
 /// the same number of segments by splitting the longest ones, and each
 /// closed pair is rotated and, if need be, reversed so that corresponding
-/// nodes are as close as they can be. Whether the target loops run
-/// backwards is one choice for the whole path: reversing some of them but
-/// not others would change their winding relative to each other, and with
-/// it what the nonzero rule fills at `t = 1`. [`at`](Self::at) is then a
-/// lerp of control points, cheap enough for every frame.
+/// nodes are as close as they can be. Whether the target contours run
+/// backwards is one choice for the whole path, open contours included (a
+/// fill closes them implicitly): reversing some of them but not others
+/// would change their winding relative to each other, and with it what the
+/// nonzero rule fills at `t = 1`. [`at`](Self::at) is then a lerp of
+/// control points, cheap enough for every frame.
 ///
 /// Because the matching splits cubics rather than resampling points, curves
 /// stay curves at every `t` and every scale.
@@ -54,13 +55,14 @@ impl Morph {
             .map(|(a, b)| match_pair(&a, &b))
             .collect();
 
-        // One direction for every target loop, whichever costs less in all:
-        // reversing some but not others would change their winding relative
-        // to each other, and with it the target's nonzero fill.
-        let (forward, backward) = matched
-            .iter()
-            .filter_map(|m| m.alignment.as_ref())
-            .fold((0.0, 0.0), |(f, b), a| (f + a.forward.0, b + a.reversed.0));
+        // One direction for every target contour, whichever costs less in
+        // all: reversing some but not others would change their winding
+        // relative to each other, and with it the target's nonzero fill.
+        // Open contours count too — a fill closes them implicitly, so their
+        // winding matters as much as a loop's.
+        let (forward, backward) = matched.iter().fold((0.0, 0.0), |(f, b), m| {
+            (f + m.alignment.forward.0, b + m.alignment.reversed.0)
+        });
         let reverse = backward < forward;
 
         let pairs = matched.into_iter().map(|m| m.into_pair(reverse)).collect();
@@ -176,7 +178,9 @@ fn match_pair(a: &Subpath, b: &Subpath) -> Matched {
     let n = a.segments.len().max(b.segments.len());
     let from = subdivide_to(&a.segments, n);
     let to = subdivide_to(&b.segments, n);
-    let alignment = (a.closed && b.closed).then(|| Alignment::of(&from, &to));
+    // Only a pair of closed loops may rotate; every pair still has a
+    // direction, since the whole path reverses together.
+    let alignment = Alignment::of(&from, &to, a.closed && b.closed);
 
     Matched {
         pair: Pair {
@@ -211,25 +215,21 @@ fn subdivide_to(segments: &[Cubic], n: usize) -> Vec<Cubic> {
     out
 }
 
-/// A pair matched in structure, its loop alignment still an open choice.
+/// A pair matched in structure, its alignment still an open choice.
 struct Matched {
     pair: Pair,
-    /// For a pair of closed loops; open subpaths are left as they lie.
-    alignment: Option<Alignment>,
+    alignment: Alignment,
 }
 
 impl Matched {
     /// The pair with its alignment applied, `to` run backwards or not as the
     /// whole path decided.
     fn into_pair(self, reverse: bool) -> Pair {
-        let Some(alignment) = self.alignment else {
-            return self.pair;
-        };
         let mut pair = self.pair;
         let (_, shift) = if reverse {
-            alignment.reversed
+            self.alignment.reversed
         } else {
-            alignment.forward
+            self.alignment.forward
         };
         let source = if reverse {
             pair.to.iter().rev().map(Cubic::reversed).collect()
@@ -242,23 +242,29 @@ impl Matched {
     }
 }
 
-/// The cheapest rotation of the loop `to` against `from` — the summed
-/// squared distance between corresponding nodes — taken once for each
-/// direction of `to`.
+/// The cheapest alignment of `to` against `from` — the summed squared
+/// distance between corresponding nodes — taken once for each direction of
+/// `to`. A pair of closed loops tries every rotation; any other pair only
+/// its direction, since an open subpath's ends are its ends.
 struct Alignment {
     forward: (f32, usize),
     reversed: (f32, usize),
 }
 
 impl Alignment {
-    fn of(from: &[Cubic], to: &[Cubic]) -> Self {
+    fn of(from: &[Cubic], to: &[Cubic], rotate: bool) -> Self {
         let n = to.len();
         let stride = n.div_ceil(ALIGN_BUDGET).max(1);
+        let shifts: Vec<usize> = if rotate {
+            (0..n).step_by(stride).collect()
+        } else {
+            vec![0]
+        };
 
         let best = |candidate: &[Cubic]| -> (f32, usize) {
-            (0..n)
-                .step_by(stride)
-                .map(|shift| {
+            shifts
+                .iter()
+                .map(|&shift| {
                     let cost: f32 = (0..n)
                         .map(|i| {
                             let d = from[i].p0 - candidate[(i + shift) % n].p0;
@@ -577,6 +583,59 @@ mod tests {
         assert!(
             winding(&start.subpaths[0]) * winding(&start.subpaths[1]) > 0.0,
             "and the source is untouched"
+        );
+    }
+
+    #[test]
+    fn an_open_contour_reverses_with_the_rest_of_the_path() {
+        // The outer loop of the target runs backwards, so the whole path
+        // reverses to align it — and the open inner contour must reverse
+        // with it. A fill closes open contours implicitly, so leaving one
+        // as it lies would flip its winding relative to the loop, turning
+        // the target's hole solid (or its solid into a hole) at `t = 1`.
+        let with_open_inner = |outer: &[(f32, f32)]| -> PathData {
+            let mut builder = PathData::builder().move_to(Point::new(outer[0].0, outer[0].1));
+            for &(x, y) in &outer[1..] {
+                builder = builder.line_to(Point::new(x, y));
+            }
+            builder
+                .close()
+                .move_to(Point::new(3.0, 3.0))
+                .line_to(Point::new(7.0, 3.0))
+                .line_to(Point::new(7.0, 7.0))
+                .line_to(Point::new(3.0, 7.0))
+                .build()
+                .unwrap()
+        };
+        let from = with_open_inner(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        let to = with_open_inner(&[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)]);
+
+        // Shoelace over the nodes, the implicit closing edge included, so an
+        // open contour's winding is the one a fill gives it.
+        let winding = |subpath: &crate::path::Subpath| -> f32 {
+            let closing = subpath
+                .segments
+                .last()
+                .zip(subpath.segments.first())
+                .map_or(0.0, |(last, first)| {
+                    last.p3.x * first.p0.y - first.p0.x * last.p3.y
+                });
+            subpath
+                .segments
+                .iter()
+                .map(|s| s.p0.x * s.p3.y - s.p3.x * s.p0.y)
+                .sum::<f32>()
+                + closing
+        };
+        let relative = |path: &PathData| -> f32 {
+            assert_eq!(path.subpath_count(), 2);
+            winding(&path.subpaths[0]) * winding(&path.subpaths[1])
+        };
+
+        let end = Morph::new(&from, &to).at(1.0);
+        assert!(
+            relative(&end) * relative(&to) > 0.0,
+            "the inner contour still winds with the outline, as the target has it"
         );
     }
 

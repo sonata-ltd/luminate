@@ -743,10 +743,11 @@ struct State<Renderer: geometry::Renderer> {
     /// The frame the driver was last ticked on; `None` at rest, so the
     /// stretch before a retarget is not charged to the morph.
     last_frame: Cell<Option<Instant>>,
-    /// The flat triangles of the last plan drawn in perspective on a
-    /// renderer that draws meshes, and the key they were built for.
+    /// The flat parts of the last plan drawn in perspective on a renderer
+    /// that draws meshes — the fills as triangles, the strokes as ops to
+    /// stroke per frame — and the key they were built for.
     #[cfg(feature = "wgpu")]
-    mesh: RefCell<Option<(Key, mesh::Indexed<mesh::SolidVertex2D>)>>,
+    mesh: RefCell<Option<(Key, path_render::mesh::Flat)>>,
 }
 
 impl<Renderer: geometry::Renderer> State<Renderer> {
@@ -918,9 +919,10 @@ where
             }
         };
 
-        // In perspective on a renderer that draws meshes: triangles
-        // tessellated once in the flat, keyed without the perspective, and
-        // only their corners projected on each frame the sway moves.
+        // In perspective on a renderer that draws meshes: fills tessellated
+        // once in the flat, keyed without the perspective, and only their
+        // corners projected on each frame the sway moves; strokes re-stroked
+        // along the projected centreline so their width is not foreshortened.
         #[cfg(feature = "wgpu")]
         if let Some(projector) = projector.as_ref()
             && renderer.draws_meshes()
