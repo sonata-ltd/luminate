@@ -363,6 +363,22 @@ half!(
 #[cfg(feature = "tiny-skia")]
 image_renderer!(TinySkiaRenderer);
 
+// The path widget's perspective path draws meshes: the wgpu half does, the
+// software half (like `iced_tiny_skia` itself) does not.
+#[cfg(all(feature = "canvas", feature = "wgpu"))]
+impl iced_animate::widget::MeshSupport for WgpuRenderer {
+    fn draws_meshes(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(all(feature = "canvas", feature = "tiny-skia"))]
+impl iced_animate::widget::MeshSupport for TinySkiaRenderer {
+    fn draws_meshes(&self) -> bool {
+        false
+    }
+}
+
 #[cfg(feature = "wgpu")]
 impl WgpuRenderer {
     /// Mirrors `iced_wgpu`'s headless renderer, but keeps the device so

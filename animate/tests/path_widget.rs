@@ -695,3 +695,275 @@ fn a_retarget_mid_flight_settles_on_the_third_target_without_jumping_back() {
         "not stuck on the second target"
     );
 }
+
+#[test]
+fn a_range_shorter_than_the_stroke_thins_and_fades_to_nothing() {
+    // 5 % of an 80 px bar is 4 px of line under an 8 px round cap: half the
+    // stroke's own width, so it is drawn 4 px wide at half strength.
+    let mut backend = backend();
+    let root = path(bar())
+        .width(100.0)
+        .height(100.0)
+        .view_box(one_to_one())
+        .fit(Fit::None)
+        .stroke(Color::BLACK, 8.0)
+        .draw(DrawRange::new(0.0, 0.05))
+        .into();
+    let mut ui = build(root, &mut backend);
+    let rgba = draw(&mut ui, &mut backend);
+
+    let [r, g, b] = pixel(&rgba, 12, 50);
+    assert!(r == g && g == b, "grey: {r} {g} {b}");
+    assert!((90..=170).contains(&r), "half strength over white: {r}");
+    let [edge, ..] = pixel(&rgba, 12, 53);
+    assert!(
+        edge >= 245,
+        "3 px off the axis is outside a 4 px stroke: {edge}"
+    );
+}
+
+/// A circle of radius 30 round (50, 50), starting at (80, 50) and heading down.
+fn ring() -> Arc<PathData> {
+    const K: f32 = 0.552_284_8;
+    let (c, r) = (50.0, 30.0);
+    let p = |x: f32, y: f32| Point::new(c + x, c + y);
+    Arc::new(
+        PathData::builder()
+            .move_to(p(r, 0.0))
+            .cubic_to(p(r, K * r), p(K * r, r), p(0.0, r))
+            .cubic_to(p(-K * r, r), p(-r, K * r), p(-r, 0.0))
+            .cubic_to(p(-r, -K * r), p(-K * r, -r), p(0.0, -r))
+            .cubic_to(p(K * r, -r), p(r, -K * r), p(r, 0.0))
+            .close()
+            .build()
+            .unwrap(),
+    )
+}
+
+fn translucent_ring(range: DrawRange) -> Vec<u8> {
+    let mut backend = backend();
+    let root = path(ring())
+        .width(100.0)
+        .height(100.0)
+        .view_box(one_to_one())
+        .fit(Fit::None)
+        .stroke(Color::from_rgba(0.0, 0.0, 0.0, 0.5), 8.0)
+        .draw(range)
+        .into();
+    let mut ui = build(root, &mut backend);
+    draw(&mut ui, &mut backend)
+}
+
+#[test]
+fn the_ends_of_a_nearly_closed_loop_meet_without_overlapping() {
+    // 1 % short of the loop leaves a 1.9 px gap, far less than the 8 px
+    // stroke: round caps would lap over the start and double the alpha there.
+    for at in [(80, 52), (80, 48)] {
+        let [nearly, ..] = pixel(&translucent_ring(DrawRange::new(0.0, 0.99)), at.0, at.1);
+        let [closed, ..] = pixel(&translucent_ring(DrawRange::FULL), at.0, at.1);
+        assert!(
+            (110..=145).contains(&nearly),
+            "one layer of 50 % black at {at:?}: {nearly}"
+        );
+        assert!(
+            nearly.abs_diff(closed) <= 12,
+            "closing the last gap changes nothing at {at:?}: {nearly} vs {closed}"
+        );
+    }
+}
+
+#[test]
+fn an_open_gap_wider_than_the_stroke_keeps_its_round_caps() {
+    // 10 % short: an 18.8 px gap, so the caps are whole and the gap shows.
+    let rgba = translucent_ring(DrawRange::new(0.0, 0.9));
+    let [inside_gap, ..] = pixel(&rgba, 78, 40);
+    assert!(
+        inside_gap >= 245,
+        "the middle of the gap stays clear: {inside_gap}"
+    );
+    let [cap, ..] = pixel(&rgba, 80, 51);
+    assert!(
+        (110..=145).contains(&cap),
+        "the start's cap is drawn once: {cap}"
+    );
+}
+
+/// The same probe on wgpu, where a stroke is tessellated into triangles and
+/// a round cap lapping over the start is blended twice. Needs a GPU.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn on_wgpu_the_ends_of_a_nearly_closed_loop_meet_without_overlapping() {
+    let mut backend = iced_test::futures::futures::executor::block_on(
+        <iced::Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), Some("wgpu")),
+    )
+    .expect("a wgpu adapter");
+    let mut shoot = |range: DrawRange| {
+        let root = path(ring())
+            .width(100.0)
+            .height(100.0)
+            .view_box(one_to_one())
+            .fit(Fit::None)
+            .stroke(Color::from_rgba(0.0, 0.0, 0.0, 0.5), 8.0)
+            .draw(range)
+            .into();
+        let mut ui = build(root, &mut backend);
+        draw(&mut ui, &mut backend)
+    };
+    let nearly = shoot(DrawRange::new(0.0, 0.99));
+    let closed = shoot(DrawRange::FULL);
+    for at in [(80, 52), (80, 48)] {
+        let ([a, ..], [b, ..]) = (pixel(&nearly, at.0, at.1), pixel(&closed, at.0, at.1));
+        assert!(a.abs_diff(b) <= 12, "no doubled cap at {at:?}: {a} vs {b}");
+    }
+}
+
+#[test]
+fn a_tilted_plane_draws_its_far_side_narrower() {
+    use iced_animate::path::Perspective;
+
+    // Two bars, 10..90 across, at the top and the bottom of the widget.
+    let bars = Arc::new(
+        PathData::builder()
+            .move_to(Point::new(10.0, 15.0))
+            .line_to(Point::new(90.0, 15.0))
+            .move_to(Point::new(10.0, 85.0))
+            .line_to(Point::new(90.0, 85.0))
+            .build()
+            .unwrap(),
+    );
+    let mut backend = backend();
+    let root = path(bars)
+        .width(100.0)
+        .height(100.0)
+        .view_box(one_to_one())
+        .fit(Fit::None)
+        .stroke(Color::BLACK, 4.0)
+        .line_cap(iced_animate::widget::LineCap::Butt)
+        .perspective(Perspective::new(0.8, 0.0, 150.0))
+        .into();
+    let mut ui = build(root, &mut backend);
+    let rgba = draw(&mut ui, &mut backend);
+
+    // Where the top bar ends on the right, scanning along its row.
+    let dark = |x: u32, y: u32| pixel(&rgba, x, y)[0] < 128;
+    let row_of = |near: u32| {
+        (near.saturating_sub(12)..near + 12)
+            .find(|&y| dark(50, y))
+            .expect("a bar")
+    };
+    let (top, bottom) = (row_of(20), row_of(80));
+    let reach = |y: u32| (50..100).take_while(|&x| dark(x, y)).last().unwrap_or(50);
+    assert!(
+        reach(top) + 5 < reach(bottom),
+        "the far (top) bar is shorter: {} vs {}",
+        reach(top),
+        reach(bottom)
+    );
+}
+
+#[test]
+fn a_trail_across_the_start_of_a_loop_stays_whole() {
+    // From 10 % before the start to 10 % after it: one run through (80, 50).
+    let rgba = translucent_ring(DrawRange::new(-0.1, 0.1));
+    for at in [(79, 42), (79, 58)] {
+        let [value, ..] = pixel(&rgba, at.0, at.1);
+        assert!(
+            value < 200,
+            "drawn on both sides of the start at {at:?}: {value}"
+        );
+    }
+    let [far, ..] = pixel(&rgba, 20, 50);
+    assert!(far >= 245, "the opposite side is not drawn: {far}");
+}
+
+fn wgpu_backend() -> iced::Renderer {
+    iced_test::futures::futures::executor::block_on(<iced::Renderer as Headless>::new(
+        Font::DEFAULT,
+        Pixels(16.0),
+        Some("wgpu"),
+    ))
+    .expect("a wgpu adapter")
+}
+
+/// On wgpu a projected path is drawn from a mesh tessellated in the flat;
+/// the tilt must still land where the CPU projection puts it. Needs a GPU.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn on_wgpu_a_tilted_plane_draws_its_far_side_narrower() {
+    use iced_animate::path::Perspective;
+
+    let bars = Arc::new(
+        PathData::builder()
+            .move_to(Point::new(10.0, 15.0))
+            .line_to(Point::new(90.0, 15.0))
+            .move_to(Point::new(10.0, 85.0))
+            .line_to(Point::new(90.0, 85.0))
+            .build()
+            .unwrap(),
+    );
+    let mut backend = wgpu_backend();
+    let root = path(bars)
+        .width(100.0)
+        .height(100.0)
+        .view_box(one_to_one())
+        .fit(Fit::None)
+        .stroke(Color::BLACK, 4.0)
+        .line_cap(iced_animate::widget::LineCap::Butt)
+        .perspective(Perspective::new(0.8, 0.0, 150.0))
+        .into();
+    let mut ui = build(root, &mut backend);
+    let rgba = draw(&mut ui, &mut backend);
+
+    let dark = |x: u32, y: u32| pixel(&rgba, x, y)[0] < 128;
+    let row_of = |near: u32| {
+        (near.saturating_sub(12)..near + 12)
+            .find(|&y| dark(50, y))
+            .expect("a bar")
+    };
+    let reach = |y: u32| (50..100).take_while(|&x| dark(x, y)).last().unwrap_or(50);
+    let (top, bottom) = (row_of(20), row_of(80));
+    assert!(
+        reach(top) + 5 < reach(bottom),
+        "the far (top) bar is shorter: {} vs {}",
+        reach(top),
+        reach(bottom)
+    );
+}
+
+/// A sway alone moves only the projection: the flat mesh is tessellated
+/// once and reused on every frame after. Needs a GPU.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn on_wgpu_a_moving_perspective_reuses_the_flat_tessellation() {
+    use iced_animate::path::Perspective;
+
+    let mut backend = wgpu_backend();
+    let m = Motion::new();
+    let mut clock = FrameClock::new(&m);
+    let tilt = m.play(
+        key!(),
+        Curve::ease(Easing::Linear, Duration::from_millis(500)),
+        Perspective::new(0.1, 0.0, 400.0),
+        Perspective::new(0.6, 0.3, 400.0),
+    );
+    let root = path(curve())
+        .width(100.0)
+        .height(100.0)
+        .stroke(Color::BLACK, 4.0)
+        .perspective(&tilt)
+        .into();
+    let mut ui = build(root, &mut backend);
+
+    let _ = draw(&mut ui, &mut backend);
+    let start = testing::path_geometry_builds();
+    for _ in 0..10 {
+        let _ = clock.run(1);
+        let _ = draw(&mut ui, &mut backend);
+    }
+    assert!(tilt.is_animating(), "the tilt moved during the frames");
+    assert_eq!(
+        testing::path_geometry_builds(),
+        start,
+        "no re-tessellation while only the perspective moves"
+    );
+}

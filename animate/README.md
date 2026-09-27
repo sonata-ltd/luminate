@@ -168,6 +168,11 @@ widget needs the `geometry` feature and a renderer with iced's `canvas`.
 
 - `geometry` — the `path()` widget (draws through `iced_graphics::geometry`).
 - `svg-path` — `PathData::parse` for SVG path data.
+- `wgpu`, `tiny-skia` — name iced's backend crates so the `path()` widget
+  knows which one draws meshes (`widget::MeshSupport`); enable the ones your
+  application's iced uses. With `wgpu`, a path seen through a moving
+  `.perspective(...)` is tessellated once in the flat and only its vertices
+  are projected per frame.
 
 ## Limitations
 

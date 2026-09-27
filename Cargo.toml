@@ -24,6 +24,7 @@ wgpu = "27" # older version to allign with iced14
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
 svgtypes = "0.15"
+lyon_tessellation = "1" # the version iced_wgpu 0.14 already pulls in
 iced_animate = { version = "0.1.0", path = "animate" }
 iced_texture_cache = { version = "0.1.0", path = "texture_cache", default-features = false }
 iced_page_router = { version = "0.1.0", path = "router" }

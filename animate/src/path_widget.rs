@@ -7,17 +7,21 @@ use std::sync::Arc;
 
 use iced_core::time::Instant;
 use iced_core::widget::{Tree, tree};
-use iced_core::{Clipboard, Color, Element, Event, Length, Rectangle, Shell, Size, Vector, window};
+use iced_core::{
+    Clipboard, Color, Element, Event, Length, Point, Rectangle, Shell, Size, Vector, window,
+};
 use iced_core::{Layout, Widget, layout, mouse, renderer};
-use iced_graphics::geometry::{self, Fill, Frame, Stroke, Style};
+use iced_graphics::geometry;
+use iced_graphics::mesh;
 
 pub use iced_graphics::geometry::fill::Rule as FillRule;
 pub use iced_graphics::geometry::{LineCap, LineJoin};
 
 use crate::SpringParams;
 use crate::path::{
-    ArcLength, DrawRange, Fit, Morph, MorphDriver, PathData, Placement, Pose, Subpath,
+    ArcLength, DrawRange, Fit, Morph, MorphDriver, PathData, Perspective, Placement, Pose, Subpath,
 };
+use crate::path_render::{self, MeshSupport, Op, Pen};
 use crate::shape::clamped_color;
 use crate::{Anim, AnimLength, Tier};
 
@@ -117,6 +121,7 @@ pub struct PathShape {
     draw: Anim<DrawRange>,
     fill_follows_draw: bool,
     pose: Option<Anim<Pose>>,
+    perspective: Option<Anim<Perspective>>,
     clamp_progress: bool,
     morph_to: Option<(SpringParams, bool)>,
 }
@@ -137,6 +142,7 @@ impl PathShape {
             draw: Anim::constant(DrawRange::FULL),
             fill_follows_draw: true,
             pose: None,
+            perspective: None,
             clamp_progress: false,
             morph_to: None,
         }
@@ -240,6 +246,21 @@ impl PathShape {
         self
     }
 
+    /// Projects the drawing through `perspective`, which may be animated:
+    /// the plane tilts about the widget's centre and is seen from
+    /// [`Perspective::distance`](crate::path::Perspective::distance).
+    ///
+    /// It applies last, after [`fit`](Self::fit) and [`pose`](Self::pose),
+    /// so layers stacked in one box with one shared perspective tilt as one
+    /// scene. Stroke widths are not foreshortened. Curves are projected by
+    /// their control points after splitting each segment in four, which is
+    /// exact for a flat plane and close for the tilts a scene uses.
+    #[must_use]
+    pub fn perspective(mut self, perspective: impl Into<Anim<Perspective>>) -> Self {
+        self.perspective = Some(perspective.into());
+        self
+    }
+
     /// How far a [`Morph`] source has got, which may be animated: `0` draws
     /// its `from`, `1` its `to`. Values outside `[0, 1]` extrapolate unless
     /// [`clamp_progress`](Self::clamp_progress) is set. Ignored for a plain
@@ -307,6 +328,7 @@ impl PathShape {
                 .as_ref()
                 .is_some_and(|(color, width)| color.is_animating() || width.is_animating())
             || self.pose.as_ref().is_some_and(Anim::is_animating)
+            || self.perspective.as_ref().is_some_and(Anim::is_animating)
             || matches!(&self.source, Source::Morph { progress, .. } if progress.is_animating())
     }
 
@@ -324,6 +346,9 @@ impl PathShape {
         }
         if let Some(pose) = &self.pose {
             pose.mark_tier(Tier::Paint);
+        }
+        if let Some(perspective) = &self.perspective {
+            perspective.mark_tier(Tier::Paint);
         }
         if let Source::Morph { progress, .. } = &self.source {
             progress.mark_tier(Tier::Paint);
@@ -347,15 +372,44 @@ impl PathShape {
         };
 
         Resolved {
-            range: self.draw.get().clamped(),
+            range: self.draw.get(),
             stroke: self
                 .stroke
                 .as_ref()
                 .map(|(color, width)| (clamped_color(color.get()), width.get().max(0.0))),
             fill: self.fill.as_ref().map(|fill| clamped_color(fill.get())),
             pose: self.pose.as_ref().map(Anim::get),
+            perspective: self
+                .perspective
+                .as_ref()
+                .map(Anim::get)
+                .filter(|perspective| !perspective.is_flat()),
             progress,
             generation: driver.map_or(0, MorphDriver::generation),
+        }
+    }
+
+    /// What the cached geometry of a frame of `size` drawn with `resolved`
+    /// depends on.
+    fn key(&self, size: Size, resolved: &Resolved) -> Key {
+        Key {
+            size: [size.width.to_bits(), size.height.to_bits()],
+            source: self.source_id(),
+            values: resolved.bits(),
+            generation: resolved.generation,
+            view_box: self.view_box.map(|r| {
+                [
+                    r.x.to_bits(),
+                    r.y.to_bits(),
+                    r.width.to_bits(),
+                    r.height.to_bits(),
+                ]
+            }),
+            fit: self.fit,
+            line_cap: line_cap_key(self.line_cap),
+            line_join: line_join_key(self.line_join),
+            fill_rule: self.fill_rule,
+            fill_follows_draw: self.fill_follows_draw,
         }
     }
 
@@ -378,66 +432,185 @@ impl PathShape {
         }
     }
 
-    /// Paints `shape` into `frame`. `table` measures `shape` when a partial
-    /// range has to be trimmed out of it. `default_view_box` is used when no
-    /// [`view_box`](Self::view_box) was set: the caller works this out from
-    /// the source rather than `shape.bounds()`, because a morph's
-    /// in-between shape shrinks and grows every frame and would otherwise
-    /// re-fit the view box to it on every frame too.
-    fn paint<Renderer: geometry::Renderer>(
+    /// What to draw for `shape` in a widget of `size`, in the widget's flat
+    /// pixels: fit and pose applied, perspective left to whoever carries the
+    /// plan out. `table` measures `shape` when a partial range has to be
+    /// trimmed out of it. `default_view_box` is used when no
+    /// [`view_box`](Self::view_box) was set: the caller works it out from the
+    /// source rather than `shape.bounds()`, because a morph's in-between
+    /// shape shrinks and grows every frame and would otherwise re-fit the
+    /// view box to it on every frame too.
+    fn plan(
         &self,
-        frame: &mut Frame<Renderer>,
+        size: Size,
         shape: &PathData,
         table: impl FnOnce() -> ArcLength,
         default_view_box: Rectangle,
         resolved: &Resolved,
-    ) {
-        let placement = if let Some(pose) = resolved.pose {
-            frame.translate(Vector::new(pose.position.x, pose.position.y));
-            frame.rotate(pose.angle);
+    ) -> Vec<Op> {
+        let placement = if resolved.pose.is_some() {
             Placement::IDENTITY
         } else {
             let view_box = self.view_box.unwrap_or(default_view_box);
-            self.fit.placement(view_box, frame.size())
+            self.fit.placement(view_box, size)
         };
-        let range = resolved.range;
+        let pose = resolved.pose.map(|pose| (pose, pose.angle.0.sin_cos()));
+        // Fit and pose are affine, so mapping the control points is exact.
+        let flat = |p: Point| {
+            let q = placement.point(p);
+            match pose {
+                Some((pose, (sin, cos))) => Point::new(
+                    pose.position.x + q.x * cos - q.y * sin,
+                    pose.position.y + q.x * sin + q.y * cos,
+                ),
+                None => q,
+            }
+        };
+        let place = |subpaths: &[Subpath]| -> Vec<Subpath> {
+            subpaths
+                .iter()
+                .map(|subpath| Subpath {
+                    segments: subpath.segments.iter().map(|c| c.map(flat)).collect(),
+                    closed: subpath.closed,
+                })
+                .collect()
+        };
+
+        // A range reaching back before zero on a single closed loop wraps
+        // across the loop's start instead of being clamped there.
+        let raw = resolved.range;
+        let wraps =
+            shape.is_closed_loop() && raw.start < 0.0 && raw.end > 0.0 && raw.end - raw.start < 1.0;
+        let range = raw.clamped();
+        let (start, end) = if wraps {
+            (raw.start, raw.end)
+        } else {
+            (range.start, range.end)
+        };
+        let full = !wraps && range.is_full();
+        let mut ops = Vec::new();
 
         if let Some(color) = resolved.fill
-            && (range.is_full() || !self.fill_follows_draw)
+            && (full || !self.fill_follows_draw)
         {
-            frame.fill(
-                &to_geometry(&shape.subpaths, placement),
-                Fill {
-                    style: Style::Solid(color),
-                    rule: self.fill_rule,
-                },
-            );
+            ops.push(Op::Fill {
+                subpaths: place(&shape.subpaths),
+                color,
+                rule: self.fill_rule,
+            });
         }
 
         let Some((color, width)) = resolved.stroke else {
-            return;
+            return ops;
         };
-        if width <= 0.0 || range.is_empty() {
-            return;
+        if width <= 0.0 || end <= start {
+            return ops;
         }
 
-        let stroke = Stroke {
-            style: Style::Solid(color),
+        let pen = Pen {
+            color,
             width,
-            line_cap: self.line_cap,
-            line_join: self.line_join,
-            ..Stroke::default()
+            cap: self.line_cap,
+            join: self.line_join,
         };
 
-        if range.is_full() {
-            frame.stroke(&to_geometry(&shape.subpaths, placement), stroke);
-            return;
+        if full {
+            ops.push(Op::Stroke {
+                subpaths: place(&shape.subpaths),
+                pen,
+            });
+            return ops;
         }
 
-        let trimmed = table().trim(shape, range.start, range.end);
-        if !trimmed.is_empty() {
-            frame.stroke(&to_geometry(&trimmed, placement), stroke);
+        plan_trimmed(
+            &mut ops,
+            shape,
+            &table(),
+            (start, end),
+            pen,
+            placement,
+            &place,
+        );
+        ops
+    }
+}
+
+/// The part of [`PathShape::plan`] for a partial range: the runs of
+/// `shape` between `start` and `end`, stroked with `pen`.
+fn plan_trimmed(
+    ops: &mut Vec<Op>,
+    shape: &PathData,
+    table: &ArcLength,
+    (start, end): (f32, f32),
+    pen: Pen,
+    placement: Placement,
+    place: &dyn Fn(&[Subpath]) -> Vec<Subpath>,
+) {
+    let pieces = table.trim_around(shape, start, end);
+    if pieces.is_empty() {
+        return;
+    }
+    let (color, width) = (pen.color, pen.width);
+
+    // A range shorter than the stroke is wide leaves only the cap: a dot
+    // that would vanish in one frame when the range hits zero. Below one
+    // stroke width of drawn length the stroke thins to that length and
+    // fades in proportion, so drawing off (and on) ends at nothing.
+    let scale = f32::midpoint(placement.scale.x.abs(), placement.scale.y.abs());
+    let drawn = table.length() * (end - start) * scale;
+    let pen = if drawn < width {
+        Pen {
+            color: Color {
+                a: color.a * (drawn / width),
+                ..color
+            },
+            width: drawn,
+            ..pen
         }
+    } else {
+        pen
+    };
+
+    let mut open = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        // The two ends of a run of a closed loop face each other across
+        // the part left out. Once that gap is narrower than the stroke,
+        // full caps would lap over each other (and blend twice where a
+        // renderer tessellates). Instead the ends are cut square and
+        // capped with bumps of half the gap each, which meet exactly as
+        // the gap closes and hand over to the closed loop without a jump.
+        match piece.gap.map(|gap| gap * scale) {
+            Some(gap) if gap < pen.width && !matches!(pen.cap, LineCap::Butt) => {
+                let run = place(std::slice::from_ref(&piece.subpath));
+                let caps = run
+                    .iter()
+                    .flat_map(path_render::ends)
+                    .map(|(at, outward)| {
+                        path_render::cap(pen.cap, at, outward, pen.width / 2.0, gap / 2.0)
+                    })
+                    .collect();
+                ops.push(Op::Stroke {
+                    subpaths: run,
+                    pen: Pen {
+                        cap: LineCap::Butt,
+                        ..pen
+                    },
+                });
+                ops.push(Op::Fill {
+                    subpaths: caps,
+                    color: pen.color,
+                    rule: FillRule::NonZero,
+                });
+            }
+            _ => open.push(piece.subpath),
+        }
+    }
+
+    if !open.is_empty() {
+        ops.push(Op::Stroke {
+            subpaths: place(&open),
+            pen,
+        });
     }
 }
 
@@ -448,6 +621,7 @@ struct Resolved {
     stroke: Option<(Color, f32)>,
     fill: Option<Color>,
     pose: Option<Pose>,
+    perspective: Option<Perspective>,
     /// A morph's progress: `0` at `from`, `1` at `to`. `0` for a plain path.
     progress: f32,
     /// The driver's generation, for the geometry cache key; `0` without one.
@@ -455,7 +629,7 @@ struct Resolved {
 }
 
 /// How many `f32` values [`Resolved::bits`] packs.
-const VALUES: usize = 16;
+const VALUES: usize = 20;
 
 impl Resolved {
     fn bits(&self) -> [u32; VALUES] {
@@ -478,6 +652,9 @@ impl Resolved {
             self.pose.map_or(0.0, |p| p.position.y),
             self.pose.map_or(f32::NAN, |p| p.angle.0),
             self.progress,
+            self.perspective.map_or(0.0, |p| p.tilt_x.0),
+            self.perspective.map_or(0.0, |p| p.tilt_y.0),
+            self.perspective.map_or(f32::NAN, |p| p.distance),
         ];
 
         let mut bits = [0; VALUES];
@@ -485,6 +662,19 @@ impl Resolved {
             *slot = value.to_bits();
         }
         bits
+    }
+}
+
+impl Resolved {
+    /// [`bits`](Self::bits) with the perspective left out: what the flat
+    /// triangles of the mesh path depend on.
+    #[cfg(feature = "wgpu")]
+    fn flat_bits(&self) -> [u32; VALUES] {
+        Self {
+            perspective: None,
+            ..*self
+        }
+        .bits()
     }
 }
 
@@ -549,6 +739,10 @@ struct State<Renderer: geometry::Renderer> {
     /// The frame the driver was last ticked on; `None` at rest, so the
     /// stretch before a retarget is not charged to the morph.
     last_frame: Cell<Option<Instant>>,
+    /// The flat triangles of the last plan drawn in perspective on a
+    /// renderer that draws meshes, and the key they were built for.
+    #[cfg(feature = "wgpu")]
+    mesh: RefCell<Option<(Key, mesh::Indexed<mesh::SolidVertex2D>)>>,
 }
 
 impl<Renderer: geometry::Renderer> State<Renderer> {
@@ -561,6 +755,8 @@ impl<Renderer: geometry::Renderer> State<Renderer> {
             table: RefCell::new(None),
             driver: RefCell::new(driver),
             last_frame: Cell::new(None),
+            #[cfg(feature = "wgpu")]
+            mesh: RefCell::new(None),
         }
     }
 
@@ -579,31 +775,9 @@ impl<Renderer: geometry::Renderer> State<Renderer> {
     }
 }
 
-/// `subpaths` placed into widget pixels, as an iced path.
-fn to_geometry(subpaths: &[Subpath], placement: Placement) -> geometry::Path {
-    geometry::Path::new(|builder| {
-        for subpath in subpaths {
-            let Some(first) = subpath.segments.first() else {
-                continue;
-            };
-            builder.move_to(placement.point(first.p0));
-            for segment in &subpath.segments {
-                builder.bezier_curve_to(
-                    placement.point(segment.p1),
-                    placement.point(segment.p2),
-                    placement.point(segment.p3),
-                );
-            }
-            if subpath.closed {
-                builder.close();
-            }
-        }
-    })
-}
-
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for PathShape
 where
-    Renderer: geometry::Renderer + 'static,
+    Renderer: geometry::Renderer + mesh::Renderer + MeshSupport + 'static,
 {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State<Renderer>>()
@@ -699,65 +873,93 @@ where
         let state = tree.state.downcast_ref::<State<Renderer>>();
         let driver = state.driver.borrow();
         let resolved = self.resolve(driver.as_ref());
-        let key = Key {
-            size: [bounds.width.to_bits(), bounds.height.to_bits()],
-            source: self.source_id(),
-            values: resolved.bits(),
-            generation: resolved.generation,
-            view_box: self.view_box.map(|r| {
-                [
-                    r.x.to_bits(),
-                    r.y.to_bits(),
-                    r.width.to_bits(),
-                    r.height.to_bits(),
-                ]
-            }),
-            fit: self.fit,
-            line_cap: line_cap_key(self.line_cap),
-            line_join: line_join_key(self.line_join),
-            fill_rule: self.fill_rule,
-            fill_follows_draw: self.fill_follows_draw,
+        let key = self.key(bounds.size(), &resolved);
+        let size = bounds.size();
+        let projector = resolved
+            .perspective
+            .map(|p| p.projector(Point::new(size.width / 2.0, size.height / 2.0)));
+
+        // The plan is only worked out when a cache misses.
+        let plan = || match (&self.source, driver.as_ref()) {
+            (_, Some(driver)) => {
+                let shape = driver.shape();
+                self.plan(
+                    size,
+                    &shape,
+                    || ArcLength::new(&shape),
+                    driver.view_box(),
+                    &resolved,
+                )
+            }
+            (Source::Static(data), None) => {
+                *state.held.borrow_mut() = Some(Arc::clone(data));
+                self.plan(
+                    size,
+                    data,
+                    || state.table_for(data),
+                    data.bounds(),
+                    &resolved,
+                )
+            }
+            (Source::Morph { morph, .. }, None) => {
+                *state.held_morph.borrow_mut() = Some(Arc::clone(morph));
+                let shape = morph.at(resolved.progress);
+                self.plan(
+                    size,
+                    &shape,
+                    || ArcLength::new(&shape),
+                    morph.bounds(),
+                    &resolved,
+                )
+            }
         };
+
+        // In perspective on a renderer that draws meshes: triangles
+        // tessellated once in the flat, keyed without the perspective, and
+        // only their corners projected on each frame the sway moves.
+        #[cfg(feature = "wgpu")]
+        if let Some(projector) = projector.as_ref()
+            && renderer.draws_meshes()
+        {
+            let flat_key = Key {
+                values: resolved.flat_bits(),
+                ..key
+            };
+            let mut mesh = state.mesh.borrow_mut();
+            if mesh.as_ref().map(|(key, _)| *key) != Some(flat_key) {
+                crate::testing::note_path_geometry_build();
+                *mesh = Some((flat_key, path_render::mesh::tessellate(&plan())));
+            }
+            if let Some((_, flat)) = mesh.as_ref()
+                && let Some(projected) = path_render::mesh::project(flat, projector, size)
+            {
+                renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+                    renderer.draw_mesh(projected);
+                });
+            }
+            return;
+        }
+
         if state.key.replace(Some(key)) != Some(key) {
             state.cache.clear();
         }
 
-        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
-            crate::testing::note_path_geometry_build();
-            match (&self.source, driver.as_ref()) {
-                (_, Some(driver)) => {
-                    let shape = driver.shape();
-                    self.paint(
-                        frame,
-                        &shape,
-                        || ArcLength::new(&shape),
-                        driver.view_box(),
-                        &resolved,
-                    );
-                }
-                (Source::Static(data), None) => {
-                    *state.held.borrow_mut() = Some(Arc::clone(data));
-                    self.paint(
-                        frame,
-                        data,
-                        || state.table_for(data),
-                        data.bounds(),
-                        &resolved,
-                    );
-                }
-                (Source::Morph { morph, .. }, None) => {
-                    *state.held_morph.borrow_mut() = Some(Arc::clone(morph));
-                    let shape = morph.at(resolved.progress);
-                    self.paint(
-                        frame,
-                        &shape,
-                        || ArcLength::new(&shape),
-                        morph.bounds(),
-                        &resolved,
-                    );
-                }
-            }
-        });
+        // The near side of a tilted plane grows past the widget's box; give
+        // a projected frame a margin of the box's own size to grow into.
+        let frame_bounds = if projector.is_some() {
+            Rectangle::new(
+                Point::new(-size.width, -size.height),
+                Size::new(size.width * 3.0, size.height * 3.0),
+            )
+        } else {
+            Rectangle::with_size(size)
+        };
+        let geometry = state
+            .cache
+            .draw_with_bounds(renderer, frame_bounds, |frame| {
+                crate::testing::note_path_geometry_build();
+                path_render::draw_geometry(frame, &plan(), projector.as_ref());
+            });
 
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
             renderer.draw_geometry(geometry);
@@ -767,7 +969,7 @@ where
 
 impl<'a, Message, Theme, Renderer> From<PathShape> for Element<'a, Message, Theme, Renderer>
 where
-    Renderer: geometry::Renderer + 'static,
+    Renderer: geometry::Renderer + mesh::Renderer + MeshSupport + 'static,
     Message: 'a,
     Theme: 'a,
 {

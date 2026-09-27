@@ -13,6 +13,8 @@ mod host;
 mod key;
 mod length;
 #[cfg(feature = "geometry")]
+mod path_render;
+#[cfg(feature = "geometry")]
 mod path_widget;
 mod repeat;
 mod set;

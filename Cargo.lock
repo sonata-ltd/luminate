@@ -1656,9 +1656,13 @@ dependencies = [
  "iced",
  "iced_core",
  "iced_graphics",
+ "iced_renderer",
  "iced_test",
+ "iced_tiny_skia",
+ "iced_wgpu",
  "log",
  "luminate_examples_support",
+ "lyon_tessellation",
  "svgtypes",
 ]
 

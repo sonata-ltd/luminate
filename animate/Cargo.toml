@@ -20,6 +20,10 @@ workspace = true
 [dependencies]
 iced_core.workspace = true
 iced_graphics = { workspace = true, optional = true }
+iced_renderer = { workspace = true, optional = true }
+iced_wgpu = { workspace = true, optional = true }
+iced_tiny_skia = { workspace = true, optional = true }
+lyon_tessellation = { workspace = true, optional = true }
 log.workspace = true
 svgtypes = { workspace = true, optional = true }
 
@@ -39,11 +43,17 @@ luminate_examples_support.workspace = true
 svg-path = ["dep:svgtypes"]
 # The `path()` widget: draws through `iced_graphics::geometry`, which a
 # renderer offers when iced's `canvas` feature is on.
-geometry = ["dep:iced_graphics", "iced_graphics/geometry"]
+geometry = ["dep:iced_graphics", "iced_graphics/geometry", "dep:iced_renderer"]
+# Name iced's backend crates so the path widget knows which of them draws
+# meshes (`widget::MeshSupport`). `wgpu` also brings lyon, which the widget
+# tessellates with to project a swaying scene cheaply. Both are already in
+# any iced application's build that uses those backends.
+wgpu = ["dep:iced_wgpu", "dep:lyon_tessellation"]
+tiny-skia = ["dep:iced_tiny_skia"]
 
 [package.metadata.docs.rs]
 all-features = true
 
 [[test]]
 name = "path_widget"
-required-features = ["geometry"]
+required-features = ["geometry", "wgpu", "tiny-skia"]

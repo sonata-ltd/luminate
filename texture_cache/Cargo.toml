@@ -53,10 +53,10 @@ luminate_examples_support = { workspace = true, features = ["texture"] }
 default = ["wgpu", "tiny-skia", "crisp", "web-colors", "x11", "wayland"]
 # Backends. At least one is required; with both, `Renderer`/`Compositor` are
 # iced's fallback pair (wgpu when an adapter exists, tiny_skia otherwise).
-wgpu = ["dep:iced_wgpu", "dep:wgpu", "dep:bytemuck", "iced_renderer/wgpu"]
+wgpu = ["dep:iced_wgpu", "dep:wgpu", "dep:bytemuck", "iced_renderer/wgpu", "iced_animate/wgpu"]
 # Software caches are composited through iced_tiny_skia's raster path, which
 # is behind its `image` feature.
-tiny-skia = ["dep:iced_tiny_skia", "dep:tiny-skia", "iced_renderer/tiny-skia", "iced_tiny_skia/image"]
+tiny-skia = ["dep:iced_tiny_skia", "dep:tiny-skia", "iced_renderer/tiny-skia", "iced_tiny_skia/image", "iced_animate/tiny-skia"]
 # Pass-throughs.
 crisp = ["iced_core/crisp"]
 web-colors = ["iced_renderer/web-colors"]
@@ -64,7 +64,7 @@ x11 = ["iced_renderer/x11"]
 wayland = ["iced_renderer/wayland"]
 image = ["iced_renderer/image"]
 svg = ["iced_renderer/svg"]
-canvas = ["iced_renderer/geometry"]
+canvas = ["iced_renderer/geometry", "iced_animate/geometry"]
 # Enables wgpu's validation layers (`InstanceFlags::debugging()`), like iced's
 # feature of the same name.
 strict-assertions = ["iced_renderer/strict-assertions"]

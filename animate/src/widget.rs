@@ -20,6 +20,8 @@
 
 pub use crate::host::{Host, host};
 #[cfg(feature = "geometry")]
+pub use crate::path_render::MeshSupport;
+#[cfg(feature = "geometry")]
 pub use crate::path_widget::{FillRule, LineCap, LineJoin, PathShape, PathSource, path};
 pub use crate::shape::{PixelSnap, Shape, shape};
 pub use crate::sized::{Sized, sized};
