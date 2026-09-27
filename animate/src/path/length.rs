@@ -28,6 +28,28 @@ pub(crate) struct ArcLength {
     first: Vec<usize>,
     samples: Vec<Sample>,
     length: f32,
+    /// Where each subpath starts and ends along the path, and whether it is
+    /// a closed loop: what a trim needs to tell how far a piece's two ends
+    /// are from meeting round the loop.
+    spans: Vec<Span>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    start: f32,
+    end: f32,
+    closed: bool,
+}
+
+/// One run of a trimmed path, within one subpath.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Piece {
+    /// The run itself, always open.
+    pub(crate) subpath: Subpath,
+    /// For a run of a closed loop, the length of the loop it leaves out:
+    /// how far its end is from meeting its start again. `None` on an open
+    /// subpath, whose ends never meet.
+    pub(crate) gap: Option<f32>,
 }
 
 impl ArcLength {
@@ -38,9 +60,11 @@ impl ArcLength {
             first: Vec::new(),
             samples: Vec::new(),
             length: 0.0,
+            spans: Vec::with_capacity(path.subpaths.len()),
         };
 
         for (sub, subpath) in path.subpaths.iter().enumerate() {
+            let start = table.length;
             for (index, segment) in subpath.segments.iter().enumerate() {
                 table.segments.push((sub, index));
                 table.first.push(table.samples.len());
@@ -59,6 +83,11 @@ impl ArcLength {
                     table.samples.push(Sample { t, s: table.length });
                 }
             }
+            table.spans.push(Span {
+                start,
+                end: table.length,
+                closed: subpath.closed,
+            });
         }
 
         table
@@ -138,14 +167,24 @@ impl ArcLength {
     /// a round cap would leave.
     #[allow(dead_code)] // used by the path widget (feature `geometry`, task 5)
     pub(crate) fn trim(&self, path: &PathData, u0: f32, u1: f32) -> Vec<Subpath> {
+        self.trim_pieces(path, u0, u1)
+            .into_iter()
+            .map(|piece| piece.subpath)
+            .collect()
+    }
+
+    /// [`trim`](Self::trim), with each run's [`gap`](Piece::gap) round its loop.
+    #[allow(dead_code)] // used by the path widget (feature `geometry`)
+    pub(crate) fn trim_pieces(&self, path: &PathData, u0: f32, u1: f32) -> Vec<Piece> {
         let (u0, u1) = (u0.clamp(0.0, 1.0), u1.clamp(0.0, 1.0));
         if u1 <= u0 || self.length <= 0.0 {
             return Vec::new();
         }
 
-        let (first, t0) = self.locate(u0 * self.length);
-        let (last, t1) = self.locate(u1 * self.length);
-        let mut out: Vec<Subpath> = Vec::new();
+        let (s0, s1) = (u0 * self.length, u1 * self.length);
+        let (first, t0) = self.locate(s0);
+        let (last, t1) = self.locate(s1);
+        let mut out: Vec<Piece> = Vec::new();
         let mut current = None;
 
         for segment in first..=last {
@@ -158,18 +197,57 @@ impl ArcLength {
             let piece = self.cubic(path, segment).subsegment(from, to);
             let sub = self.segments[segment].0;
             if current != Some(sub) {
-                out.push(Subpath {
-                    segments: Vec::new(),
-                    closed: false,
+                let span = self.spans[sub];
+                let covered = s1.min(span.end) - s0.max(span.start);
+                out.push(Piece {
+                    subpath: Subpath {
+                        segments: Vec::new(),
+                        closed: false,
+                    },
+                    gap: span
+                        .closed
+                        .then(|| ((span.end - span.start) - covered).max(0.0)),
                 });
                 current = Some(sub);
             }
             if let Some(open) = out.last_mut() {
-                open.segments.push(piece);
+                open.subpath.segments.push(piece);
             }
         }
 
         out
+    }
+
+    /// [`trim_pieces`](Self::trim_pieces) for a range that may begin before
+    /// zero on a path that is one closed loop: the part before zero is taken
+    /// from the end of the loop and continued across the loop's start into
+    /// the part after it, as one run. A light trail following something round
+    /// a loop keeps its length across the start this way instead of being cut
+    /// short there.
+    #[allow(dead_code)] // used by the path widget (feature `geometry`)
+    pub(crate) fn trim_around(&self, path: &PathData, u0: f32, u1: f32) -> Vec<Piece> {
+        let wraps = path.is_closed_loop() && u0 < 0.0 && u1 > 0.0 && u1 - u0 < 1.0;
+        if !wraps {
+            return self.trim_pieces(path, u0, u1);
+        }
+
+        let segments: Vec<Cubic> = self
+            .trim_pieces(path, u0 + 1.0, 1.0)
+            .into_iter()
+            .chain(self.trim_pieces(path, 0.0, u1))
+            .flat_map(|piece| piece.subpath.segments)
+            .collect();
+        if segments.is_empty() {
+            return Vec::new();
+        }
+
+        vec![Piece {
+            subpath: Subpath {
+                segments,
+                closed: false,
+            },
+            gap: Some(self.length * (1.0 - (u1 - u0))),
+        }]
     }
 }
 
@@ -323,6 +401,28 @@ mod tests {
         let straight = line(Point::ORIGIN, Point::new(0.0, 10.0));
         let tangent = ArcLength::new(&straight).tangent_at(&straight, 0.5);
         assert!(tangent.x.abs() < 1e-6 && (tangent.y - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_range_across_the_start_of_a_loop_is_one_continuous_run() {
+        let round = circle(10.0);
+        let table = ArcLength::new(&round);
+
+        let pieces = table.trim_around(&round, -0.25, 0.25);
+        assert_eq!(pieces.len(), 1, "one run across the start");
+        let run = &pieces[0];
+        for pair in run.subpath.segments.windows(2) {
+            assert!(pair[0].p3.distance(pair[1].p0) < 1e-3, "continuous");
+        }
+        let half = PathData::from_subpaths(vec![run.subpath.clone()]).unwrap();
+        let length = ArcLength::new(&half).length();
+        assert!((length - table.length() / 2.0).abs() < 0.1, "{length}");
+        assert!((run.gap.unwrap() - table.length() / 2.0).abs() < 1e-3);
+
+        let open = line(Point::ORIGIN, Point::new(10.0, 0.0));
+        let clamped = ArcLength::new(&open).trim_around(&open, -0.25, 0.25);
+        assert_eq!(clamped.len(), 1);
+        assert_eq!(clamped[0].gap, None, "an open path clamps as before");
     }
 
     #[test]

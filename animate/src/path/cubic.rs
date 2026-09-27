@@ -105,6 +105,36 @@ impl Cubic {
         before.split(t0 / t1).1
     }
 
+    /// The curve in four equal-parameter quarters, from three splits rather
+    /// than four independent sub-segments.
+    #[allow(dead_code)] // used by the path widget (feature "geometry")
+    pub(crate) fn quarters(&self) -> [Self; 4] {
+        let (half_a, half_b) = self.split(0.5);
+        let (a, b) = half_a.split(0.5);
+        let (c, d) = half_b.split(0.5);
+        [a, b, c, d]
+    }
+
+    /// Whether the segment is a straight line: both controls lie on the
+    /// chord (within a hundredth of a unit), as every `line_to` leaves them.
+    /// A projection maps a straight line to a straight line, so such a
+    /// segment needs neither splitting nor flattening.
+    #[allow(dead_code)] // used by the path widget (feature "geometry")
+    pub(crate) fn is_line(&self) -> bool {
+        const SLACK: f32 = 0.01;
+        let chord = self.p3 - self.p0;
+        let length = (chord.x * chord.x + chord.y * chord.y).sqrt();
+        let off = |p: Point| {
+            let d = p - self.p0;
+            if length > f32::EPSILON {
+                (d.x * chord.y - d.y * chord.x).abs() / length
+            } else {
+                (d.x * d.x + d.y * d.y).sqrt()
+            }
+        };
+        off(self.p1) <= SLACK && off(self.p2) <= SLACK
+    }
+
     /// The same curve, traversed from the other end.
     pub(crate) const fn reversed(&self) -> Self {
         Self::new(self.p3, self.p2, self.p1, self.p0)
@@ -282,5 +312,39 @@ mod tests {
         assert!((line.half_length_t() - 0.5).abs() < 1e-3);
         assert!((line.length() - 10.0).abs() < 1e-4);
         assert_eq!(Cubic::point(Point::ORIGIN).half_length_t(), 0.5);
+    }
+
+    #[test]
+    fn lines_are_told_from_curves() {
+        assert!(Cubic::line(Point::new(1.0, 2.0), Point::new(40.0, -3.0)).is_line());
+        assert!(Cubic::point(Point::new(5.0, 5.0)).is_line());
+        let bend = Cubic::new(
+            Point::ORIGIN,
+            Point::new(0.0, 10.0),
+            Point::new(10.0, 10.0),
+            Point::new(10.0, 0.0),
+        );
+        assert!(!bend.is_line());
+    }
+
+    #[test]
+    fn quarters_are_the_four_sub_segments() {
+        let curve = Cubic::new(
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 7.0),
+            Point::new(8.0, 9.0),
+            Point::new(10.0, 0.0),
+        );
+        for (i, quarter) in curve.quarters().iter().enumerate() {
+            let expected = curve.subsegment(i as f32 / 4.0, (i + 1) as f32 / 4.0);
+            for (a, b) in [
+                (quarter.p0, expected.p0),
+                (quarter.p1, expected.p1),
+                (quarter.p2, expected.p2),
+                (quarter.p3, expected.p3),
+            ] {
+                assert!(close_to(a, b), "quarter {i}: {a:?} vs {b:?}");
+            }
+        }
     }
 }

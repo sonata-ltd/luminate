@@ -23,13 +23,15 @@ pub use data::{PathBuilder, PathData, PathError};
 pub use fit::{Fit, Placement};
 pub use morph::Morph;
 pub use motion::MotionPath;
-pub use values::{DrawRange, Pose};
+pub use values::{DrawRange, Perspective, Pose, Projector};
 
 #[allow(unused_imports)] // not yet used outside `path`
 pub(crate) use cubic::Cubic;
 #[allow(unused_imports)] // used by the path widget (feature `geometry`)
 pub(crate) use data::Subpath;
 pub(crate) use length::ArcLength;
+#[allow(unused_imports)] // used by the path widget (feature `geometry`)
+pub(crate) use length::Piece;
 // Only the path widget (feature `geometry`) reaches `MorphDriver` through
 // this path; `morph`'s own tests use `super::MorphDriver` directly.
 #[cfg(feature = "geometry")]
