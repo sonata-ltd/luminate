@@ -219,6 +219,31 @@ mod gpu {
         }
     }
 
+    async fn find_adapter(
+        backends: wgpu::Backends,
+        window: impl compositor::Window + Clone,
+    ) -> Result<(wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter), iced_graphics::Error> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends,
+            flags: instance_flags(),
+            ..Default::default()
+        });
+
+        let surface = instance.create_surface(window).map_err(request_failed)?;
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::from_env()
+                    .unwrap_or(wgpu::PowerPreference::HighPerformance),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|e| request_failed(format!("no adapter: {e}")))?;
+
+        Ok((instance, surface, adapter))
+    }
+
     fn request_failed(reason: impl std::fmt::Display) -> iced_graphics::Error {
         iced_graphics::Error::GraphicsAdapterNotFound {
             backend: "wgpu",
@@ -292,35 +317,22 @@ mod gpu {
 
             let mut settings = iced_wgpu::Settings::from(settings);
 
-            if let Some(backends) = wgpu::Backends::from_env() {
-                settings.backends = backends;
-            }
-
             if let Some(present_mode) = iced_wgpu::settings::present_mode_from_env() {
                 settings.present_mode = present_mode;
             }
 
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                backends: settings.backends,
-                flags: instance_flags(),
-                ..wgpu::InstanceDescriptor::default()
-            });
-
-            let compatible_surface = instance
-                .create_surface(compatible_window)
-                .map_err(request_failed)?;
-
-            let adapter_options = wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::from_env()
-                    .unwrap_or(wgpu::PowerPreference::HighPerformance),
-                compatible_surface: Some(&compatible_surface),
-                force_fallback_adapter: false,
+            let (instance, compatible_surface, adapter) = match wgpu::Backends::from_env() {
+                Some(backends) => find_adapter(backends, compatible_window).await?,
+                None => {
+                    match find_adapter(wgpu::Backends::PRIMARY, compatible_window.clone()).await {
+                        Ok(found) => found,
+                        Err(e) => {
+                            log::info!("no primary-backend adapter ({e}), trying GL");
+                            find_adapter(wgpu::Backends::GL, compatible_window).await?
+                        }
+                    }
+                }
             };
-
-            let adapter = instance
-                .request_adapter(&adapter_options)
-                .await
-                .map_err(|error| request_failed(format!("no adapter: {error}")))?;
 
             log::info!("selected adapter: {:#?}", adapter.get_info());
 
