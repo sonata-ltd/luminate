@@ -29,9 +29,15 @@ iced_texture_cache = { workspace = true, features = ["svg"] }
 iced_page_router.workspace = true
 
 [dev-dependencies]
-# `selector` for `iced_test::Simulator::find`/`click`; every backend and
-# platform feature comes from this crate's own defaults.
-iced = { workspace = true, features = ["selector"] }
+# `selector` for `iced_test::Simulator::find`/`click`, `canvas` for the
+# overview's isometric page icons; every backend and platform feature comes
+# from this crate's own defaults.
+iced = { workspace = true, features = ["selector", "canvas"] }
+# The renderers the example runs on implement the canvas geometry traits only
+# with this crate's `canvas`.
+iced_texture_cache = { workspace = true, features = ["canvas"] }
+# The overview's motion and SVG toolset pages draw with `animate::widget::path`.
+iced_animate = { workspace = true, features = ["geometry", "svg-path"] }
 iced_test.workspace = true
 luminate_examples_support = { workspace = true, features = ["texture"] }
 # The version iced 0.14's text stack resolves (Cargo.lock: 0.23.0);
@@ -88,10 +94,12 @@ all-features = true
 [[example]]
 name = "overview"
 path = "examples/overview/main.rs"
-# Opens a window (`wgpu` backend) and registers the bundled Inter faces.
-# `canvas` draws the isometric page icons. Cargo only compiles an example by
-# default; `test = true` also runs the geometry unit tests inside it.
-required-features = ["wgpu", "bundled-font", "tokio", "canvas"]
+# Opens a window (`wgpu` backend) and registers the bundled Inter faces; all
+# three are default features, so a plain `cargo run --example overview` works.
+# What the `canvas` feature would add comes from `[dev-dependencies]`. Cargo
+# only compiles an example by default; `test = true` also runs the geometry
+# unit tests inside it.
+required-features = ["wgpu", "bundled-font", "tokio"]
 test = true
 
 [[bench]]
