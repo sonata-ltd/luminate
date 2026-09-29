@@ -48,5 +48,11 @@ run cargo deny check
 # fails until the others are on crates.io) and verifies every package builds
 # from its packaged files (fonts and OFL.txt included).
 run cargo publish --dry-run -p iced_animate -p iced_texture_cache -p iced_page_router -p iced_luminate --allow-dirty
+# docs.rs-equivalent builds: each crate alone with its docs.rs feature set, so
+# a backend without a Linux platform feature is caught here.
+RUSTDOCFLAGS="-D warnings" run cargo doc -p iced_animate --no-deps --all-features
+RUSTDOCFLAGS="-D warnings" run cargo doc -p iced_texture_cache --no-deps --features wgpu,tiny-skia,image,svg,canvas
+RUSTDOCFLAGS="-D warnings" run cargo doc -p iced_page_router --no-deps --all-features
+RUSTDOCFLAGS="-D warnings" run cargo doc -p iced_luminate --no-deps --all-features
 
 echo "ci: ok"
