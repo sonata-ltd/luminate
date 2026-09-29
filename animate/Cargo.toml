@@ -50,6 +50,11 @@ geometry = ["dep:iced_graphics", "iced_graphics/geometry", "dep:iced_renderer"]
 # any iced application's build that uses those backends.
 wgpu = ["dep:iced_wgpu", "dep:lyon_tessellation"]
 tiny-skia = ["dep:iced_tiny_skia"]
+# Pass-throughs to `iced_tiny_skia`: on Linux its softbuffer presenter refuses
+# to build without a platform, so `--all-features` (and docs.rs) needs one.
+# An iced application already enables these through `iced`.
+x11 = ["iced_tiny_skia?/x11"]
+wayland = ["iced_tiny_skia?/wayland"]
 
 [package.metadata.docs.rs]
 all-features = true

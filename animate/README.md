@@ -173,6 +173,9 @@ widget needs the `geometry` feature and a renderer with iced's `canvas`.
   application's iced uses. With `wgpu`, a path seen through a moving
   `.perspective(...)` is tessellated once in the flat and only its vertices
   are projected per frame.
+- `x11`, `wayland` — pass-throughs to `iced_tiny_skia`, which on Linux does
+  not build without a platform. An iced application already enables them
+  through `iced`; they matter only when the crate is built alone.
 
 ## Limitations
 
