@@ -68,6 +68,28 @@ The first release. What each crate provides:
   time, `gap` between runs; a forever track is collected like a settled one.
 - Widgets `widget::{Shape, Sized, Host}` with `shape()`, `sized()`, `host()`
   (under `widget` only; the engine and value types live at the root).
+- `Sized` starts as fluid as its content, the way an iced `Container` does:
+  it fills an axis the content fills and shrinks to fit it otherwise, so
+  `sized(progress_bar(..))` is as wide as the bar would be on its own
+  rather than laid out compressed to nothing. A content's fixed size is not
+  inherited, which is what leaves room for the padding around it.
+- `Sized::{offset, offset_x, offset_y}`: moves the content where it is
+  drawn, leaving the layout and the siblings alone, so an animated offset
+  costs a redraw per frame and never a relayout (`Tier::Paint`). Pointer
+  input and overlays follow the content; under a `collapse` the clip stays
+  with the box. A non-finite component is drawn as `0.0`.
+- `Sized::pixel_snap`: while its size, padding or collapse animates, the
+  box moves in whole device pixels, on a grid through where it rested for
+  the first half of the way and through its target for the second, so it
+  leaves and lands exactly and the one fractional step falls mid-motion.
+  Text sits on whole device pixels vertically and everything else does
+  not, so a gliding layout moves its text in jumps against its own
+  background; snapped, both take the same steps. `scale_factor`,
+  `set_scale_factor`, `snap_toward` and `snap_between` expose the device
+  pixel it snaps to; `iced_texture_cache`'s renderer publishes the scale
+  factor of every frame it presents, the application's own scale included.
+- `Sized` keeps a content's `FillPortion` rather than widening it to
+  `Fill` as an iced `Container` does.
 - `Shape::pixel_snap(PixelSnap::{Auto, Always, Never})`: when the quad is
   rounded to the pixel grid. iced's `crisp` feature rounds *both* edges of a
   quad, so a moving one changes size in whole-pixel lurches — but switching
