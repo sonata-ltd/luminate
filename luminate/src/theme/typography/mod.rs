@@ -285,8 +285,9 @@ impl TextStyle {
     /// is interpolated, and beyond either end it keeps that end's ratio; it
     /// is then rounded to a whole pixel for the reason the scale authors
     /// whole pixels. So a size the scale names gets exactly the line height
-    /// the scale gives it, and an animated size between two steps moves its
-    /// line box a pixel at a time.
+    /// the scale gives it, and a size at rest between two steps still sits
+    /// on a whole-pixel line box. A size that is *moving* wants
+    /// [`resized_exact`](Self::resized_exact) instead.
     ///
     /// A style whose line height is off the scale keeps its distance from
     /// it, which is what makes `style.resized(style.size) == style`.
@@ -296,11 +297,36 @@ impl TextStyle {
             return self;
         }
 
+        let exact = self.resized_exact(size);
+
+        Self {
+            line_height: exact.line_height.round().max(1.0),
+            ..exact
+        }
+    }
+
+    /// [`resized`](Self::resized) without rounding the line height to a
+    /// whole pixel.
+    ///
+    /// For a size in motion. Rounded, a line box grows a pixel at a time:
+    /// between two sizes a few frames apart it stands still and then jumps,
+    /// and everything laid out after it jumps with it, which reads as an
+    /// animation running at a fraction of the frame rate. Unrounded, it grows
+    /// with the size, frame by frame.
+    ///
+    /// On a step of the scale the two agree exactly, so a size that comes to
+    /// rest there can switch to `resized` without a visible change.
+    #[must_use]
+    pub fn resized_exact(self, size: f32) -> Self {
+        if size == self.size || !size.is_finite() || size <= 0.0 {
+            return self;
+        }
+
         let offset = self.line_height - scale_line_height(self.size);
 
         Self {
             size,
-            line_height: (scale_line_height(size) + offset).round().max(1.0),
+            line_height: (scale_line_height(size) + offset).max(1.0),
             ..self
         }
     }
@@ -560,6 +586,64 @@ mod tests {
             26.0,
             "a line height off the scale keeps its distance from it"
         );
+    }
+
+    /// A size that comes to rest on a step of the scale must be able to
+    /// switch from the exact line box to the rounded one without a visible
+    /// change.
+    #[test]
+    fn exact_and_rounded_resizing_agree_on_every_step() {
+        let from = TextStyle::text(TextSize::Sm, Weight::Medium);
+
+        for style in every_style() {
+            assert_eq!(
+                from.resized_exact(style.size),
+                from.resized(style.size),
+                "{} px",
+                style.size
+            );
+        }
+    }
+
+    #[test]
+    fn exact_resizing_keeps_the_fraction_of_a_pixel() {
+        let body = TextStyle::text(TextSize::Md, Weight::Normal);
+
+        // 16/24 and 18/28: a quarter of the way is half a pixel of line box.
+        assert_eq!(body.resized_exact(16.25).line_height, 24.5);
+        assert_eq!(body.resized(16.25).line_height, 25.0);
+    }
+
+    /// The point of the exact variant: an animated size moves its line box a
+    /// little on every frame, never a whole pixel after several still ones.
+    #[test]
+    fn exact_resizing_grows_the_line_box_continuously() {
+        let body = TextStyle::text(TextSize::Md, Weight::Normal);
+        let mut previous = body.resized_exact(16.0).line_height;
+
+        for hundredth in 1601..=2000 {
+            let line_height = body.resized_exact(hundredth as f32 / 100.0).line_height;
+            let grew = line_height - previous;
+
+            assert!(
+                (0.0..0.05).contains(&grew),
+                "{} px: the line box grew by {grew}",
+                hundredth as f32 / 100.0
+            );
+            previous = line_height;
+        }
+    }
+
+    #[test]
+    fn exact_resizing_to_its_own_size_is_the_identity() {
+        let custom = TextStyle {
+            line_height: 22.5,
+            ..TextStyle::text(TextSize::Md, Weight::Normal)
+        };
+
+        assert_eq!(custom.resized_exact(16.0), custom);
+        assert_eq!(custom.resized_exact(f32::NAN), custom);
+        assert_eq!(custom.resized_exact(-1.0), custom);
     }
 
     #[test]
