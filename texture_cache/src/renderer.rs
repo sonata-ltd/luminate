@@ -144,8 +144,12 @@ macro_rules! half {
                 &mut self.inner
             }
 
+            /// Adopts the scale factor of the frame being presented, and
+            /// publishes it to `iced_animate`, whose pixel-snapped layout
+            /// has no other way to learn how large a device pixel is.
             pub(crate) fn set_scale_factor(&mut self, scale_factor: f32) {
                 self.scale_factor = scale_factor;
+                iced_animate::set_scale_factor(scale_factor);
             }
         }
 
@@ -313,7 +317,7 @@ macro_rules! half {
                 background_color: Color,
             ) -> Vec<u8> {
                 self.store.begin_frame();
-                self.scale_factor = scale_factor;
+                self.set_scale_factor(scale_factor);
                 Headless::screenshot(&mut self.inner, size, scale_factor, background_color)
             }
         }
