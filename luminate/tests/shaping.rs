@@ -6,12 +6,14 @@
 //! spaced like Regular and no pair is kerned — glyphs drawn Semibold sitting
 //! on Regular spacing. These tests pin the two properties that go missing.
 //!
-//! The rest of the file is the other half of the same story: `weighted_text`
+//! The rest of the file is the other half of the same story: `animated_text`
 //! reaches past `iced::font::Weight`'s nine variants to the `wght` axis
 //! itself, and these tests pin that a weight between two declared ones is
 //! really drawn between them, that a settled animation lands on exactly the
 //! width the stock widget would have laid out, and that each layout policy
-//! costs the tier it claims.
+//! costs the tier it claims. The size tests pin the same for a size: a live
+//! one starts and ends on the stock widget's boxes, and a scaled one keeps
+//! its target's box and is still drawn at the size of the moment.
 //!
 //! [`Shaping::Auto`]: iced_luminate::iced::widget::text::Shaping::Auto
 
@@ -31,7 +33,7 @@ use iced_luminate::iced::{self, Color, Event, Rectangle, Size, mouse, window};
 use iced_luminate::texture::testing::headless_tiny_skia;
 use iced_luminate::theme::Theme;
 use iced_luminate::theme::typography::{DisplaySize, FAMILY, TextSize, TextStyle, styled_text};
-use iced_luminate::widget::weighted_text::{WeightLayout, weighted_text};
+use iced_luminate::widget::animated_text::{SizeLayout, WeightLayout, animated_text};
 use iced_luminate::{Element, Luminate, Renderer};
 use iced_test::Simulator;
 use iced_test::runtime::user_interface::{self, UserInterface};
@@ -109,11 +111,11 @@ fn weighted_width(content: &'static str, style: TextStyle, weight: f32) -> f32 {
     let _guard = one_at_a_time();
     load_fonts();
 
-    let root: Element<'_, ()> = weighted_text(content, style)
+    let root: Element<'_, ()> = animated_text(content, style)
         .weight(weight)
         // A step of one leaves the requested weight exactly as it is, so the
         // measurement is of the weight the test asked for.
-        .step(1.0)
+        .weight_step(1.0)
         .into();
     let mut ui: Simulator<'_, (), Theme, Renderer> =
         Simulator::with_size(iced::Settings::default(), Size::new(600.0, 400.0), root);
@@ -187,7 +189,7 @@ fn moving_width(weight: &Anim<f32>, policy: WeightLayout) -> f32 {
     let _guard = one_at_a_time();
     load_fonts();
 
-    let root: Element<'_, ()> = weighted_text(CONTENT, MOVING_STYLE)
+    let root: Element<'_, ()> = animated_text(CONTENT, MOVING_STYLE)
         .weight(weight.clone())
         .weight_layout(policy)
         .into();
@@ -297,9 +299,9 @@ fn a_moving_weight_is_rounded_to_its_step() {
     let mut widths: Vec<u32> = Vec::new();
 
     for _ in 0..24 {
-        let root: Element<'_, ()> = weighted_text(CONTENT, MOVING_STYLE)
+        let root: Element<'_, ()> = animated_text(CONTENT, MOVING_STYLE)
             .weight(weight.clone())
-            .step(100.0)
+            .weight_step(100.0)
             .into();
         let mut ui: Simulator<'_, (), Theme, Renderer> =
             Simulator::with_size(iced::Settings::default(), Size::new(600.0, 400.0), root);
@@ -329,16 +331,20 @@ fn a_moving_weight_is_rounded_to_its_step() {
 /// The ink `content` puts on screen at `weight`: how many pixels the software
 /// backend darkened, drawing through `fill_raw`.
 fn ink(weight: f32) -> usize {
+    ink_of(
+        animated_text(CONTENT, TextStyle::display(DisplaySize::Sm, Weight::Normal))
+            .weight(weight)
+            .weight_step(1.0)
+            .into(),
+    )
+}
+
+/// How many pixels the software backend darkened drawing `root`.
+fn ink_of(root: Element<'_, ()>) -> usize {
     const SIZE: Size = Size::new(400.0, 120.0);
 
     let _guard = one_at_a_time();
     load_fonts();
-
-    let root: Element<'_, ()> =
-        weighted_text(CONTENT, TextStyle::display(DisplaySize::Sm, Weight::Normal))
-            .weight(weight)
-            .step(1.0)
-            .into();
 
     let mut renderer = headless_tiny_skia();
     let mut ui: UserInterface<'_, (), Theme, Renderer> =
@@ -401,6 +407,162 @@ fn an_intermediate_weight_is_drawn_and_not_only_measured() {
          means the rasterizer drew the face's declared instance and not the \
          weight on the axis"
     );
+}
+
+/// The box the kit lays `CONTENT` out in, in `style`, through the stock
+/// widget.
+fn stock_box(style: TextStyle) -> Size {
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let root: Element<'_, ()> = styled_text(CONTENT, style).into();
+    let mut ui: Simulator<'_, (), Theme, Renderer> =
+        Simulator::with_size(iced::Settings::default(), Size::new(600.0, 400.0), root);
+
+    ui.find(CONTENT)
+        .expect("the text is on screen")
+        .bounds()
+        .size()
+}
+
+/// The box the widget lays `CONTENT` out in right now, with `size` bound
+/// under `policy`.
+fn sized_box(size: &Anim<f32>, policy: SizeLayout) -> Size {
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let root: Element<'_, ()> = animated_text(CONTENT, SMALL)
+        .size(size.clone())
+        .size_layout(policy)
+        .into();
+    let mut ui: Simulator<'_, (), Theme, Renderer> =
+        Simulator::with_size(iced::Settings::default(), Size::new(600.0, 400.0), root);
+
+    ui.find(CONTENT)
+        .expect("the text is on screen")
+        .bounds()
+        .size()
+}
+
+const SMALL: TextStyle = TextStyle::text(TextSize::Sm, Weight::Medium);
+const LARGE: TextStyle = TextStyle::text(TextSize::Lg, Weight::Medium);
+
+/// A live size grows the line in both dimensions, and starts and ends on
+/// exactly the boxes the stock widget gives the two steps of the scale: the
+/// handover to and from a resting label would show as a jump otherwise.
+#[test]
+fn a_live_size_grows_the_line_between_two_steps() {
+    let (motion, size) = moving(SMALL.size, LARGE.size);
+    let mut clock = FrameClock::new(&motion);
+
+    let start = sized_box(&size, SizeLayout::Live);
+
+    let _ = clock.run(4);
+    let middle = sized_box(&size, SizeLayout::Live);
+
+    let _ = clock.run(120);
+    let end = sized_box(&size, SizeLayout::Live);
+
+    assert_eq!(start, stock_box(SMALL), "the line starts at 14 px");
+    assert!(
+        start.width < middle.width && middle.width < end.width,
+        "the line went {} → {} → {} px wide",
+        start.width,
+        middle.width,
+        end.width
+    );
+    assert!(
+        start.height <= middle.height && middle.height <= end.height,
+        "the line box went {} → {} → {} px tall",
+        start.height,
+        middle.height,
+        end.height
+    );
+    assert_eq!(
+        end,
+        stock_box(LARGE),
+        "and settles on exactly the box `TextSize::Lg` has, line height included"
+    );
+}
+
+/// A scaled size keeps the box it is heading for from the first frame.
+#[test]
+fn a_scaled_size_keeps_the_box_it_is_heading_for() {
+    let (motion, size) = moving(SMALL.size, LARGE.size);
+    let mut clock = FrameClock::new(&motion);
+
+    let start = sized_box(&size, SizeLayout::Scaled);
+
+    let _ = clock.run(4);
+    let middle = sized_box(&size, SizeLayout::Scaled);
+
+    let _ = clock.run(120);
+    let end = sized_box(&size, SizeLayout::Scaled);
+
+    assert_eq!(start, middle, "the reserved box moved mid-animation");
+    assert_eq!(middle, end, "and did not settle on the box it reserved");
+    assert_eq!(start, stock_box(LARGE), "the box is the target size's");
+}
+
+#[test]
+fn each_size_policy_marks_the_tier_it_reads_at() {
+    let (_motion, live) = moving(SMALL.size, LARGE.size);
+    let _ = sized_box(&live, SizeLayout::Live);
+
+    assert_eq!(live.tier(), Some(Tier::Layout));
+
+    let (_motion, scaled) = moving(SMALL.size, LARGE.size);
+    let _ = sized_box(&scaled, SizeLayout::Scaled);
+
+    assert_eq!(
+        scaled.tier(),
+        Some(Tier::Paint),
+        "a scaled size never moves the layout, so it costs a redraw"
+    );
+}
+
+/// A scaled line is laid out at its target but must be *drawn* at the size
+/// of the moment. A line heading down from 30 px to 18 px draws, on its
+/// first frame, as much ink as a line resting at 30 px — and far more than
+/// its laid-out 18 px box holds — on both paths: the paragraph's while the
+/// weight rests, and the raw buffer's while it moves.
+#[test]
+fn a_scaled_size_is_drawn_at_the_size_of_the_moment() {
+    let style = TextStyle::text(TextSize::Lg, Weight::Normal);
+
+    let at = |size: f32| ink_of(animated_text(CONTENT, style).size(size).into());
+    let (large, small) = (at(30.0), at(18.0));
+
+    let (_motion, size) = moving(30.0, 18.0);
+    let paragraph = ink_of(
+        animated_text(CONTENT, style)
+            .size(size.clone())
+            .size_layout(SizeLayout::Scaled)
+            .into(),
+    );
+
+    let (_weights, weight) = moving(400.0, 500.0);
+    let raw = ink_of(
+        animated_text(CONTENT, style)
+            .size(size)
+            .size_layout(SizeLayout::Scaled)
+            .weight(weight)
+            .into(),
+    );
+
+    assert!(
+        large > small,
+        "30 px darkened {large} pixels and 18 px {small}"
+    );
+
+    for (path, ink) in [("paragraph", paragraph), ("raw", raw)] {
+        assert!(
+            ink.abs_diff(large) < ink.abs_diff(small),
+            "the scaled {path} path darkened {ink} pixels, closer to 18 px's \
+             {small} than to 30 px's {large}: the scale never reached the \
+             renderer"
+        );
+    }
 }
 
 /// The family every round hundred has to be shaped in.

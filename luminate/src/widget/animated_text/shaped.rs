@@ -1,5 +1,4 @@
-//! The shaped buffer behind [`WeightedText`](super::WeightedText), and the
-//! quantisation that keeps the number of font instances behind it finite.
+//! The shaped buffer behind [`AnimatedText`](super::AnimatedText).
 
 use std::sync::Arc;
 
@@ -9,67 +8,6 @@ use iced::advanced::text::{Alignment, Shaping, Wrapping};
 use iced::font::Style;
 
 use crate::theme::typography::{FAMILY, TextStyle};
-
-/// The lightest weight the `wght` axis carries.
-pub const MIN: f32 = 100.0;
-
-/// The heaviest weight the `wght` axis carries.
-pub const MAX: f32 = 900.0;
-
-/// The step an animated weight is rounded to when none is given, in `wght`
-/// units.
-///
-/// A step is invisible while it moves the stem by well under a pixel, so the
-/// larger the text the finer the step has to be: `250 / size`, bounded to a
-/// sane range. 14 px gets 18 units, 36 px gets 7, 72 px gets 3.
-///
-/// The step is what keeps the cost of an animation bounded. Every distinct
-/// weight is a miss in cosmic-text's `(face, weight)` font cache and a fresh
-/// `Font`: the face parsed again and its shaper tables rebuilt. A 500 → 600
-/// transition at 14 px asks for about six instances instead of one per frame,
-/// and every later transition between the same two weights reuses them.
-#[must_use]
-pub fn default_step(size: f32) -> f32 {
-    if size.is_finite() && size > 0.0 {
-        (250.0 / size).round().clamp(2.0, 20.0)
-    } else {
-        20.0
-    }
-}
-
-/// Rounds `weight` to a multiple of `step` on a grid anchored at `target`.
-///
-/// Anchoring at the target rather than at zero is what makes the end of an
-/// animation exact: a settled track reads `weight == target` and quantises to
-/// it unchanged, so a label resting at 600 is drawn at exactly 600 — the
-/// weight `DECLARED_WEIGHTS` declares and the static text path would use.
-/// Quantising on an absolute grid would land it on 594 and the handover would
-/// pop.
-///
-/// Off-grid by up to half a step at the *start* of the animation is the price,
-/// and half a step is invisible by construction of [`default_step`].
-#[must_use]
-pub fn quantize(weight: f32, target: f32, step: f32) -> u16 {
-    let target = if target.is_finite() {
-        target.clamp(MIN, MAX)
-    } else {
-        400.0
-    };
-
-    if !weight.is_finite() {
-        return target as u16;
-    }
-
-    let step = if step.is_finite() && step >= 1.0 {
-        step
-    } else {
-        1.0
-    };
-
-    let steps = ((weight - target) / step).round();
-
-    steps.mul_add(step, target).clamp(MIN, MAX) as u16
-}
 
 /// A `cosmic_text::Buffer` and the inputs it was shaped from.
 ///
@@ -208,79 +146,4 @@ fn attributes(style: TextStyle, weight: u16) -> text::cosmic_text::Attrs<'static
             Style::Italic => text::cosmic_text::Style::Italic,
             Style::Oblique => text::cosmic_text::Style::Oblique,
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_settled_weight_quantises_to_itself() {
-        // The end of every animation must be exact: the rest weight is the
-        // one `DECLARED_WEIGHTS` declares and the static path would draw.
-        for target in [400.0, 500.0, 600.0, 700.0] {
-            assert_eq!(quantize(target, target, 18.0), target as u16);
-        }
-    }
-
-    #[test]
-    fn the_grid_is_anchored_at_the_target() {
-        assert_eq!(quantize(582.0, 600.0, 18.0), 582);
-        assert_eq!(quantize(564.0, 600.0, 18.0), 564);
-    }
-
-    #[test]
-    fn values_within_a_step_collapse() {
-        let a = quantize(541.0, 600.0, 18.0);
-        let b = quantize(546.0, 600.0, 18.0);
-
-        assert_eq!(a, b, "half a step either way is the same font instance");
-    }
-
-    #[test]
-    fn weights_outside_the_axis_are_clamped() {
-        assert_eq!(quantize(2000.0, 600.0, 18.0), 900);
-        assert_eq!(quantize(-5.0, 600.0, 18.0), 100);
-    }
-
-    /// A weight the caller cannot mean falls back to the one place that is
-    /// certainly meaningful — where the animation is going — rather than to
-    /// an end of the axis. `Anim` sanitises its own tracks, so this only ever
-    /// catches a hand-built handle.
-    #[test]
-    fn a_non_finite_weight_rests_at_the_target() {
-        assert_eq!(quantize(f32::NAN, 600.0, 18.0), 600);
-        assert_eq!(quantize(f32::INFINITY, 600.0, 18.0), 600);
-        assert_eq!(quantize(f32::NEG_INFINITY, 600.0, 18.0), 600);
-        assert_eq!(
-            quantize(f32::NAN, f32::NAN, 18.0),
-            400,
-            "and a target that is not a weight either falls back to Regular"
-        );
-    }
-
-    #[test]
-    fn a_degenerate_step_still_produces_a_weight() {
-        assert_eq!(quantize(550.0, 600.0, 0.0), 550);
-        assert_eq!(quantize(550.0, 600.0, f32::NAN), 550);
-    }
-
-    #[test]
-    fn bigger_text_gets_a_finer_step() {
-        assert!(
-            default_step(72.0) < default_step(14.0),
-            "a display size shows steps a caption hides"
-        );
-    }
-
-    #[test]
-    fn the_step_stays_in_range() {
-        for size in [1.0, 12.0, 14.0, 16.0, 36.0, 72.0, 400.0] {
-            let step = default_step(size);
-            assert!((2.0..=20.0).contains(&step), "{size} px gave {step}");
-        }
-
-        assert_eq!(default_step(f32::NAN), 20.0);
-        assert_eq!(default_step(0.0), 20.0);
-    }
 }

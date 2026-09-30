@@ -198,22 +198,30 @@ The first release. What each crate provides:
   DisplaySize, TypographyTheme, styled_text, FONT, FAMILY}`; bundled Inter
   (OFL-1.1) behind `bundled-font`.
 - Widgets `widget::{multi_border::MultiBorder, sidebar::Sidebar,
-  error_bubble::ErrorBubble, weighted_text::WeightedText}` with
-  `multi_border()`, `sidebar()`, `error_bubble()`, `weighted_text()`; every
+  error_bubble::ErrorBubble, animated_text::AnimatedText}` with
+  `multi_border()`, `sidebar()`, `error_bubble()`, `animated_text()`; every
   item has one public path.
-- `widget::weighted_text`: text drawn at an animated `wght`, the axis the
-  bundled Inter carries. `iced::Font` names nine weights and nothing between
-  them, so the widget shapes its own `cosmic_text::Buffer` at an arbitrary
-  `u16` weight and hands the renderer that buffer — which is what makes 437
-  and 612 reachable, and what `DECLARED_WEIGHTS` was always for.
+- `widget::animated_text`: text drawn at an animated weight and size.
+  `iced::Font` names nine weights and nothing between them, so while the
+  weight moves the widget shapes its own `cosmic_text::Buffer` at an
+  arbitrary `u16` weight and hands the renderer that buffer — which is what
+  makes 437 and 612 reachable, and what `DECLARED_WEIGHTS` was always for.
   `WeightLayout::{Live, Snapped}` chooses whether the line is measured at the
   weight of the moment (honest, `Tier::Layout`) or at the one it is heading
-  for (still, `Tier::Paint`). The weight is rounded to a `step` before it is
-  shaped, on a grid anchored at the target so a settled animation is exact:
-  every distinct weight is a font instance built and cached inside
+  for (still, `Tier::Paint`). The weight is rounded to a `weight_step` before
+  it is shaped, on a grid anchored at the target so a settled animation is
+  exact: every distinct weight is a font instance built and cached inside
   cosmic-text and an atlas entry per glyph, which is also why this is for
-  labels and not for running text. A weight that is not animating is drawn
-  through the ordinary paragraph path instead.
+  labels and not for running text. A size is rounded to a `size_step`
+  (`DEFAULT_SIZE_STEP`, a quarter pixel) the same way, and
+  `SizeLayout::{Live, Scaled}` either sets the line at the size of the moment
+  (`Tier::Layout`) or lays it out at its target and draws it scaled
+  (`Tier::Paint`, nothing reshaped). A weight that is not moving — a
+  constant, or a track that has settled on a named weight — is drawn
+  through the ordinary paragraph path, and so is a size moving on its own.
+- `TextStyle::resized`: the same style at another size, with the line height
+  the kit's scale gives that size, interpolated between steps and rounded to
+  a whole pixel.
 - Re-exports `iced`, `iced_animate` (as `animate`), `iced_page_router` (as
   `router`) and `iced_texture_cache` (as `texture`); `Element`, `Renderer`,
   `Router` aliases.

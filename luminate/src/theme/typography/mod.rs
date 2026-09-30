@@ -73,7 +73,7 @@ pub const FAMILY: &str = "Inter Variable";
 /// safe to animate through and the hundreds are the ones that must be
 /// declared.
 ///
-/// [`weighted_text`](crate::widget::weighted_text) is what asks for a weight
+/// [`animated_text`](crate::widget::animated_text) is what asks for a weight
 /// between them: [`TextStyle`] carries [`Weight`], which names nine weights
 /// and nothing in between, so animating along the axis needs a widget that
 /// shapes its own buffer.
@@ -278,6 +278,33 @@ impl TextStyle {
         self
     }
 
+    /// The same style at `size`, with the line height the kit's scale gives
+    /// that size.
+    ///
+    /// Between two steps of [`TextSize`] and [`DisplaySize`] the line height
+    /// is interpolated, and beyond either end it keeps that end's ratio; it
+    /// is then rounded to a whole pixel for the reason the scale authors
+    /// whole pixels. So a size the scale names gets exactly the line height
+    /// the scale gives it, and an animated size between two steps moves its
+    /// line box a pixel at a time.
+    ///
+    /// A style whose line height is off the scale keeps its distance from
+    /// it, which is what makes `style.resized(style.size) == style`.
+    #[must_use]
+    pub fn resized(self, size: f32) -> Self {
+        if size == self.size || !size.is_finite() || size <= 0.0 {
+            return self;
+        }
+
+        let offset = self.line_height - scale_line_height(self.size);
+
+        Self {
+            size,
+            line_height: (scale_line_height(size) + offset).round().max(1.0),
+            ..self
+        }
+    }
+
     /// The `iced::Font` for this style (family [`FAMILY`]).
     #[must_use]
     pub const fn font(self) -> Font {
@@ -317,6 +344,52 @@ impl TextStyle {
             .line_height(self.line_height())
             .shaping(Shaping::Advanced)
     }
+}
+
+/// Every step of the scale, body sizes then display sizes, as
+/// `(size, line height)`: in ascending order, since the display steps start
+/// above the largest body step.
+const SCALE: [(f32, f32); 11] = {
+    const fn step(Metrics { size, line_height }: Metrics) -> (f32, f32) {
+        (size, line_height)
+    }
+
+    [
+        step(TextSize::Xs.metrics()),
+        step(TextSize::Sm.metrics()),
+        step(TextSize::Md.metrics()),
+        step(TextSize::Lg.metrics()),
+        step(TextSize::Xl.metrics()),
+        step(DisplaySize::Xs.metrics()),
+        step(DisplaySize::Sm.metrics()),
+        step(DisplaySize::Md.metrics()),
+        step(DisplaySize::Lg.metrics()),
+        step(DisplaySize::Xl.metrics()),
+        step(DisplaySize::Xxl.metrics()),
+    ]
+};
+
+/// The line height the scale gives `size`, before rounding: interpolated
+/// between the two steps around it, or at the ratio of the nearest end.
+fn scale_line_height(size: f32) -> f32 {
+    let (first, last) = (SCALE[0], SCALE[SCALE.len() - 1]);
+
+    if size <= first.0 {
+        return size * first.1 / first.0;
+    }
+
+    if size >= last.0 {
+        return size * last.1 / last.0;
+    }
+
+    SCALE
+        .windows(2)
+        .find(|pair| size <= pair[1].0)
+        .map_or(size * last.1 / last.0, |pair| {
+            let ((below, low), (above, high)) = (pair[0], pair[1]);
+
+            (size - below).mul_add((high - low) / (above - below), low)
+        })
 }
 
 /// A text widget in `style`.
@@ -430,6 +503,63 @@ mod tests {
         assert_eq!((h.size, h.line_height), (72.0, 90.0));
         assert_eq!(h.font().weight, Weight::Bold);
         assert_eq!(h.line_height(), LineHeight::Absolute(Pixels(90.0)));
+    }
+
+    /// Resizing onto a step of the scale lands on that step exactly, line
+    /// height included: an animated size that settles there must match the
+    /// style the scale would have built.
+    #[test]
+    fn resizing_onto_a_step_gives_its_line_height() {
+        let from = TextStyle::text(TextSize::Sm, Weight::Medium);
+
+        for style in every_style() {
+            let resized = from.resized(style.size);
+
+            assert_eq!(
+                (resized.size, resized.line_height),
+                (style.size, style.line_height),
+                "{} px",
+                style.size
+            );
+            assert_eq!(resized.weight, Weight::Medium, "only the metrics change");
+        }
+    }
+
+    #[test]
+    fn resizing_between_steps_keeps_a_whole_pixel_line_box() {
+        let body = TextStyle::text(TextSize::Md, Weight::Normal);
+
+        for tenth in 60..=1000 {
+            let resized = body.resized(tenth as f32 / 10.0);
+
+            assert_eq!(
+                resized.line_height,
+                resized.line_height.trunc(),
+                "{} px has a fractional line height",
+                resized.size
+            );
+            assert!(resized.line_height >= resized.size, "{} px", resized.size);
+        }
+
+        // 17 px sits halfway between 16/24 and 18/28.
+        assert_eq!(body.resized(17.0).line_height, 26.0);
+    }
+
+    #[test]
+    fn resizing_to_its_own_size_is_the_identity() {
+        let custom = TextStyle {
+            line_height: 22.0,
+            ..TextStyle::text(TextSize::Md, Weight::Normal)
+        };
+
+        assert_eq!(custom.resized(16.0), custom);
+        assert_eq!(custom.resized(f32::NAN), custom);
+        assert_eq!(custom.resized(0.0), custom);
+        assert_eq!(
+            custom.resized(18.0).line_height,
+            26.0,
+            "a line height off the scale keeps its distance from it"
+        );
     }
 
     #[test]

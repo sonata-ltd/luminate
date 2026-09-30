@@ -77,10 +77,10 @@ macro_rules! catalog {
     };
 }
 
+pub mod animated_text;
 pub mod error_bubble;
 pub mod fading_scrollable;
 pub mod interaction_override;
 pub mod multi_border;
 pub mod sidebar;
 pub mod tabs;
-pub mod weighted_text;

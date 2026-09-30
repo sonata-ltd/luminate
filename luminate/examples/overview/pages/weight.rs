@@ -1,4 +1,4 @@
-//! `widget::weighted_text`: Inter's `wght` axis, animated.
+//! `widget::animated_text`: Inter's `wght` axis, animated.
 //!
 //! `iced::Font` names nine weights and nothing between them. The bundled
 //! Inter is a variable face, and everything below iced — the shaper, the
@@ -25,7 +25,7 @@ use iced_luminate::iced::font::Weight;
 use iced_luminate::iced::widget::{column, row, slider};
 use iced_luminate::router::{Action, Page, Registry};
 use iced_luminate::theme::typography::{DisplaySize, TextSize, TextStyle, styled_text};
-use iced_luminate::widget::weighted_text::weighted_text;
+use iced_luminate::widget::animated_text::animated_text;
 use iced_luminate::{Element, Luminate, Renderer, Theme};
 
 use crate::hero::Hero;
@@ -36,12 +36,14 @@ use crate::iso::scenes_flat;
 pub(crate) enum Message {
     /// The axis slider moved.
     Axis(f32),
+    Size(f32),
 }
 
 /// Inter's `wght` axis, by hand and animated.
 pub(crate) struct WeightPage {
     luminate: Luminate,
     axis: f32,
+    size: f32,
 }
 
 impl Page for WeightPage {
@@ -55,12 +57,14 @@ impl Page for WeightPage {
         Self {
             luminate: luminate.clone(),
             axis: 400.0,
+            size: 14.0,
         }
     }
 
     fn update(&mut self, message: Message) -> Action<Message> {
         match message {
             Message::Axis(weight) => self.axis = weight,
+            Message::Size(size) => self.size = size,
         }
         Action::none()
     }
@@ -83,17 +87,28 @@ impl WeightPage {
     fn axis(&self) -> Element<'_, Message> {
         column![
             column![
-                weighted_text(
+                animated_text(
                     "Freedom begins within.",
                     TextStyle::display(DisplaySize::Xs, Weight::Normal),
                 )
                 .weight(self.axis)
+                .size(self.size)
                 .width(Length::Fill)
                 .align_x(Alignment::Center),
                 row![
                     slider(100.0..=900.0, self.axis, Message::Axis).step(1.0_f32),
                     styled_text(
                         format!("{:.0}", self.axis),
+                        TextStyle::text(TextSize::Sm, Weight::Medium),
+                    )
+                    .width(40),
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center),
+                row![
+                    slider(5.0..=100.0, self.size, Message::Size).step(0.5_f32),
+                    styled_text(
+                        format!("{:.0}", self.size),
                         TextStyle::text(TextSize::Sm, Weight::Medium),
                     )
                     .width(40),
