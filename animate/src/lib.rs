@@ -16,6 +16,7 @@ mod length;
 mod path_render;
 #[cfg(feature = "geometry")]
 mod path_widget;
+mod pixel;
 mod repeat;
 mod set;
 mod shape;
@@ -28,6 +29,7 @@ pub use decay::Decay;
 pub use engine::{Motion, Presence, TickStatus};
 pub use key::MotionKey;
 pub use length::AnimLength;
+pub use pixel::{scale_factor, set_scale_factor, snap_between, snap_toward};
 pub use repeat::Repeat;
 pub use set::MotionSet;
 pub use spring::{Spring, SpringParams};
