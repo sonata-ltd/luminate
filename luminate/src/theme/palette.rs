@@ -98,8 +98,12 @@ pub struct Palette {
     pub black: Color,
     /// Strongest text colour: primary content, headers, typed input.
     pub text_primary: Color,
-    /// Secondary text: tertiary buttons, input labels and hints.
+    /// Secondary text: secondary buttons, input labels and hints.
     pub text_secondary: Color,
+    /// Tertiary text: tertiary buttons, input labels and hints.
+    pub text_tertiary: Color,
+    /// Quaternary text: quaternary buttons, input labels and hints.
+    pub text_quaternary: Color,
     /// Text of disabled controls.
     pub text_disabled: Color,
     /// Input placeholder text.
@@ -119,6 +123,8 @@ impl Palette {
         black: Color::BLACK,
         text_primary: ColorScale::GRAY.s900,
         text_secondary: ColorScale::GRAY.s700,
+        text_tertiary: ColorScale::GRAY.s600,
+        text_quaternary: ColorScale::GRAY.s500,
         text_disabled: ColorScale::GRAY.s300,
         text_placeholder: ColorScale::GRAY.s400,
         gray: ColorScale::GRAY,
@@ -135,6 +141,8 @@ impl Palette {
         black: Color::BLACK,
         text_primary: ColorScale::GRAY.s25,
         text_secondary: ColorScale::GRAY.s200,
+        text_tertiary: ColorScale::GRAY.s600,
+        text_quaternary: ColorScale::GRAY.s500,
         text_disabled: ColorScale::GRAY.s600,
         text_placeholder: ColorScale::GRAY.s400,
         gray: ColorScale::GRAY,
