@@ -15,14 +15,48 @@ pub const MAX_WEIGHT: f32 = 900.0;
 /// overshoots below it is held there.
 pub const MIN_SIZE: f32 = 1.0;
 
-/// The step an animated size is rounded to when none is given, in logical
-/// pixels.
+/// The coarsest step an animated size is rounded to when none is given, in
+/// logical pixels, and the step used before the line has been measured.
 ///
 /// A quarter of a pixel of font size moves a cap height by well under a
-/// fifth of a pixel at any size the kit sets, which reads as motion rather
-/// than as a stair. Every distinct size is a fresh raster of every glyph in
-/// the line, so the step is what bounds how many an animation asks for.
+/// fifth of a pixel at any size the kit sets. It is the ceiling rather than
+/// the step itself because a size also scales the whole *width* of the line:
+/// on a 200 px line at 20 px a quarter-pixel step moves the far end by 2.5
+/// px, a stair anyone can see. [`default_size_step`] takes the length of the
+/// line into account.
 pub const DEFAULT_SIZE_STEP: f32 = 0.25;
+
+/// The finest step an animated size is rounded to when none is given, in
+/// logical pixels.
+///
+/// Every distinct size is a fresh raster of every glyph in the line, so the
+/// step is what bounds how many an animation asks for; this is the floor a
+/// very long line cannot push it below.
+pub const MIN_SIZE_STEP: f32 = 1.0 / 64.0;
+
+/// How far one step of an animated size may move the far end of the line, in
+/// logical pixels.
+///
+/// A quarter of a pixel is below what reads as a jump at any speed; every
+/// frame of a moving line then differs from the last by at most that much.
+pub const SIZE_STEP_REACH: f32 = 0.25;
+
+/// The step an animated size is rounded to when none is given, for a line
+/// `em_width` ems wide (its width divided by its size).
+///
+/// Chosen so that one step moves the far end of the line by
+/// [`SIZE_STEP_REACH`], within [`MIN_SIZE_STEP`] and [`DEFAULT_SIZE_STEP`]. A
+/// 200 px line at 20 px is 10 em wide and gets a step of 0.025 px; a short
+/// label keeps the quarter pixel. A line not yet measured (`0.0`, or anything
+/// not finite) gets [`DEFAULT_SIZE_STEP`].
+#[must_use]
+pub fn default_size_step(em_width: f32) -> f32 {
+    if em_width.is_finite() && em_width > 0.0 {
+        (SIZE_STEP_REACH / em_width).clamp(MIN_SIZE_STEP, DEFAULT_SIZE_STEP)
+    } else {
+        DEFAULT_SIZE_STEP
+    }
+}
 
 /// The step an animated weight is rounded to when none is given, in `wght`
 /// units.
@@ -101,6 +135,27 @@ pub fn quantize_size(size: f32, target: f32, step: f32) -> f32 {
     let steps = ((size - target) / step).round();
 
     steps.mul_add(step, target).max(MIN_SIZE)
+}
+
+/// `step`, shrunk so that a whole number of it spans `from` to `target`.
+///
+/// Every grid here is anchored at the target, so the value an animation ends
+/// on is exact. The value it *starts* on is not, unless the distance is a
+/// multiple of the step: 16 → 20 px on a step of 0.0237 puts the first frame
+/// at 15.995 px, a line rasterised afresh at a size it never rested at, and
+/// the transition opens with a jump. Fitted, the grid passes through both
+/// ends, and the first frame is the text exactly as it stood. The step only
+/// ever shrinks — it is a ceiling on how coarse the grid may be — by less
+/// than one step spread over the whole span.
+#[must_use]
+pub fn fit_step(step: f32, from: f32, target: f32) -> f32 {
+    let span = (target - from).abs();
+
+    if step.is_finite() && step > 0.0 && span.is_finite() && span > 0.0 {
+        span / (span / step).ceil().max(1.0)
+    } else {
+        step
+    }
 }
 
 /// A weight step the grid can use: a whole `wght` unit or more.
@@ -228,5 +283,63 @@ mod tests {
     fn a_degenerate_size_step_falls_back_to_the_default() {
         assert_eq!(quantize_size(16.3, 18.0, 0.0), 16.25);
         assert_eq!(quantize_size(16.3, 18.0, f32::NAN), 16.25);
+    }
+
+    /// A fitted grid passes through where the motion started as well as
+    /// where it ends, so its first frame is the resting text.
+    #[test]
+    fn a_fitted_step_puts_the_start_on_the_grid() {
+        for (step, from, target) in [
+            (0.0237, 16.0, 20.0),
+            (0.25, 17.3, 14.0),
+            (13.0, 400.0, 500.0),
+        ] {
+            let fitted = fit_step(step, from, target);
+
+            assert!(
+                fitted <= step && fitted >= step / 1.5,
+                "{step} became {fitted}"
+            );
+            assert!(
+                (quantize_size(from, target, fitted) - from).abs() < 1e-3,
+                "{from} → {target} on {fitted} does not start at {from}"
+            );
+        }
+        assert_eq!(fit_step(0.25, 16.0, 16.0), 0.25, "no distance, no change");
+        assert!(
+            (fit_step(1.0, 400.0, 400.4) - 0.4).abs() < 1e-4,
+            "a span below one step is one step"
+        );
+    }
+
+    #[test]
+    fn a_size_step_moves_the_end_of_the_line_by_a_quarter_pixel() {
+        // A 200 px line at 20 px.
+        let em_width = 10.0;
+        let step = default_size_step(em_width);
+
+        assert!((step - 0.025).abs() < 1e-6, "{step}");
+        assert!((em_width * step - SIZE_STEP_REACH).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_size_step_stays_within_its_bounds() {
+        assert_eq!(
+            default_size_step(0.5),
+            DEFAULT_SIZE_STEP,
+            "a short label keeps the quarter pixel"
+        );
+        assert_eq!(
+            default_size_step(1_000.0),
+            MIN_SIZE_STEP,
+            "a long line cannot ask for a raster per hundredth of a pixel"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_line_gets_the_default_size_step() {
+        for em_width in [0.0, -3.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(default_size_step(em_width), DEFAULT_SIZE_STEP, "{em_width}");
+        }
     }
 }

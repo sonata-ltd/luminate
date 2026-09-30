@@ -225,25 +225,57 @@ The first release. What each crate provides:
   item has one public path.
 - `widget::animated_text`: text drawn at an animated weight and size.
   `iced::Font` names nine weights and nothing between them, so while the
-  weight moves the widget shapes its own `cosmic_text::Buffer` at an
-  arbitrary `u16` weight and hands the renderer that buffer — which is what
-  makes 437 and 612 reachable, and what `DECLARED_WEIGHTS` was always for.
+  weight moves the widget shapes its own `cosmic_text::Buffer` at an arbitrary
+  `u16` weight and hands the renderer that buffer — which is what makes 437
+  and 612 reachable, and what `DECLARED_WEIGHTS` was always for.
   `WeightLayout::{Live, Snapped}` chooses whether the line is measured at the
   weight of the moment (honest, `Tier::Layout`) or at the one it is heading
   for (still, `Tier::Paint`). The weight is rounded to a `weight_step` before
   it is shaped, on a grid anchored at the target so a settled animation is
   exact: every distinct weight is a font instance built and cached inside
   cosmic-text and an atlas entry per glyph, which is also why this is for
-  labels and not for running text. A size is rounded to a `size_step`
-  (`DEFAULT_SIZE_STEP`, a quarter pixel) the same way, and
-  `SizeLayout::{Live, Scaled}` either sets the line at the size of the moment
-  (`Tier::Layout`) or lays it out at its target and draws it scaled
-  (`Tier::Paint`, nothing reshaped). A weight that is not moving — a
-  constant, or a track that has settled on a named weight — is drawn
-  through the ordinary paragraph path, and so is a size moving on its own.
+  labels and not for running text. A size is rounded to a `size_step` the same
+  way; by default the step follows the length of the line
+  (`default_size_step`), so one step moves its far end by at most
+  `SIZE_STEP_REACH` (a quarter pixel), between `MIN_SIZE_STEP` and
+  `DEFAULT_SIZE_STEP`. Both steps are fitted to the distance from where the
+  text rested to where it is heading (`fit_step`), so the grid passes through
+  the start as well as the target and the first frame of a transition is the
+  resting text exactly. While a `Live` size moves, its line box is left
+  unrounded, so it and everything after it grow smoothly rather than a whole
+  pixel at a time, corrected towards each end's rounding so it starts and ends
+  on the resting line box. `SizeLayout::{Live, Scaled, Composited}` either
+  sets the line at the size of the moment (`Tier::Layout`), lays it out at its
+  target and draws it scaled (`Tier::Paint`, nothing reshaped), or records it
+  once as it was and once as it will be and composites every frame in between
+  from the two textures: scaled, stretched to a line box interpolated between
+  the two, and cross-faded, for the size and the weight alike. A composited
+  transition reshapes and rasterises nothing per frame, and near either end
+  draws its texture 1:1 on the device grid at the live text's sub-pixel phase,
+  so it starts and ends on the resting text to the pixel. A weight that is not
+  moving — a constant, or a track that has settled on a named weight — is
+  drawn through the ordinary paragraph path, and so is a size moving on its
+  own.
+- `AnimatedText::opacity`: fades the text where it is drawn — the alpha of
+  its colour on the paragraph and shaped paths, the opacity of the textures
+  of a composited transition — for a redraw per frame and no relayout
+  (`Tier::Paint`). Unlike fading it inside a `Cached`, the text stays live:
+  it does not shift as a texture takes over, and a size or weight animating
+  underneath keeps animating.
+- `AnimatedText::pixel_snap`: while the size moves, the line box grows or
+  shrinks in whole device pixels, leaving exactly from the height it
+  rested at and landing exactly on the one it rests at, so the rows below
+  a label that changes size move in step with the text in them, as
+  `Sized::pixel_snap` does for any box. Height only, under
+  `SizeLayout::{Live, Composited}`, at the renderer's own scale factor
+  where it has one.
+- `AnimatedTextRenderer`: what `AnimatedText` draws with. The kit's
+  `Renderer` composites `SizeLayout::Composited` transitions; any other
+  renderer that draws text, iced's own included, draws them live.
 - `TextStyle::resized`: the same style at another size, with the line height
   the kit's scale gives that size, interpolated between steps and rounded to
-  a whole pixel.
+  a whole pixel; `TextStyle::resized_exact` leaves it unrounded, for a size
+  in motion.
 - Re-exports `iced`, `iced_animate` (as `animate`), `iced_page_router` (as
   `router`) and `iced_texture_cache` (as `texture`); `Element`, `Renderer`,
   `Router` aliases.

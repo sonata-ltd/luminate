@@ -33,7 +33,7 @@ use iced_luminate::iced::{self, Color, Event, Rectangle, Size, mouse, window};
 use iced_luminate::texture::testing::headless_tiny_skia;
 use iced_luminate::theme::Theme;
 use iced_luminate::theme::typography::{DisplaySize, FAMILY, TextSize, TextStyle, styled_text};
-use iced_luminate::widget::animated_text::{SizeLayout, WeightLayout, animated_text};
+use iced_luminate::widget::animated_text::{AnimatedText, SizeLayout, WeightLayout, animated_text};
 use iced_luminate::{Element, Luminate, Renderer};
 use iced_test::Simulator;
 use iced_test::runtime::user_interface::{self, UserInterface};
@@ -485,6 +485,27 @@ fn a_live_size_grows_the_line_between_two_steps() {
     );
 }
 
+/// Between the two steps the line box follows the size to a fraction of a
+/// pixel. Rounded, it would stand still for several frames and then jump a
+/// whole pixel, and move everything laid out after it by as much.
+#[test]
+fn a_live_size_moves_its_line_box_by_fractions_of_a_pixel() {
+    let (motion, size) = moving(SMALL.size, LARGE.size);
+    let mut clock = FrameClock::new(&motion);
+
+    let heights: Vec<f32> = (0..12)
+        .map(|_| {
+            let _ = clock.run(1);
+            sized_box(&size, SizeLayout::Live).height
+        })
+        .collect();
+
+    assert!(
+        heights.iter().any(|height| height.fract() != 0.0),
+        "every frame sat on a whole pixel: {heights:?}"
+    );
+}
+
 /// A scaled size keeps the box it is heading for from the first frame.
 #[test]
 fn a_scaled_size_keeps_the_box_it_is_heading_for() {
@@ -633,4 +654,916 @@ fn every_round_hundred_is_shaped_in_the_kits_family() {
          declare loses the face to whatever other installed family declares it \
          exactly"
     );
+}
+
+/// The window the composited tests draw into.
+const WINDOW: Size = Size::new(400.0, 120.0);
+
+/// Draws `root` on the software backend, keeping the widget state across
+/// calls in `cache`, and returns the pixels with the cache to pass on.
+fn frame(
+    root: Element<'_, ()>,
+    cache: user_interface::Cache,
+    renderer: &mut Renderer,
+) -> (Vec<u8>, user_interface::Cache) {
+    let mut ui: UserInterface<'_, (), Theme, Renderer> =
+        UserInterface::build(root, WINDOW, cache, renderer);
+
+    renderer.reset(Rectangle::with_size(WINDOW));
+    ui.draw(
+        renderer,
+        &Theme::default(),
+        &renderer::Style {
+            text_color: Color::BLACK,
+        },
+        mouse::Cursor::Unavailable,
+    );
+
+    let rgba = renderer.screenshot(
+        Size::new(WINDOW.width as u32, WINDOW.height as u32),
+        1.0,
+        Color::WHITE,
+    );
+
+    (rgba, ui.into_cache())
+}
+
+/// `root` at a fractional position, as text sits after an animated icon:
+/// off the device grid on both axes, so a texture that ignored the live
+/// text's sub-pixel phase would land its glyphs in the wrong place.
+fn off_the_grid(root: Element<'static, ()>) -> Element<'static, ()> {
+    use iced_luminate::iced::widget::{Space, column, row};
+
+    column![
+        Space::new().height(5.61),
+        row![Space::new().width(10.37), root]
+    ]
+    .into()
+}
+
+/// The largest difference between two screenshots in any channel.
+fn largest_difference(a: &[u8], b: &[u8]) -> u8 {
+    a.iter()
+        .zip(b)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0)
+}
+
+fn composited(size: &Anim<f32>) -> Element<'static, ()> {
+    off_the_grid(
+        animated_text(CONTENT, SMALL)
+            .size(size.clone())
+            .size_layout(SizeLayout::Composited)
+            .into(),
+    )
+}
+
+/// The seam at either end of a composited transition: its first frame is
+/// the text as it stood and its last is the text as it will stand, to the
+/// pixel. A texture a shade off 1:1 or off the pixel grid would turn from
+/// soft to sharp in the frame the live text takes over, the snap this mode
+/// exists to avoid.
+#[test]
+fn a_composited_transition_starts_and_ends_on_the_resting_text() {
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let motion = Motion::new();
+    let key = MotionKey::unique();
+    let mut renderer = headless_tiny_skia();
+
+    let resting = motion.to(key, QUICK, SMALL.size);
+    let (small, cache) = frame(
+        composited(&resting),
+        user_interface::Cache::default(),
+        &mut renderer,
+    );
+
+    let size = motion.to(key, QUICK, LARGE.size);
+    assert!(size.is_animating(), "the retarget starts a transition");
+    let (first, mut cache) = frame(composited(&size), cache, &mut renderer);
+
+    assert!(
+        largest_difference(&first, &small) <= 2,
+        "the first composited frame is not the resting 14 px text"
+    );
+
+    // The tail: close enough to 18 px to be drawn 1:1, not yet settled.
+    let mut clock = FrameClock::new(&motion);
+    let mut last = None;
+    while size.is_animating() {
+        let _ = clock.run(1);
+        let (pixels, next) = frame(composited(&size), cache, &mut renderer);
+        cache = next;
+
+        if size.is_animating() && (size.get() - LARGE.size).abs() < 0.01 {
+            last = Some(pixels);
+        }
+    }
+    let last = last.expect("the spring passed through its tail");
+
+    let (large, _) = frame(
+        off_the_grid(animated_text(CONTENT, SMALL).size(LARGE.size).into()),
+        user_interface::Cache::default(),
+        &mut renderer,
+    );
+
+    assert!(
+        largest_difference(&last, &large) <= 2,
+        "the last composited frame is not the resting 18 px text"
+    );
+    assert!(
+        largest_difference(&small, &large) > 100,
+        "the two ends look alike, so the test proves nothing"
+    );
+}
+
+/// In between, the line box follows the size, as under `Live`: what is laid
+/// out after the text moves with it. (Each measurement here starts a fresh
+/// widget, whose transition starts where the size has got to; that the box
+/// is unrounded between the ends is pinned where the state survives, in the
+/// widget's own tests.)
+#[test]
+fn a_composited_size_grows_the_line_box_between_two_steps() {
+    let (motion, size) = moving(SMALL.size, LARGE.size);
+    let mut clock = FrameClock::new(&motion);
+
+    let _ = clock.run(4);
+    let middle = sized_box(&size, SizeLayout::Composited);
+
+    let _ = clock.run(120);
+    let end = sized_box(&size, SizeLayout::Composited);
+
+    let start = stock_box(SMALL);
+    assert!(
+        start.width < middle.width && middle.width < end.width,
+        "the line went {} → {} → {} px wide",
+        start.width,
+        middle.width,
+        end.width
+    );
+    assert!(
+        start.height < middle.height && middle.height < end.height,
+        "the line box went {} → {} → {} px tall",
+        start.height,
+        middle.height,
+        end.height
+    );
+    assert_eq!(end, stock_box(LARGE), "and rests on the stock widget's box");
+}
+
+#[test]
+fn a_composited_line_reads_both_tracks_at_the_layout_tier() {
+    let (_motion, size) = moving(SMALL.size, LARGE.size);
+    let _ = sized_box(&size, SizeLayout::Composited);
+
+    assert_eq!(
+        size.tier(),
+        Some(Tier::Layout),
+        "the box moves with the size"
+    );
+}
+
+/// The same seam for a weight: the crossfade starts on the weight the text
+/// stood at and ends on the one it will stand at, to the pixel.
+#[test]
+fn a_composited_weight_transition_starts_and_ends_on_the_resting_text() {
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let label = |weight: &Anim<f32>| -> Element<'static, ()> {
+        off_the_grid(
+            animated_text(CONTENT, MOVING_STYLE)
+                .weight(weight.clone())
+                .size_layout(SizeLayout::Composited)
+                .into(),
+        )
+    };
+
+    let motion = Motion::new();
+    let key = MotionKey::unique();
+    let mut renderer = headless_tiny_skia();
+
+    let resting = motion.to(key, QUICK, 500.0);
+    let (medium, cache) = frame(
+        label(&resting),
+        user_interface::Cache::default(),
+        &mut renderer,
+    );
+
+    let weight = motion.to(key, QUICK, 600.0);
+    let (first, mut cache) = frame(label(&weight), cache, &mut renderer);
+    assert!(
+        largest_difference(&first, &medium) <= 2,
+        "the first composited frame is not the resting weight"
+    );
+
+    let mut clock = FrameClock::new(&motion);
+    let mut last = None;
+    while weight.is_animating() {
+        let _ = clock.run(1);
+        let (pixels, next) = frame(label(&weight), cache, &mut renderer);
+        cache = next;
+
+        if weight.is_animating() && (weight.get() - 600.0).abs() < 0.5 {
+            last = Some(pixels);
+        }
+    }
+    let last = last.expect("the spring passed through its tail");
+
+    let (semibold, _) = frame(
+        off_the_grid(animated_text(CONTENT, MOVING_STYLE).weight(600.0).into()),
+        user_interface::Cache::default(),
+        &mut renderer,
+    );
+    assert!(
+        largest_difference(&last, &semibold) <= 2,
+        "the last composited frame is not the resting weight"
+    );
+    assert!(
+        largest_difference(&medium, &semibold) > 100,
+        "the two weights look alike, so the test proves nothing"
+    );
+}
+
+/// The seam as the application meets it: size and weight on tracks of their
+/// own, the text off the device grid, at the display scales people run. The
+/// very last frame of the transition, whatever it happens to be, is the
+/// resting text; so is the first.
+///
+/// This is what catches a texture drawn 1:1 but recorded at a slightly
+/// different sub-pixel phase than it lands at: the filter then resamples the
+/// whole line, and it turns sharp in the frame the live text takes over.
+#[test]
+fn a_composited_transition_is_seamless_at_every_scale() {
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let composited = |weight: &Anim<f32>, size: &Anim<f32>| -> Element<'static, ()> {
+        animated_text(CONTENT, SMALL)
+            .weight(weight.clone())
+            .size(size.clone())
+            .size_layout(SizeLayout::Composited)
+            .into()
+    };
+
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        for (from, to) in [
+            ((400.0, 16.0), (500.0, 20.0)),
+            ((500.0, 20.0), (400.0, 16.0)),
+        ] {
+            let (first, last) = seams(&mut headless_tiny_skia(), scale, composited, from, to);
+
+            assert!(
+                first <= 2,
+                "{scale}x, {from:?} → {to:?}: the first frame is not the text as it stood"
+            );
+            assert!(
+                last <= 2,
+                "{scale}x, {from:?} → {to:?}: the last frame is not the text as it stands, \
+                 off by {last}"
+            );
+        }
+    }
+}
+
+/// The ink-weighted centre of what `rgba` darkened, `width` pixels a row.
+fn ink_centre(rgba: &[u8], width: usize) -> (f32, f32) {
+    let (mut x, mut y, mut mass) = (0.0_f64, 0.0_f64, 0.0_f64);
+
+    for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
+        let ink = 255.0 - f64::from(px[0]);
+
+        if ink > 8.0 {
+            x += ink * (i % width) as f64;
+            y += ink * (i / width) as f64;
+            mass += ink;
+        }
+    }
+
+    ((x / mass) as f32, (y / mass) as f32)
+}
+
+/// Live text sits on whole device pixels vertically: cosmic-text truncates
+/// a line's vertical position ("hinting in Y axis"). A composited frame
+/// that glides where the live text steps would part from it by up to a
+/// pixel while the layout around it moves, and close the gap with a jump
+/// the moment the live text takes over. So every frame of a composited
+/// transition sits where a live frame of the same moment would.
+#[test]
+fn a_composited_line_steps_vertically_with_the_live_text() {
+    use iced_luminate::animate::curves::SMOOTH;
+    use iced_luminate::animate::widget::sized;
+    use iced_luminate::iced::widget::{Space, column};
+
+    const WIDE: Size = Size::new(900.0, 200.0);
+    let scale = 1.25;
+
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let draw = |root: Element<'_, ()>, cache: user_interface::Cache, renderer: &mut Renderer| {
+        let logical = Size::new(WIDE.width / scale, WIDE.height / scale);
+        let mut ui: UserInterface<'_, (), Theme, Renderer> =
+            UserInterface::build(root, logical, cache, renderer);
+
+        renderer.reset(Rectangle::with_size(logical));
+        ui.draw(
+            renderer,
+            &Theme::default(),
+            &renderer::Style {
+                text_color: Color::BLACK,
+            },
+            mouse::Cursor::Unavailable,
+        );
+
+        let rgba = renderer.screenshot(
+            Size::new(WIDE.width as u32, WIDE.height as u32),
+            scale,
+            Color::WHITE,
+        );
+        (rgba, ui.into_cache())
+    };
+
+    // The layout above the text moves on a slow curve of its own, the way a
+    // row above collapses, while the text changes size and weight.
+    let root = |policy: SizeLayout,
+                gap: &Anim<f32>,
+                size: &Anim<f32>,
+                weight: &Anim<f32>|
+     -> Element<'static, ()> {
+        column![
+            sized(Space::new().width(10.0)).height(gap),
+            animated_text(CONTENT, MOVING_STYLE)
+                .size(size.clone())
+                .weight(weight.clone())
+                .size_layout(policy)
+                // The live text at exactly the size of the moment, not at
+                // the nearest step: the reference is where cosmic-text puts
+                // that size, rounding and all.
+                .size_step(1e-4),
+        ]
+        .into()
+    };
+
+    let mut worst = 0.0_f32;
+    let mut renderers = [headless_tiny_skia(), headless_tiny_skia()];
+    let mut caches = [
+        user_interface::Cache::default(),
+        user_interface::Cache::default(),
+    ];
+    let policies = [SizeLayout::Composited, SizeLayout::Live];
+
+    let motion = Motion::new();
+    let keys = (
+        MotionKey::unique(),
+        MotionKey::unique(),
+        MotionKey::unique(),
+    );
+    let resting = (
+        motion.to(keys.0, SMOOTH, 40.0),
+        motion.to(keys.1, QUICK, 20.0),
+        motion.to(keys.2, QUICK, 500.0),
+    );
+    for _ in 0..2 {
+        for (i, policy) in policies.into_iter().enumerate() {
+            let cache = std::mem::take(&mut caches[i]);
+            let (_, cache) = draw(
+                root(policy, &resting.0, &resting.1, &resting.2),
+                cache,
+                &mut renderers[i],
+            );
+            caches[i] = cache;
+        }
+    }
+
+    let gap = motion.to(keys.0, SMOOTH, 18.3);
+    let size = motion.to(keys.1, QUICK, 16.0);
+    let weight = motion.to(keys.2, QUICK, 400.0);
+    let mut clock = FrameClock::new(&motion);
+
+    while size.is_animating() || weight.is_animating() {
+        let _ = clock.run(1);
+
+        let mut centres = [(0.0, 0.0); 2];
+        for (i, policy) in policies.into_iter().enumerate() {
+            let cache = std::mem::take(&mut caches[i]);
+            let (pixels, cache) =
+                draw(root(policy, &gap, &size, &weight), cache, &mut renderers[i]);
+            caches[i] = cache;
+            centres[i] = ink_centre(&pixels, WIDE.width as usize);
+        }
+
+        worst = worst.max((centres[0].1 - centres[1].1).abs());
+    }
+
+    // A scaled texture and glyphs rasterised at the size of the moment differ
+    // a little in shape, and so in where their ink centres; a line placed a
+    // pixel off is what this is after.
+    assert!(
+        worst < 0.75,
+        "a composited frame sat {worst} px away from the live text vertically"
+    );
+}
+
+/// How many times, frame to frame, a line of text moved against what is
+/// beside it: `offsets` are its position relative to that, one a frame.
+fn slips(offsets: &[f32]) -> usize {
+    offsets
+        .windows(2)
+        .filter(|pair| (pair[1] - pair[0]).abs() > 0.05)
+        .count()
+}
+
+/// Asserts what snapping a moving layout promises, given where a line of
+/// text sat against what is beside it, frame by frame, from a frame at rest
+/// through a motion: that it left exactly from where it rested, and that it
+/// moved against its neighbour once at most — the one fraction of a pixel
+/// the two ends of the motion differ by, which snapping puts in the middle,
+/// where the motion is fastest — while unsnapped it slips again and again.
+fn assert_snapped_in_step(what: &str, glided: &[f32], snapped: &[f32]) {
+    assert!(
+        slips(glided) > 1,
+        "{what}: unsnapped, the text should slip against its neighbour; offsets {glided:?}"
+    );
+    assert!(
+        (snapped[1] - snapped[0]).abs() <= 0.05,
+        "{what}: the first frame of the motion jumped from where it rested: {snapped:?}"
+    );
+    assert!(
+        slips(snapped) <= 1,
+        "{what}: snapped, the text slipped {} times: {snapped:?}",
+        slips(snapped)
+    );
+}
+
+/// The ink-weighted vertical centre of what `rgba` darkened between two
+/// columns, `width` pixels a row.
+fn ink_row(rgba: &[u8], width: usize, columns: std::ops::Range<usize>) -> f32 {
+    let (mut y, mut mass) = (0.0_f64, 0.0_f64);
+
+    for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
+        let ink = 255.0 - f64::from(px[1]);
+
+        if columns.contains(&(i % width)) && ink > 8.0 {
+            y += ink * (i / width) as f64;
+            mass += ink;
+        }
+    }
+
+    (y / mass) as f32
+}
+
+/// A layout that moves its text vertically: a box above collapses on a slow
+/// curve, and a bar and a label beside it ride along. Text sits on whole
+/// device pixels vertically and the bar does not, so on a gliding layout the
+/// label trails the bar and catches up a pixel at a time. Snapped to whole
+/// device pixels, the layout moves both by the same steps, and the label
+/// never moves against its bar.
+#[test]
+fn a_pixel_snapped_layout_moves_text_with_what_is_beside_it() {
+    use iced_luminate::animate::curves::SMOOTH;
+    use iced_luminate::animate::widget::{shape, sized};
+    use iced_luminate::iced::widget::{Space, column, row};
+    use iced_luminate::iced::{Alignment, Length};
+
+    const WIDE: Size = Size::new(600.0, 160.0);
+    let scale = 1.25;
+
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let drift = |snap: bool| {
+        let mut renderer = headless_tiny_skia();
+        let mut cache = user_interface::Cache::default();
+        // The first frame lays out before any screenshot at this scale; the
+        // factor is process-wide, and the last test may have left another.
+        iced_luminate::animate::set_scale_factor(scale);
+
+        let motion = Motion::new();
+        let key = MotionKey::unique();
+        let mut gap = motion.to(key, SMOOTH, 40.0);
+        let mut clock = FrameClock::new(&motion);
+
+        // A frame at rest, then the motion: a retargeted track takes one
+        // frame to restart the clock and a second to move.
+        let mut offsets = Vec::new();
+        for frame in 0.. {
+            if frame == 1 {
+                gap = motion.to(key, SMOOTH, 7.3);
+            }
+            if frame >= 1 {
+                let _ = clock.run(if frame == 1 { 2 } else { 1 });
+                if !gap.is_animating() {
+                    break;
+                }
+            }
+
+            let root: Element<'_, ()> = column![
+                sized(Space::new().width(10.0))
+                    .height(gap.clone())
+                    .pixel_snap(snap),
+                row![
+                    shape()
+                        .width(40.0)
+                        .height(3.0)
+                        .fill(Color::from_rgb(1.0, 0.0, 1.0))
+                        // A shape snaps itself to the grid whenever its
+                        // bounds stand still, which a layout moving in
+                        // whole steps does every other frame; the bar
+                        // here stands for any quad the layout moves.
+                        .pixel_snap(iced_luminate::animate::widget::PixelSnap::Never),
+                    Space::new().width(Length::Fixed(20.0)),
+                    styled_text(CONTENT, MOVING_STYLE),
+                ]
+                .align_y(Alignment::Center),
+            ]
+            .into();
+
+            let logical = Size::new(WIDE.width / scale, WIDE.height / scale);
+            let mut ui: UserInterface<'_, (), Theme, Renderer> =
+                UserInterface::build(root, logical, cache, &mut renderer);
+            renderer.reset(Rectangle::with_size(logical));
+            ui.draw(
+                &mut renderer,
+                &Theme::default(),
+                &renderer::Style {
+                    text_color: Color::BLACK,
+                },
+                mouse::Cursor::Unavailable,
+            );
+            let rgba = renderer.screenshot(
+                Size::new(WIDE.width as u32, WIDE.height as u32),
+                scale,
+                Color::WHITE,
+            );
+            cache = ui.into_cache();
+
+            let width = WIDE.width as usize;
+            // The bar spans the first 40 logical pixels; the text starts at 60.
+            let bar = ink_row(&rgba, width, 0..(40.0 * scale) as usize);
+            let text = ink_row(&rgba, width, (65.0 * scale) as usize..width);
+            // An empty crop is NaN, which the drift below would swallow.
+            assert!(
+                bar.is_finite() && text.is_finite(),
+                "the bar or the text is out of its crop"
+            );
+            offsets.push(text - bar);
+        }
+
+        offsets
+    };
+
+    assert_snapped_in_step("a collapsing box", &drift(false), &drift(true));
+}
+
+/// The rows below a label that changes size ride on its line box. Grown by
+/// fractions of a pixel, the box moves them smoothly and their text in
+/// whole-pixel jumps, against its own background; snapped, the box moves
+/// them by whole device pixels, and their text keeps its place beside them.
+#[test]
+fn a_pixel_snapped_label_moves_the_rows_below_it_in_step() {
+    use iced_luminate::animate::widget::{PixelSnap, shape};
+    use iced_luminate::iced::widget::{Space, column, row};
+    use iced_luminate::iced::{Alignment, Length};
+
+    const WIDE: Size = Size::new(600.0, 200.0);
+    let scale = 1.25;
+
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let drift = |policy: SizeLayout, snap: bool| {
+        let mut renderer = headless_tiny_skia();
+        let mut cache = user_interface::Cache::default();
+        // The first frame lays out before any screenshot at this scale; the
+        // factor is process-wide, and the last test may have left another.
+        iced_luminate::animate::set_scale_factor(scale);
+
+        let motion = Motion::new();
+        let key = MotionKey::unique();
+        let mut size = motion.to(key, QUICK, 20.0);
+        let mut clock = FrameClock::new(&motion);
+
+        // A frame at rest, then the motion: a retargeted track takes one
+        // frame to restart the clock and a second to move.
+        let mut offsets = Vec::new();
+        for frame in 0.. {
+            if frame == 1 {
+                size = motion.to(key, QUICK, 16.0);
+            }
+            if frame >= 1 {
+                let _ = clock.run(if frame == 1 { 2 } else { 1 });
+                if !size.is_animating() {
+                    break;
+                }
+            }
+
+            let root: Element<'_, ()> = column![
+                animated_text(CONTENT, MOVING_STYLE)
+                    .size(size.clone())
+                    .size_layout(policy)
+                    .pixel_snap(snap),
+                // Room to crop between the label, at most 30 px tall, and the
+                // row, which starts 20 px under it.
+                Space::new().height(20.0),
+                row![
+                    shape()
+                        .width(40.0)
+                        .height(3.0)
+                        .fill(Color::from_rgb(1.0, 0.0, 1.0))
+                        .pixel_snap(PixelSnap::Never),
+                    Space::new().width(Length::Fixed(20.0)),
+                    styled_text(CONTENT, MOVING_STYLE),
+                ]
+                .align_y(Alignment::Center),
+            ]
+            .into();
+
+            let logical = Size::new(WIDE.width / scale, WIDE.height / scale);
+            let mut ui: UserInterface<'_, (), Theme, Renderer> =
+                UserInterface::build(root, logical, cache, &mut renderer);
+            renderer.reset(Rectangle::with_size(logical));
+            ui.draw(
+                &mut renderer,
+                &Theme::default(),
+                &renderer::Style {
+                    text_color: Color::BLACK,
+                },
+                mouse::Cursor::Unavailable,
+            );
+            let rgba = renderer.screenshot(
+                Size::new(WIDE.width as u32, WIDE.height as u32),
+                scale,
+                Color::WHITE,
+            );
+            cache = ui.into_cache();
+
+            // Only the lower row: below the label's tallest box, above
+            // where the row can rise to.
+            let width = WIDE.width as usize;
+            let below = &rgba[width * 4 * (40.0 * scale) as usize..];
+            let bar = ink_row(below, width, 0..(40.0 * scale) as usize);
+            let text = ink_row(below, width, (65.0 * scale) as usize..width);
+            // An empty crop is NaN, which the drift below would swallow.
+            assert!(
+                bar.is_finite() && text.is_finite(),
+                "the bar or the text is out of its crop"
+            );
+            offsets.push(text - bar);
+        }
+
+        offsets
+    };
+
+    for policy in [SizeLayout::Composited, SizeLayout::Live] {
+        assert_snapped_in_step(
+            &format!("{policy:?} label"),
+            &drift(policy, false),
+            &drift(policy, true),
+        );
+    }
+}
+
+/// How far the first and the last frame of a transition from `from` to `to`
+/// — `(weight, size)`, each on a track of its own, the text off the device
+/// grid — are from the resting text before and after, in the largest
+/// channel difference of any pixel.
+fn seams(
+    renderer: &mut Renderer,
+    scale: f32,
+    label: impl Fn(&Anim<f32>, &Anim<f32>) -> Element<'static, ()>,
+    from: (f32, f32),
+    to: (f32, f32),
+) -> (u8, u8) {
+    const WIDE: Size = Size::new(900.0, 200.0);
+
+    let draw = |root: Element<'_, ()>, cache: user_interface::Cache, renderer: &mut Renderer| {
+        let logical = Size::new(WIDE.width / scale, WIDE.height / scale);
+        let mut ui: UserInterface<'_, (), Theme, Renderer> =
+            UserInterface::build(root, logical, cache, renderer);
+
+        renderer.reset(Rectangle::with_size(logical));
+        ui.draw(
+            renderer,
+            &Theme::default(),
+            &renderer::Style {
+                text_color: Color::BLACK,
+            },
+            mouse::Cursor::Unavailable,
+        );
+
+        let rgba = renderer.screenshot(
+            Size::new(WIDE.width as u32, WIDE.height as u32),
+            scale,
+            Color::WHITE,
+        );
+        (rgba, ui.into_cache())
+    };
+
+    let motion = Motion::new();
+    let (weight_key, size_key) = (MotionKey::unique(), MotionKey::unique());
+    let resting = (
+        motion.to(weight_key, QUICK, from.0),
+        motion.to(size_key, QUICK, from.1),
+    );
+
+    // A screenshot adopts its scale for the frames after it.
+    let (_, cache) = draw(
+        off_the_grid(label(&resting.0, &resting.1)),
+        user_interface::Cache::default(),
+        renderer,
+    );
+    let (before, cache) = draw(off_the_grid(label(&resting.0, &resting.1)), cache, renderer);
+
+    let weight = motion.to(weight_key, QUICK, to.0);
+    let size = motion.to(size_key, QUICK, to.1);
+    let (first, mut cache) = draw(off_the_grid(label(&weight, &size)), cache, renderer);
+
+    let mut clock = FrameClock::new(&motion);
+    let mut last = None;
+    while weight.is_animating() || size.is_animating() {
+        let _ = clock.run(1);
+        let (pixels, next) = draw(off_the_grid(label(&weight, &size)), cache, renderer);
+        cache = next;
+
+        if weight.is_animating() || size.is_animating() {
+            last = Some(pixels);
+        }
+    }
+    let (after, _) = draw(off_the_grid(label(&weight, &size)), cache, renderer);
+    let last = last.expect("the transition drew at least one frame");
+
+    (
+        largest_difference(&first, &before),
+        largest_difference(&last, &after),
+    )
+}
+
+/// The same seam for the live text, which every frame shapes and rasterises
+/// again at the size and weight of the moment: its first frame is the text
+/// as it stood and its last the text as it stands, at every scale, with the
+/// kit's default steps and with a continuous weight, on the scale and off
+/// it.
+///
+/// The grids every animated value is rounded to are anchored at the target,
+/// so the end is exact by construction; the start is exact only because
+/// each step is fitted to the distance it covers, and because the line
+/// height, unrounded in between, is rounded again at both ends.
+#[test]
+fn a_live_transition_is_seamless_at_every_scale() {
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    for weight_step in [None, Some(1.0)] {
+        let live = |weight: &Anim<f32>, size: &Anim<f32>| -> Element<'static, ()> {
+            let label = animated_text(CONTENT, SMALL)
+                .weight(weight.clone())
+                .size(size.clone());
+
+            match weight_step {
+                Some(step) => label.weight_step(step).into(),
+                None => label.into(),
+            }
+        };
+
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for (from, to) in [
+                ((400.0, 16.0), (500.0, 20.0)),
+                ((500.0, 20.0), (400.0, 16.0)),
+                ((500.0, 17.3), (400.0, 14.0)),
+                ((400.0, 13.1), (600.0, 21.7)),
+            ] {
+                let (first, last) = seams(&mut headless_tiny_skia(), scale, live, from, to);
+
+                assert!(
+                    first <= 2 && last <= 2,
+                    "{scale}x, {from:?} → {to:?}, weight step {weight_step:?}: \
+                     the first frame is {first} off the text as it stood, the last \
+                     {last} off the text as it stands"
+                );
+            }
+        }
+    }
+}
+
+/// How much `root` darkens a white window: every channel's shortfall from
+/// white, summed. Proportional to how opaque black text is drawn.
+fn darkness(root: Element<'_, ()>) -> u64 {
+    let (rgba, _) = frame(
+        root,
+        user_interface::Cache::default(),
+        &mut headless_tiny_skia(),
+    );
+
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|px| u64::from(255 - px[0]))
+        .sum()
+}
+
+/// An opacity fades the text on every path it can be drawn by: the stock
+/// paragraph (a named weight at rest), the shaped line (a weight between the
+/// named ones), and the textures of a composited transition. `1.0` is the
+/// text as it is, `0.0` nothing, and half is about half the ink.
+#[test]
+fn an_opacity_fades_the_text_on_every_path() {
+    type Label = AnimatedText<'static, Theme, Renderer>;
+
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let motion = Motion::new();
+    let key = MotionKey::unique();
+    let _ = motion.to(key, QUICK, 16.0);
+    let moving = motion.to(key, QUICK, 20.0);
+    let mut clock = FrameClock::new(&motion);
+    let _ = clock.run(3);
+    assert!(
+        moving.is_animating(),
+        "the composited label is mid-transition"
+    );
+
+    let paths: [(&str, &dyn Fn() -> Label); 3] = [
+        ("paragraph", &|| animated_text(CONTENT, SMALL)),
+        ("shaped", &|| animated_text(CONTENT, SMALL).weight(437.0)),
+        ("composited", &|| {
+            animated_text(CONTENT, SMALL)
+                .size(moving.clone())
+                .size_layout(SizeLayout::Composited)
+        }),
+    ];
+
+    for (path, label) in paths {
+        let plain = darkness(label().into());
+        let opaque = darkness(label().opacity(1.0).into());
+        let half = darkness(label().opacity(0.5).into());
+        let hidden = darkness(label().opacity(0.0).into());
+
+        assert!(plain > 0, "{path}: nothing was drawn at all");
+        assert_eq!(opaque, plain, "{path}: an opacity of 1 changed the text");
+        assert_eq!(hidden, 0, "{path}: an opacity of 0 still drew");
+
+        let share = half as f64 / plain as f64;
+        assert!(
+            (0.4..0.6).contains(&share),
+            "{path}: half opacity drew {share} of the ink"
+        );
+    }
+}
+
+/// A fade is a redraw, not a relayout: the opacity is read where the text is
+/// drawn, and nothing about the line box depends on it.
+#[test]
+fn an_opacity_costs_a_redraw_and_no_relayout() {
+    use iced_luminate::animate::curves::FADE;
+
+    let motion = Motion::new();
+    let key = MotionKey::unique();
+    let _ = motion.to(key, FADE, 1.0);
+    let opacity = motion.to(key, FADE, 0.0);
+
+    let label: Element<'_, ()> = animated_text(CONTENT, SMALL)
+        .opacity(opacity.clone())
+        .into();
+    let _ = darkness(label);
+
+    assert_eq!(opacity.tier(), Some(Tier::Paint));
+
+    let mut clock = FrameClock::new(&motion);
+    let status = clock.run(2);
+    assert!(status.animating, "the fade is still running");
+    assert!(!status.layout_invalid, "a fade asked for a relayout");
+}
+
+/// `iced`'s own renderer cannot render into a texture. A composited label on
+/// it is laid out and drawn as a live one rather than refused: the same box,
+/// frame for frame.
+#[test]
+fn a_composited_line_without_textures_is_drawn_live() {
+    let _guard = one_at_a_time();
+    load_fonts();
+
+    let (motion, size) = moving(SMALL.size, LARGE.size);
+    let mut clock = FrameClock::new(&motion);
+    let _ = clock.run(3);
+    assert!(size.is_animating(), "mid-transition");
+
+    let bounds = |size_layout: SizeLayout| {
+        let root: iced::Element<'_, (), iced::Theme, iced::Renderer> =
+            animated_text(CONTENT, SMALL)
+                .size(size.clone())
+                .size_layout(size_layout)
+                .into();
+        let mut ui: Simulator<'_, (), iced::Theme, iced::Renderer> =
+            Simulator::with_size(iced::Settings::default(), Size::new(600.0, 400.0), root);
+
+        let bounds = ui.find(CONTENT).expect("the text is on screen").bounds();
+        let _ = ui.snapshot(&iced::Theme::Light).expect("it draws");
+        bounds
+    };
+
+    assert_eq!(bounds(SizeLayout::Composited), bounds(SizeLayout::Live));
 }

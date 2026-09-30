@@ -21,6 +21,9 @@ pub(super) struct Shaped {
     /// `None` until the first shape, so that it always runs.
     inputs: Option<Inputs>,
     min_bounds: Size,
+    /// Bumped by every reshape: how a holder of the buffer tells a new line
+    /// from the one it already drew, whatever its size.
+    generation: u64,
 }
 
 /// Everything a shape depends on. Unchanged inputs mean the buffer stands.
@@ -51,7 +54,14 @@ impl Shaped {
             )),
             inputs: None,
             min_bounds: Size::ZERO,
+            generation: 0,
         }
+    }
+
+    /// How many times the buffer has been shaped.
+    #[must_use]
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The buffer as it currently stands.
@@ -74,6 +84,27 @@ impl Shaped {
         align_x: Alignment,
         wrapping: Wrapping,
     ) -> Size {
+        // Most calls find nothing changed: a label at rest, or either end of
+        // a composited transition every frame. Asked with a read lock and
+        // without copying the content, so that costs neither an allocation
+        // nor a turn at the lock every other text layout is waiting on.
+        let fonts = text::font_system()
+            .read()
+            .expect("the font system is not poisoned")
+            .version();
+
+        if self.inputs.as_ref().is_some_and(|inputs| {
+            inputs.content == content
+                && inputs.style == style
+                && inputs.weight == weight
+                && inputs.bounds == bounds
+                && inputs.align_x == align_x
+                && inputs.wrapping == wrapping
+                && inputs.fonts == fonts
+        }) {
+            return self.min_bounds;
+        }
+
         let mut font_system = text::font_system()
             .write()
             .expect("the font system is not poisoned");
@@ -87,10 +118,6 @@ impl Shaped {
             wrapping,
             fonts: font_system.version(),
         };
-
-        if self.inputs.as_ref() == Some(&inputs) {
-            return self.min_bounds;
-        }
 
         let metrics = text::cosmic_text::Metrics::new(style.size, style.line_height);
 
@@ -125,6 +152,7 @@ impl Shaped {
 
         self.min_bounds = text::align(buffer, font_system, align_x);
         self.inputs = Some(inputs);
+        self.generation += 1;
 
         self.min_bounds
     }

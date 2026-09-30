@@ -76,14 +76,36 @@
 //! target.
 //!
 //! **The line height follows the scale.** A size between two steps gets the
-//! line height [`TextStyle::resized`] interpolates for it, rounded to a
-//! whole pixel, so a 14 → 18 px transition ends on exactly the line box
-//! `TextSize::Lg` has, and a `Live` line box grows a pixel at a time.
+//! line height [`TextStyle::resized`] interpolates for it. While a `Live`
+//! size moves, that line height is left unrounded
+//! ([`TextStyle::resized_exact`]), so the line box, and whatever is laid out
+//! after it, grows a fraction of a pixel per frame instead of standing still
+//! and jumping a whole one. At rest it is rounded to a whole pixel, and a
+//! 14 → 18 px transition ends on exactly the line box `TextSize::Lg` has.
+//!
+//! **Or composited, like a browser's `transform`.** Under
+//! [`SizeLayout::Composited`] a transition — of the size, the weight or both
+//! — shapes and records the line twice, as it was and as it will be, and
+//! draws every frame in between from those two textures: scaled to the size
+//! of the moment, stretched to a line box interpolated between the two, and
+//! cross-faded. Nothing is reshaped or rasterised while it runs. Unlike a
+//! browser's composited scale, it does not snap at the end: near either end
+//! a texture is drawn 1:1 on the device grid with the live text's sub-pixel
+//! phase, so the first and last frames are the resting text to the pixel.
+//! What it saves is text work, which is CPU work either way; compositing is
+//! nearly free on the GPU and is not on the software backend, where two
+//! scaled textures per frame cost more than reshaping a short label.
 //!
 //! **Headings and labels, not paragraphs.** Every size the text is drawn at
 //! is a fresh raster of every glyph in it, whichever layout is chosen: the
 //! glyph cache is keyed by size. The size is rounded to a
-//! [`size_step`](AnimatedText::size_step) for that reason.
+//! [`size_step`](AnimatedText::size_step) for that reason. A size scales the
+//! whole width of the line, so the default step follows its length
+//! ([`default_size_step`]): fine enough that one step moves the far end of
+//! the line by at most [`SIZE_STEP_REACH`], and never finer than
+//! [`MIN_SIZE_STEP`]. The line is measured by each `layout` and the step
+//! taken from the previous one, so the first frame of a label that animates
+//! as it appears still uses [`DEFAULT_SIZE_STEP`].
 //!
 //! # What it costs
 //!
@@ -130,18 +152,21 @@ use iced::advanced::{Layout, Widget, layout, mouse, renderer, text};
 use iced::widget::text::{Catalog, Style, StyleFn};
 use iced::{Color, Element, Font, Length, Point, Rectangle, Size, Transformation, alignment};
 
-use iced_animate::{Anim, Tier};
+use iced_animate::{Anim, Tier, scale_factor, snap_between};
+use iced_texture_cache::TextureRenderer;
 
 use crate::theme::typography::TextStyle;
 
+mod composite;
 mod shaped;
 mod step;
 
 pub use step::{
-    DEFAULT_SIZE_STEP, MAX_WEIGHT, MIN_SIZE, MIN_WEIGHT, default_weight_step, quantize_size,
-    quantize_weight,
+    DEFAULT_SIZE_STEP, MAX_WEIGHT, MIN_SIZE, MIN_SIZE_STEP, MIN_WEIGHT, SIZE_STEP_REACH,
+    default_size_step, default_weight_step, fit_step, quantize_size, quantize_weight,
 };
 
+use composite::Transition;
 use shaped::Shaped;
 
 /// How an animated weight is allowed to move the layout.
@@ -203,17 +228,85 @@ pub enum SizeLayout {
     /// the size is above its target the glyphs reach outside it — over a
     /// neighbour, or under the clip of a scrollable.
     Scaled,
+    /// The line is shaped and recorded once as it was and once as it will
+    /// be, and every frame in between is composited from those two
+    /// textures.
+    ///
+    /// Covers the weight as well as the size: whichever of them moves, the
+    /// line box is interpolated between the two measured boxes, so what is
+    /// laid out after the text moves as smoothly as under `Live`, and the
+    /// two textures are scaled to the size of the moment, stretched to the
+    /// box and cross-faded. A transition costs two shapes and two records,
+    /// then a relayout and a composite per frame: no line is reshaped and no
+    /// glyph rasterised while it runs. Near either end a texture is drawn
+    /// 1:1 on the device grid, with its glyphs at the live text's sub-pixel
+    /// phase, so the first and the last frame are the resting text to the
+    /// pixel. At rest the text is drawn as under `Live`.
+    ///
+    /// The price is the crossfade: halfway through a weight transition both
+    /// weights are on screen at once, faintly, rather than one weight in
+    /// between. Both tracks are [`Tier::Layout`] (the box moves), and
+    /// [`WeightLayout`] does not apply. A composited frame draws in a layer
+    /// of its own, so a sibling drawn after the text in the same layer
+    /// renders beneath it; see `iced_texture_cache::Cached`.
+    Composited,
 }
 
 impl SizeLayout {
     /// The tier a size bound under this policy is read at.
     const fn tier(self) -> Tier {
         match self {
-            Self::Live => Tier::Layout,
+            Self::Live | Self::Composited => Tier::Layout,
             Self::Scaled => Tier::Paint,
         }
     }
 }
+
+/// A renderer [`AnimatedText`] can draw with.
+///
+/// Any renderer that draws text qualifies. One that can also render into a
+/// texture — `iced_texture_cache::Renderer`, the kit's own
+/// [`Renderer`](crate::Renderer) — composites [`SizeLayout::Composited`]
+/// transitions and lends [`pixel_snap`](AnimatedText::pixel_snap) the scale
+/// factor it draws at. Any other draws a composited line as
+/// [`SizeLayout::Live`] and snaps to the process-wide
+/// `iced_animate::scale_factor`.
+pub trait AnimatedTextRenderer: text::Renderer<Font = Font> + raw_text::Renderer {
+    /// The texture-capable renderer this is, if it is one.
+    #[doc(hidden)]
+    fn textures(&mut self) -> Option<&mut iced_texture_cache::Renderer> {
+        None
+    }
+
+    /// Whether [`textures`](Self::textures) has one to give.
+    #[doc(hidden)]
+    fn composites(&self) -> bool {
+        false
+    }
+
+    /// The device pixels per logical pixel this renderer draws at, if it
+    /// knows.
+    #[doc(hidden)]
+    fn device_scale(&self) -> Option<f32> {
+        None
+    }
+}
+
+impl AnimatedTextRenderer for iced_texture_cache::Renderer {
+    fn textures(&mut self) -> Option<&mut iced_texture_cache::Renderer> {
+        Some(self)
+    }
+
+    fn composites(&self) -> bool {
+        true
+    }
+
+    fn device_scale(&self) -> Option<f32> {
+        Some(TextureRenderer::scale_factor(self))
+    }
+}
+
+impl AnimatedTextRenderer for iced::Renderer {}
 
 /// Text drawn at an animated font weight and size.
 ///
@@ -227,11 +320,13 @@ where
     content: Fragment<'a>,
     style: TextStyle,
     weight: Anim<f32>,
+    opacity: Anim<f32>,
     weight_layout: WeightLayout,
     weight_step: Option<f32>,
     size: Anim<f32>,
     size_layout: SizeLayout,
-    size_step: f32,
+    size_step: Option<f32>,
+    pixel_snap: bool,
     width: Length,
     height: Length,
     align_x: Alignment,
@@ -269,11 +364,13 @@ where
             content: content.into_fragment(),
             style,
             weight: Anim::constant(weight_of(style)),
+            opacity: Anim::constant(1.0),
             weight_layout: WeightLayout::default(),
             weight_step: None,
             size: Anim::constant(style.size),
             size_layout: SizeLayout::default(),
-            size_step: DEFAULT_SIZE_STEP,
+            size_step: None,
+            pixel_snap: false,
             width: Length::Shrink,
             height: Length::Shrink,
             align_x: Alignment::Default,
@@ -336,15 +433,103 @@ where
     }
 
     /// Rounds the animated size to a multiple of `step` before it is shaped
-    /// or drawn. [`DEFAULT_SIZE_STEP`] by default.
+    /// or drawn.
+    ///
+    /// By default the step follows the length of the line
+    /// ([`default_size_step`]): a size scales the whole width of the line, so
+    /// a longer line needs a finer step for its far end not to move in
+    /// visible stairs.
     ///
     /// Every distinct size is a fresh raster of every glyph in the line, so a
     /// larger step asks for fewer of them. The grid is anchored at the
     /// target, so the size the animation ends on is always exact.
     #[must_use]
     pub const fn size_step(mut self, step: f32) -> Self {
-        self.size_step = step;
+        self.size_step = Some(step);
         self
+    }
+
+    /// Grows or shrinks the line box in whole device pixels while the size
+    /// moves.
+    ///
+    /// A size moves the line box, and with it everything laid out after the
+    /// text: the rows below a heading that grows. Their text sits on whole
+    /// device pixels vertically and their backgrounds do not, so a line box
+    /// that grows by fractions of a pixel moves them in step with neither,
+    /// and their text snaps against its own background. Snapped, the box
+    /// changes by whole device pixels from frame to frame, and what follows
+    /// it moves by the same steps as the text in it.
+    ///
+    /// Only the height is snapped: horizontally text is placed in
+    /// quarter-pixel steps, so a width that glides leaves nothing behind.
+    /// The box leaves exactly from the height it rested at and rests exactly
+    /// on the one it is heading for, snapped on a grid through the first for
+    /// half the way and through the second for the rest
+    /// (`iced_animate::snap_between`); only a moving size is snapped. The
+    /// size of a device pixel is the renderer's own where it knows it, the
+    /// kit's does. It does nothing for
+    /// a [`SizeLayout::Scaled`] line, whose box does not move, nor for a line
+    /// given a height of its own. See `iced_animate::widget::Sized::pixel_snap`
+    /// for the same on any box, and `iced_animate::scale_factor` for where
+    /// the size of a device pixel comes from.
+    #[must_use]
+    pub const fn pixel_snap(mut self, snap: bool) -> Self {
+        self.pixel_snap = snap;
+        self
+    }
+
+    /// Whether this frame's line box is snapped: asked for, the size moving,
+    /// and the height the line's own.
+    fn snaps(&self) -> bool {
+        self.pixel_snap
+            && self.size.is_animating()
+            && matches!(self.height, Length::Shrink)
+            && !matches!(self.size_layout, SizeLayout::Scaled)
+    }
+
+    /// `node`, a `Live` line's, with its height snapped between the height
+    /// the line rested at (`from`) and the one it rests at when the size
+    /// arrives, at `scale` device pixels per logical one, if
+    /// [`snaps`](Self::snaps).
+    fn snap_live(
+        &self,
+        node: layout::Node,
+        style: TextStyle,
+        from: Option<f32>,
+        scale: f32,
+    ) -> layout::Node {
+        if !self.snaps() || style.line_height <= 0.0 {
+            return node;
+        }
+
+        let size = node.size();
+        let lines = (size.height / style.line_height).round().max(1.0);
+        let resting = lines * self.style.resized(self.size.target()).line_height;
+        let from = from.unwrap_or(f32::NAN);
+
+        layout::Node::new(Size::new(
+            size.width,
+            snap_between(size.height, from, resting, scale).max(0.0),
+        ))
+    }
+
+    /// Finishes a `Live` layout: snaps `node` if it should, and at rest
+    /// records its height as where the next snapped motion leaves from.
+    fn settle<P: Paragraph>(
+        &self,
+        state: &mut State<P>,
+        node: layout::Node,
+        style: TextStyle,
+        moving: bool,
+        scale: f32,
+    ) -> layout::Node {
+        let node = self.snap_live(node, style, state.rest_height, scale);
+
+        if !moving {
+            state.rest_height = Some(node.size().height);
+        }
+
+        node
     }
 
     /// Sets the width of the text boundaries.
@@ -386,6 +571,63 @@ where
         self
     }
 
+    /// Fades the text: `1.0` is its colour as it is, `0.0` draws nothing.
+    /// May be an animated value.
+    ///
+    /// The fade is applied where the text is drawn, on every path — the
+    /// alpha of the colour the paragraph and the shaped line are drawn in,
+    /// and the opacity a composited transition's textures are drawn at — so
+    /// it costs a redraw per frame and never a relayout ([`Tier::Paint`]),
+    /// and a size or a weight animating underneath keeps animating.
+    ///
+    /// Wrapping the text in an `iced_texture_cache::Cached` to fade it does
+    /// the same for less: the text is swapped for a texture for the length
+    /// of the fade, recorded with its box snapped to the pixel grid and its
+    /// glyphs off their sub-pixel phase, so it shifts by up to half a pixel
+    /// as the fade starts and back as it ends; and an animation inside the
+    /// cached text that leaves its box alone is not seen until the fade is
+    /// over. Here the text is never anything but live.
+    ///
+    /// Every glyph is faded on its own rather than the line as one image,
+    /// which differs only where two glyphs overlap: rare within a line of
+    /// text.
+    ///
+    /// ```
+    /// use iced_animate::{curves::FADE, key, Motion};
+    /// use iced_luminate::theme::typography::{TextSize, TextStyle};
+    /// use iced_luminate::widget::animated_text::animated_text;
+    /// use iced::font::Weight;
+    ///
+    /// let m = Motion::new();
+    /// let shown = false;
+    /// let opacity = m.to(key!(), FADE, if shown { 1.0_f32 } else { 0.0 });
+    ///
+    /// let _: iced_luminate::Element<'_, ()> = animated_text(
+    ///     "Downloading 12/40",
+    ///     TextStyle::text(TextSize::Md, Weight::Medium),
+    /// )
+    /// .opacity(opacity)
+    /// .into();
+    /// ```
+    #[must_use]
+    pub fn opacity(mut self, opacity: impl Into<Anim<f32>>) -> Self {
+        self.opacity = opacity.into();
+        self.opacity.mark_tier(Tier::Paint);
+        self
+    }
+
+    /// The opacity of this frame, within `0..=1`; a value that is not a
+    /// number draws the text as it is.
+    fn opacity_now(&self) -> f32 {
+        let opacity = self.opacity.get();
+
+        if opacity.is_nan() {
+            1.0
+        } else {
+            opacity.clamp(0.0, 1.0)
+        }
+    }
+
     /// Sets the colour of the text.
     #[must_use]
     pub fn color(self, color: impl Into<Color>) -> Self
@@ -414,6 +656,86 @@ where
         self
     }
 
+    /// The tier the weight is read at: its layout's, unless the line is
+    /// composited, where the weight moves the box.
+    const fn weight_tier(&self) -> Tier {
+        match self.size_layout {
+            SizeLayout::Composited => Tier::Layout,
+            SizeLayout::Live | SizeLayout::Scaled => self.weight_layout.tier(),
+        }
+    }
+
+    /// Lays out a composited transition: starts one if the targets changed,
+    /// shapes its two ends (a no-op once they stand) and reports the line
+    /// box of the moment, interpolated between theirs.
+    fn layout_composited<P: Paragraph>(
+        &self,
+        state: &mut State<P>,
+        limits: &layout::Limits,
+        scale: f32,
+    ) -> layout::Node {
+        state.path = Path::Composited;
+
+        let to = (
+            self.size.target().max(MIN_SIZE),
+            composite::whole_weight(self.weight.target()),
+        );
+        let size = self.size.get().max(MIN_SIZE);
+        let weight = self.weight.get();
+        let rest = state.rest;
+        let rest_height = state.rest_height.unwrap_or(f32::NAN);
+        let snaps = self.snaps();
+        let inner = state
+            .inner
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+
+        layout::sized(limits, self.width, self.height, |limits| {
+            let bounds = limits.max();
+            inner.bounds = bounds;
+
+            // Out of rest, a transition starts from exactly where the text
+            // stood; out of another transition, from wherever that one had
+            // got to, which it is then replaced from.
+            let from = match (&inner.transition, rest) {
+                (None, Some(rest)) => rest,
+                _ => (size, composite::whole_weight(weight)),
+            };
+            if !inner
+                .transition
+                .as_ref()
+                .is_some_and(|transition| transition.heads_for(to.0, to.1))
+            {
+                inner.transition = None;
+            }
+
+            let transition = inner
+                .transition
+                .get_or_insert_with(|| Transition::new(from, to));
+            transition.shape(
+                &self.content,
+                self.style,
+                bounds,
+                self.align_x,
+                self.wrapping,
+            );
+
+            let progress = transition.progress(size, weight);
+            let line = transition.line_box(self.style, size, progress);
+
+            if snaps {
+                let resting = transition.resting_height();
+
+                Size::new(
+                    line.width,
+                    snap_between(line.height, rest_height, resting, scale).max(0.0),
+                )
+            } else {
+                line
+            }
+        })
+    }
+
     /// The weight the stock paragraph path would draw this text at, when it
     /// can draw it exactly.
     ///
@@ -438,10 +760,7 @@ where
     }
 
     /// The weight to shape at, rounded to the step.
-    fn shaped_weight(&self, moment: Moment) -> u16 {
-        let step = self
-            .weight_step
-            .unwrap_or_else(|| default_weight_step(self.size.target()));
+    fn shaped_weight(&self, moment: Moment, step: f32) -> u16 {
         let target = self.weight.target();
 
         let weight = match (moment, self.weight_layout) {
@@ -452,27 +771,94 @@ where
         quantize_weight(weight, target, step)
     }
 
-    /// The size the text is drawn at right now, rounded to the step.
-    fn drawn_size(&self) -> f32 {
-        quantize_size(self.size.get(), self.size.target(), self.size_step)
+    /// The step the size is rounded to, for a line `em_width` ems wide: the
+    /// one given, or the one that line needs.
+    fn size_step_for(&self, em_width: f32) -> f32 {
+        self.size_step
+            .unwrap_or_else(|| default_size_step(em_width))
+    }
+
+    /// The steps the size and the weight are rounded to this frame, for a
+    /// line `em_width` ems wide that last rested at `rest`.
+    ///
+    /// Each is fitted to the distance from where the text rested to where it
+    /// is heading ([`fit_step`]), so the grid, anchored at the target, passes
+    /// through the start too, and the first frame of a transition is the
+    /// resting text exactly.
+    fn steps(&self, em_width: f32, rest: Option<(f32, u16)>) -> (f32, f32) {
+        let size = self.size_step_for(em_width);
+        let weight = self
+            .weight_step
+            .unwrap_or_else(|| default_weight_step(self.size.target()));
+
+        let Some((rest_size, rest_weight)) = rest else {
+            return (size, weight);
+        };
+
+        (
+            fit_step(size, rest_size, self.size.target()),
+            fit_step(weight, f32::from(rest_weight), self.weight.target()),
+        )
+    }
+
+    /// The size the text is drawn at right now, rounded to `step`.
+    fn drawn_size(&self, step: f32) -> f32 {
+        quantize_size(self.size.get(), self.size.target(), step)
     }
 
     /// The size the line is laid out and shaped at: the size of the moment,
     /// or under [`SizeLayout::Scaled`] the one it is heading for.
-    fn shaped_size(&self) -> f32 {
+    fn shaped_size(&self, step: f32) -> f32 {
         match self.size_layout {
-            SizeLayout::Live => self.drawn_size(),
+            // A composited line reaches here only at rest, at its target.
+            SizeLayout::Live | SizeLayout::Composited => self.drawn_size(step),
             SizeLayout::Scaled => {
                 let target = self.size.target();
 
-                quantize_size(target, target, self.size_step)
+                quantize_size(target, target, step)
             }
         }
     }
 
     /// The style the line is laid out and shaped in.
-    fn shaped_style(&self) -> TextStyle {
-        self.style.resized(self.shaped_size())
+    ///
+    /// A `Live` line whose size is moving takes the line height of the
+    /// moment unrounded ([`TextStyle::resized_exact`]): rounded, the line box
+    /// and everything after it would move a whole pixel at a time. At rest,
+    /// and for a `Scaled` line, which is shaped at its target, the line box
+    /// sits on a whole pixel as the scale authors it; on a step of the scale
+    /// the two agree, so coming to rest does not move it.
+    ///
+    /// Off the scale the rounded and the exact line height part by up to
+    /// half a pixel, so the exact one is corrected by a share of each end's
+    /// rounding: all of the start's at the start, all of the target's at the
+    /// target. A transition then begins and ends on the resting line box,
+    /// and glides between them.
+    fn shaped_style(&self, step: f32, rest_size: Option<f32>) -> TextStyle {
+        let size = self.shaped_size(step);
+
+        // A composited line reaches here at rest, or on a renderer that
+        // cannot composite, where it is laid out as a live one.
+        if self.size_layout == SizeLayout::Scaled || !self.size.is_animating() {
+            return self.style.resized(size);
+        }
+
+        let exact = self.style.resized_exact(size);
+        let Some(from) = rest_size else {
+            return exact;
+        };
+
+        let target = self.size.target();
+        let rounding = |size: f32| {
+            self.style.resized(size).line_height - self.style.resized_exact(size).line_height
+        };
+        let p = composite::progress(size, from, target);
+
+        TextStyle {
+            line_height: (rounding(target) - rounding(from)).mul_add(p, rounding(from))
+                + exact.line_height,
+            ..exact
+        }
     }
 
     /// The format the stock paragraph path lays this text out with.
@@ -516,12 +902,13 @@ where
     /// the moment, handing it the viewport in the coordinates it draws in.
     fn draw_scaled(
         &self,
+        step: f32,
         renderer: &mut Renderer,
         bounds: Rectangle,
         viewport: &Rectangle,
         draw: impl FnOnce(&mut Renderer, &Rectangle),
     ) {
-        let scale = self.drawn_size() / self.shaped_size();
+        let scale = self.drawn_size(step) / self.shaped_size(step);
 
         // Exactly `1.0` whenever the line is `Live` or has settled, which is
         // every frame but the moving ones of a `Scaled` line.
@@ -568,6 +955,16 @@ fn named_weight(weight: f32) -> Option<iced::font::Weight> {
     })
 }
 
+/// The width of a line measured as `min_bounds` in `style`, in ems: `0.0`,
+/// which reads as "not measured", when there is nothing to divide.
+fn em_width(min_bounds: Size, style: TextStyle) -> f32 {
+    if style.size > 0.0 && min_bounds.width.is_finite() {
+        min_bounds.width / style.size
+    } else {
+        0.0
+    }
+}
+
 /// The `wght` value of the weight `style` names.
 fn weight_of(style: TextStyle) -> f32 {
     let weight: iced::font::Weight = style.weight;
@@ -598,6 +995,23 @@ struct State<P: Paragraph> {
     /// between the two, and a `draw` that switched to the paragraph then
     /// would draw one that was never laid out.
     path: Path,
+    /// The size step the last `layout` rounded to, which `draw` rounds to as
+    /// well: a step recomputed from a width measured in between would shape
+    /// the line in `draw` at a size `layout` never measured.
+    size_step: f32,
+    /// The weight step the last `layout` rounded to, which `draw` rounds to
+    /// as well, for the same reason.
+    weight_step: f32,
+    /// The width of the line in ems as the last `layout` measured it, which
+    /// the next one derives its size step from.
+    em_width: f32,
+    /// The size and the weight the text last rested at: where a composited
+    /// transition out of rest starts, so its first frame is the text as it
+    /// stood.
+    rest: Option<(f32, u16)>,
+    /// The height of the line box the text last rested in: where a snapped
+    /// line box leaves from.
+    rest_height: Option<f32>,
 }
 
 /// Which way the text reaches the renderer.
@@ -608,6 +1022,8 @@ enum Path {
     Paragraph,
     /// Through a buffer shaped here and drawn as `Raw`.
     Shaped,
+    /// Composited from the two ends of a transition.
+    Composited,
 }
 
 #[derive(Debug, Default)]
@@ -620,13 +1036,16 @@ struct Inner {
     /// The bounds the last `layout` shaped inside, so `draw` shapes inside
     /// the same ones and does not undo its work.
     bounds: Size,
+    /// The composited transition under way, if any; dropped, textures and
+    /// all, once the text comes to rest.
+    transition: Option<Transition>,
 }
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for AnimatedText<'_, Theme, Renderer>
 where
     Theme: Catalog,
-    Renderer: text::Renderer<Font = Font> + raw_text::Renderer,
+    Renderer: AnimatedTextRenderer,
 {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State<Renderer::Paragraph>>()
@@ -651,46 +1070,98 @@ where
         // Only the consumer knows where it reads each value. Marked on every
         // path, the paragraph's included: a settled track resting here now
         // is the one that moves next.
-        self.weight.mark_tier(self.weight_layout.tier());
+        self.weight.mark_tier(self.weight_tier());
         self.size.mark_tier(self.size_layout.tier());
 
-        let style = self.shaped_style();
+        let moving = self.size.is_animating() || self.weight.is_animating();
+        // The renderer's own factor where it has one: the process-wide one
+        // is whichever window presented last.
+        let scale = renderer.device_scale().unwrap_or_else(scale_factor);
+
+        if self.size_layout == SizeLayout::Composited && renderer.composites() {
+            if moving {
+                return self.layout_composited(state, limits, scale);
+            }
+
+            // At rest: the textures of the last transition are done with.
+            state
+                .inner
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .transition = None;
+        }
+
+        if !moving {
+            state.rest = Some((
+                self.size.get().max(MIN_SIZE),
+                composite::whole_weight(self.weight.get()),
+            ));
+        }
+
+        // The step comes from the line as it was measured at rest, so it
+        // holds for the whole of a transition: re-measured every frame, a
+        // moving weight would nudge it, and the grid it anchors would shift
+        // under the size partway there.
+        let (step, weight_step) = self.steps(state.em_width, state.rest);
+        state.size_step = step;
+        state.weight_step = weight_step;
+
+        let style = self.shaped_style(step, state.rest.map(|(size, _)| size));
 
         if let Some(weight) = self.resting_weight() {
             state.path = Path::Paragraph;
 
-            return stock::layout(
+            let node = stock::layout(
                 &mut state.paragraph,
                 renderer,
                 limits,
                 &self.content,
                 self.format(style, weight),
             );
+            if !moving {
+                state.em_width = em_width(state.paragraph.min_bounds(), style);
+            }
+
+            return self.settle(state, node, style, moving, scale);
         }
 
         state.path = Path::Shaped;
 
-        let weight = self.shaped_weight(Moment::Layout);
-        let inner = &mut *state.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let weight = self.shaped_weight(Moment::Layout, weight_step);
+        let mut measured = Size::ZERO;
 
-        layout::sized(limits, self.width, self.height, |limits| {
-            let bounds = limits.max();
-            inner.bounds = bounds;
+        let node = {
+            let inner = state
+                .inner
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner);
 
-            let shaped = match self.weight_layout {
-                WeightLayout::Live => &mut inner.paint,
-                WeightLayout::Snapped => &mut inner.reserve,
-            };
+            layout::sized(limits, self.width, self.height, |limits| {
+                let bounds = limits.max();
+                inner.bounds = bounds;
 
-            shaped.update(
-                &self.content,
-                style,
-                weight,
-                bounds,
-                self.align_x,
-                self.wrapping,
-            )
-        })
+                let shaped = match self.weight_layout {
+                    WeightLayout::Live => &mut inner.paint,
+                    WeightLayout::Snapped => &mut inner.reserve,
+                };
+
+                measured = shaped.update(
+                    &self.content,
+                    style,
+                    weight,
+                    bounds,
+                    self.align_x,
+                    self.wrapping,
+                );
+
+                measured
+            })
+        };
+        if !moving {
+            state.em_width = em_width(measured, style);
+        }
+
+        self.settle(state, node, style, moving, scale)
     }
 
     fn operate(
@@ -714,11 +1185,46 @@ where
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State<Renderer::Paragraph>>();
-        let appearance = theme.style(&self.class);
         let bounds = layout.bounds();
+        let step = state.size_step;
+
+        let opacity = self.opacity_now();
+        if opacity <= 0.0 {
+            return;
+        }
+
+        let base = theme.style(&self.class);
+        let color = base.color.unwrap_or(defaults.text_color);
+        // The paragraph and the shaped line take the fade in their colour;
+        // a composited transition takes it in the opacity of its textures,
+        // so the colour its textures are recorded in stays put.
+        let faded = Color {
+            a: color.a * opacity,
+            ..color
+        };
+        let appearance = Style { color: Some(faded) };
+
+        if state.path == Path::Composited {
+            let mut inner = state.inner.lock().unwrap_or_else(PoisonError::into_inner);
+            // `layout` takes this path only on a renderer that composites.
+            let (Some(transition), Some(renderer)) =
+                (inner.transition.as_mut(), renderer.textures())
+            else {
+                return;
+            };
+
+            let size = self.size.get().max(MIN_SIZE);
+            let progress = transition.progress(size, self.weight.get());
+            let line = transition.line_box(self.style, size, progress);
+            let block = Rectangle::new(bounds.anchor(line, self.align_x, self.align_y), line);
+
+            transition.draw(renderer, block, size, progress, color, opacity, viewport);
+
+            return;
+        }
 
         if state.path == Path::Paragraph {
-            self.draw_scaled(renderer, bounds, viewport, |renderer, viewport| {
+            self.draw_scaled(step, renderer, bounds, viewport, |renderer, viewport| {
                 stock::draw(
                     renderer,
                     defaults,
@@ -732,7 +1238,7 @@ where
             return;
         }
 
-        let weight = self.shaped_weight(Moment::Paint);
+        let weight = self.shaped_weight(Moment::Paint, state.weight_step);
         let inner = &mut *state.inner.lock().unwrap_or_else(PoisonError::into_inner);
 
         // The same bounds `layout` shaped inside, so that a `Live` line is
@@ -740,14 +1246,14 @@ where
         let shaped_bounds = inner.bounds;
         let min_bounds = inner.paint.update(
             &self.content,
-            self.shaped_style(),
+            self.shaped_style(step, state.rest.map(|(size, _)| size)),
             weight,
             shaped_bounds,
             self.align_x,
             self.wrapping,
         );
 
-        self.draw_scaled(renderer, bounds, viewport, |renderer, viewport| {
+        self.draw_scaled(step, renderer, bounds, viewport, |renderer, viewport| {
             let Some(clip_bounds) = bounds.intersection(viewport) else {
                 return;
             };
@@ -755,7 +1261,7 @@ where
             renderer.fill_raw(raw_text::Raw {
                 buffer: Arc::downgrade(inner.paint.buffer()),
                 position: bounds.anchor(min_bounds, self.align_x, self.align_y),
-                color: appearance.color.unwrap_or(defaults.text_color),
+                color: faded,
                 clip_bounds,
             });
         });
@@ -766,7 +1272,7 @@ impl<'a, Message, Theme, Renderer> From<AnimatedText<'a, Theme, Renderer>>
     for Element<'a, Message, Theme, Renderer>
 where
     Theme: Catalog + 'a,
-    Renderer: text::Renderer<Font = Font> + raw_text::Renderer + 'a,
+    Renderer: AnimatedTextRenderer + 'a,
 {
     fn from(text: AnimatedText<'a, Theme, Renderer>) -> Self {
         Self::new(text)
@@ -776,7 +1282,7 @@ where
 #[cfg(test)]
 mod tests {
     use iced::font::Weight;
-    use iced_animate::{Motion, MotionKey, curves::QUICK};
+    use iced_animate::{Motion, MotionKey, curves::QUICK, testing::FrameClock};
 
     use super::*;
     use crate::theme::typography::TextSize;
@@ -784,6 +1290,142 @@ mod tests {
     type Label = AnimatedText<'static, iced::Theme, crate::Renderer>;
 
     const STYLE: TextStyle = TextStyle::text(TextSize::Sm, Weight::Medium);
+
+    /// A software renderer that has presented a frame at `scale`, as a
+    /// window's renderer has: the factor it then reports is the one a
+    /// snapped line box snaps to.
+    fn renderer_at(scale: f32) -> crate::Renderer {
+        use iced::advanced::renderer::Headless;
+
+        crate::Luminate::load_fonts();
+
+        let mut renderer = iced_texture_cache::testing::headless_tiny_skia();
+        let _ = renderer.screenshot(Size::new(1, 1), scale, Color::WHITE);
+        renderer
+    }
+
+    /// Lays `label` out in `tree`, the tree an application keeps between
+    /// frames, and returns its box.
+    fn lay(label: &mut Label, tree: &mut Tree, renderer: &crate::Renderer) -> Size {
+        let limits = layout::Limits::new(Size::ZERO, Size::new(600.0, 200.0));
+
+        Widget::<(), iced::Theme, crate::Renderer>::layout(label, tree, renderer, &limits).size()
+    }
+
+    fn state_of(tree: &Tree) -> &State<<crate::Renderer as text::Renderer>::Paragraph> {
+        tree.state.downcast_ref()
+    }
+
+    /// The step is taken from the line as measured at rest, and holds for
+    /// the whole of a transition: re-measured every frame, a moving weight
+    /// would nudge the width, the step with it, and the grid the size is
+    /// rounded to would shift partway there.
+    #[test]
+    fn the_size_step_holds_for_the_whole_of_a_transition() {
+        let renderer = renderer_at(1.0);
+        let motion = Motion::new();
+        let (size_key, weight_key) = (MotionKey::unique(), MotionKey::unique());
+
+        let label = |size: &Anim<f32>, weight: &Anim<f32>| -> Label {
+            animated_text("Downloading Libraries", STYLE)
+                .size(size.clone())
+                .weight(weight.clone())
+        };
+
+        let resting = (
+            motion.to(size_key, QUICK, 14.0),
+            motion.to(weight_key, QUICK, 400.0),
+        );
+        let mut first = label(&resting.0, &resting.1);
+        let mut tree = Tree::new(&first as &dyn Widget<(), iced::Theme, crate::Renderer>);
+        let _ = lay(&mut first, &mut tree, &renderer);
+        let at_rest = state_of(&tree).em_width;
+        assert!(at_rest > 0.0, "the line was measured at rest");
+
+        // A heavier weight widens the line as it moves.
+        let size = motion.to(size_key, QUICK, 18.0);
+        let weight = motion.to(weight_key, QUICK, 800.0);
+        let mut clock = FrameClock::new(&motion);
+
+        let mut steps = Vec::new();
+        for _ in 0..8 {
+            let _ = clock.run(1);
+            let _ = lay(&mut label(&size, &weight), &mut tree, &renderer);
+
+            assert_eq!(
+                state_of(&tree).em_width,
+                at_rest,
+                "re-measured mid-transition"
+            );
+            steps.push(state_of(&tree).size_step);
+        }
+        assert!(
+            steps
+                .windows(2)
+                .all(|pair| pair[0].to_bits() == pair[1].to_bits()),
+            "the step moved: {steps:?}"
+        );
+    }
+
+    /// A snapped line box leaves exactly from the height it rested at and
+    /// lands exactly on the one it rests at: the first half of the way is
+    /// whole device pixels from the first, the second from the second.
+    /// Anchored at the target alone, 30 → 24 px at 1.25x is 7.5 device pixels,
+    /// and the first frame would jump by the half.
+    #[test]
+    fn a_snapped_line_box_leaves_its_rest_on_its_grid() {
+        let scale = 1.25;
+        let renderer = renderer_at(scale);
+
+        for size_layout in [SizeLayout::Live, SizeLayout::Composited] {
+            let motion = Motion::new();
+            let key = MotionKey::unique();
+
+            let label = |size: &Anim<f32>| -> Label {
+                animated_text("Downloading Libraries", STYLE)
+                    .size(size.clone())
+                    .size_layout(size_layout)
+                    .pixel_snap(true)
+            };
+
+            let resting = motion.to(key, QUICK, 20.0);
+            let mut first = label(&resting);
+            let mut tree = Tree::new(&first as &dyn Widget<(), iced::Theme, crate::Renderer>);
+            let rest = lay(&mut first, &mut tree, &renderer).height;
+            assert_eq!(rest, 30.0);
+
+            let size = motion.to(key, QUICK, 16.0);
+            let mut clock = FrameClock::new(&motion);
+            let mut heights = Vec::new();
+            let _ = clock.run(1);
+            while size.is_animating() {
+                heights.push(lay(&mut label(&size), &mut tree, &renderer).height);
+                let _ = clock.run(1);
+            }
+            let end = lay(&mut label(&size), &mut tree, &renderer).height;
+            assert_eq!(end, 24.0, "{size_layout:?}: it rests on its line box");
+
+            for height in &heights {
+                let anchor = if (height - rest).abs() < (height - end).abs() {
+                    rest
+                } else {
+                    end
+                };
+                let steps = (height - anchor) * scale;
+
+                assert!(
+                    (steps - steps.round()).abs() < 1e-3,
+                    "{size_layout:?}: {height} is {steps} device px from {anchor}"
+                );
+            }
+            assert!(
+                heights
+                    .iter()
+                    .any(|height| (height - rest).abs() < (height - end).abs()),
+                "{size_layout:?}: no frame left from the rest's grid"
+            );
+        }
+    }
 
     /// The regression: a handle from `Motion::to` is bound to its track for
     /// as long as the view keeps asking for it, moving or not. Every hover
@@ -839,9 +1481,88 @@ mod tests {
             .size(size)
             .size_layout(SizeLayout::Scaled);
 
-        assert_eq!((live.shaped_size(), live.drawn_size()), (28.0, 28.0));
-        assert_eq!((scaled.shaped_size(), scaled.drawn_size()), (14.0, 28.0));
-        assert_eq!(scaled.shaped_style().line_height, 20.0);
+        let step = DEFAULT_SIZE_STEP;
+        assert_eq!(
+            (live.shaped_size(step), live.drawn_size(step)),
+            (28.0, 28.0)
+        );
+        assert_eq!(
+            (scaled.shaped_size(step), scaled.drawn_size(step)),
+            (14.0, 28.0)
+        );
+        assert_eq!(scaled.shaped_style(step, None).line_height, 20.0);
+    }
+
+    /// A 14 → 18 px line whose size has just started moving, and its clock.
+    fn moving_size(layout: SizeLayout) -> (Label, FrameClock) {
+        let motion = Motion::new();
+        let key = MotionKey::unique();
+        let _ = motion.to(key, QUICK, 14.0);
+        let size = motion.to(key, QUICK, 18.0);
+
+        let label: Label = animated_text("Save", STYLE).size(size).size_layout(layout);
+
+        (label, FrameClock::new(&motion))
+    }
+
+    /// Rounded, the line box of a moving size stands still for several
+    /// frames and then jumps a whole pixel, and so does everything after it.
+    #[test]
+    fn a_moving_live_size_sets_an_unrounded_line_box() {
+        let step = MIN_SIZE_STEP;
+        let (label, mut clock) = moving_size(SizeLayout::Live);
+
+        let fractional = (0..30).any(|_| {
+            let _ = clock.run(1);
+            let style = label.shaped_style(step, None);
+
+            assert_eq!(
+                style,
+                STYLE.resized_exact(label.shaped_size(step)),
+                "the line box of the moment, unrounded"
+            );
+            style.line_height.fract() != 0.0
+        });
+        assert!(fractional, "no frame set a fractional line box");
+
+        let _ = clock.run_until_settled();
+        assert_eq!(
+            label.shaped_style(step, None),
+            TextStyle::text(TextSize::Lg, Weight::Medium),
+            "at rest the line box is the scale's again"
+        );
+    }
+
+    /// A scaled line is shaped at its target, where the rounded and the exact
+    /// line box agree; rounding keeps it on the box `layout` reserved.
+    #[test]
+    fn a_moving_scaled_size_keeps_the_rounded_line_box() {
+        let step = MIN_SIZE_STEP;
+        let (label, mut clock) = moving_size(SizeLayout::Scaled);
+
+        let _ = clock.run(3);
+        assert_eq!(label.shaped_style(step, None).line_height, 28.0);
+    }
+
+    #[test]
+    fn a_given_size_step_overrides_the_one_the_line_needs() {
+        let derived: Label = animated_text("Save", STYLE);
+        assert_eq!(derived.size_step_for(10.0), default_size_step(10.0));
+
+        let given: Label = animated_text("Save", STYLE).size_step(0.5);
+        assert_eq!(given.size_step_for(10.0), 0.5);
+    }
+
+    #[test]
+    fn a_line_is_measured_in_ems() {
+        let style = TextStyle::text(TextSize::Xl, Weight::Medium);
+
+        assert_eq!(em_width(Size::new(200.0, 30.0), style), 10.0);
+        assert_eq!(
+            em_width(Size::new(f32::INFINITY, 30.0), style),
+            0.0,
+            "an unbounded measure is no measure"
+        );
     }
 
     #[test]
