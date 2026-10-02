@@ -62,6 +62,18 @@ impl<'a, Message> Input<'a, Message> {
         self
     }
 
+    /// Enables the input if `on_input_maybe` is `Some`, disables it otherwise.
+    #[must_use]
+    pub fn on_input_maybe<F>(mut self, on_input_maybe: Option<F>) -> Self
+    where
+        F: Fn(String) -> Message + 'a,
+    {
+        self.on_input = on_input_maybe
+            .map(|on_input| Box::new(on_input) as Box<dyn Fn(String) -> Message + 'a>);
+
+        self
+    }
+
     /// Message published when Enter is pressed.
     #[must_use]
     pub fn on_submit(mut self, message: Message) -> Self {
