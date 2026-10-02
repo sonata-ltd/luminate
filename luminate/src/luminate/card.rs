@@ -4,7 +4,7 @@ use iced::advanced::layout::{Layout, Limits, Node};
 use iced::advanced::widget::{Operation, Tree};
 use iced::advanced::{Clipboard, Shell, Widget, mouse, overlay, renderer};
 use iced::widget::{Space, container};
-use iced::{Event, Length, Point, Rectangle, Size, Vector};
+use iced::{Event, Length, Point, Rectangle, Size, Vector, border};
 use iced_animate::curves;
 use iced_texture_cache::{Cached, Pager, PixelSnap};
 
@@ -26,9 +26,11 @@ impl Luminate {
             pages,
             current,
             controls,
+            height,
             max_height,
             width,
             header_cache,
+            disable_background_shadow,
         } = descriptor;
 
         let tokens = self.theme.card;
@@ -65,14 +67,27 @@ impl Luminate {
             .class(ContainerClass::Card)
             .width(width)
             .clip(true);
+
+        if let Some(height) = height {
+            card = card.height(height);
+        }
+
         if let Some(max_height) = max_height {
             card = card.max_height(max_height);
         }
 
-        container(card)
-            .class(ContainerClass::CardHalo)
-            .width(width)
-            .into()
+        let mut wrapped = container(card).width(width);
+
+        if disable_background_shadow {
+            wrapped = wrapped.style(move |_| container::Style {
+                border: border::rounded(tokens.radius),
+                ..Default::default()
+            });
+        } else {
+            wrapped = wrapped.class(ContainerClass::CardHalo);
+        }
+
+        wrapped.into()
     }
 }
 
