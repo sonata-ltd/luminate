@@ -214,6 +214,11 @@ The first release. What each crate provides:
   database.
 - `descriptor::{Button, ButtonContent, ButtonHierarchy, ButtonSize, Input,
   Sidebar, Axis, Card, Pager}` as plain data with builders.
+- `Card` holds one `content` element rather than a page stack of its own:
+  pages that slide are a `Luminate::pager` passed as that content.
+  `Card::no_content_screen` stands in while there is none,
+  `Card::disable_decorations` drops the header and `Card::clip` clips the
+  card to its bounds.
 - `theme::Theme` (`LIGHT`, `DARK`) implementing `iced::theme::Base` and the
   `Catalog`s of every widget the kit uses; token structs,
   `palette::{Palette, ColorScale}`, `typography::{TextStyle, TextSize,

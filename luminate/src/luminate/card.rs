@@ -5,68 +5,60 @@ use iced::advanced::widget::{Operation, Tree};
 use iced::advanced::{Clipboard, Shell, Widget, mouse, overlay, renderer};
 use iced::widget::{Space, container};
 use iced::{Event, Length, Point, Rectangle, Size, Vector, border};
-use iced_animate::curves;
-use iced_texture_cache::{Cached, Pager, PixelSnap};
+use iced_texture_cache::{Cached, TextureCache};
 
 use crate::descriptor::Card;
 use crate::luminate::Luminate;
-use crate::theme::ContainerClass;
 use crate::theme::typography::styled_text;
+use crate::theme::{CardTheme, ContainerClass};
 use crate::{Element, Renderer, Theme};
 
 impl Luminate {
-    /// Builds a card: a titled header, a sliding page stack and an optional
-    /// controls row on the theme's card surface with its shadows. With
-    /// `max_height` the page stack shrinks so the header and the controls
-    /// stay fully visible.
+    /// Builds a card: a titled header, the content and an optional controls
+    /// row on the theme's card surface with its shadows. With `max_height`
+    /// the content shrinks so the header and the controls stay fully
+    /// visible.
+    ///
+    /// For pages that slide, pass a [`Luminate::pager`] as the content.
     #[must_use]
     pub fn card<'a, M: Clone + 'a>(&self, descriptor: Card<'a, M>) -> Element<'a, M> {
         let Card {
             title,
-            pages,
-            current,
+            content,
             controls,
             height,
             max_height,
             width,
             header_cache,
+            no_content_screen,
             disable_background_shadow,
+            disable_decorations,
+            clip,
         } = descriptor;
 
         let tokens = self.theme.card;
         let width = width.unwrap_or(Length::Fixed(tokens.width));
 
-        let header = container(styled_text(title, tokens.header_style))
-            .class(ContainerClass::CardHeader)
-            .height(tokens.header_height())
-            .width(Length::Fill)
-            .padding(tokens.header_padding);
-        let header: Element<'a, M> = match header_cache {
-            // The default `PixelSnap::LayoutOnly` is what this wants: the
-            // header animates nothing itself, but the card's height does, and
-            // a card centred in its parent travels as that height
-            // interpolates.
-            Some(cache) => Cached::new(cache, header).into(),
-            None => header.into(),
+        let header = if disable_decorations {
+            Space::new().into()
+        } else {
+            Self::build_header(tokens, title, header_cache)
         };
 
-        let pager: Element<'a, M> = Pager::new(pages)
-            .current(current)
-            .motion(self.motion.clone())
-            .width(Length::Fill)
-            .curve(curves::sharp::STRUCTURAL)
-            .pixel_snap(PixelSnap::LayoutOnly)
-            .into();
+        let content = content
+            .or(no_content_screen)
+            .unwrap_or_else(|| Space::new().into());
 
         let controls = controls.unwrap_or_else(|| Space::new().into());
 
         // Two layers, inside out: the body, clipped to the card's rounded
         // rectangle and capped by `max_height`, on the card fill with its
         // tight outline shadow; then the wide halo shadow underneath.
-        let mut card = container(Body::new(header, pager, controls))
-            .class(ContainerClass::Card)
-            .width(width)
-            .clip(true);
+        let mut card =
+            container(Body::new(header, content, controls).disable_header(disable_decorations))
+                .class(ContainerClass::Card)
+                .width(width)
+                .clip(true);
 
         if let Some(height) = height {
             card = card.height(height);
@@ -76,7 +68,7 @@ impl Luminate {
             card = card.max_height(max_height);
         }
 
-        let mut wrapped = container(card).width(width);
+        let mut wrapped = container(card).width(width).clip(clip);
 
         if disable_background_shadow {
             wrapped = wrapped.style(move |_| container::Style {
@@ -89,28 +81,56 @@ impl Luminate {
 
         wrapped.into()
     }
+
+    fn build_header<'a, M: Clone + 'a>(
+        tokens: CardTheme,
+        title: &'a str,
+        header_cache: Option<TextureCache>,
+    ) -> Element<'a, M> {
+        let header = container(styled_text(title, tokens.header_style))
+            .class(ContainerClass::CardHeader)
+            .height(tokens.header_height())
+            .width(Length::Fill)
+            .padding(tokens.header_padding);
+
+        match header_cache {
+            // The default `PixelSnap::LayoutOnly` is what this wants: the
+            // header animates nothing itself, but the card's height does, and
+            // a card centred in its parent travels as that height
+            // interpolates.
+            Some(cache) => Cached::new(cache, header).into(),
+            None => header.into(),
+        }
+    }
 }
 
 const HEADER: usize = 0;
-const PAGER: usize = 1;
+const CONTENT: usize = 1;
 const CONTROLS: usize = 2;
 
-/// Header, page stack and controls in a column, measured so the stack gets
+/// Header, content and controls in a column, measured so the content gets
 /// the height the other two leave.
 ///
 /// iced's `Column` measures shrink children in order and hands each the
 /// space the previous ones left, so under a height cap the controls (last)
 /// would get nothing (K-010). This widget measures the header and the
-/// controls first, then the stack with the remainder.
+/// controls first, then the content with the remainder.
 struct Body<'a, M> {
     children: [Element<'a, M>; 3],
+    has_header: bool,
 }
 
 impl<'a, M> Body<'a, M> {
-    fn new(header: Element<'a, M>, pager: Element<'a, M>, controls: Element<'a, M>) -> Self {
+    fn new(header: Element<'a, M>, content: Element<'a, M>, controls: Element<'a, M>) -> Self {
         Self {
-            children: [header, pager, controls],
+            children: [header, content, controls],
+            has_header: true,
         }
+    }
+
+    fn disable_header(mut self, disabled: bool) -> Self {
+        self.has_header = !disabled;
+        self
     }
 }
 
@@ -131,11 +151,16 @@ impl<M> Widget<M, Theme, Renderer> for Body<'_, M> {
         let max = limits.max();
         let unbounded = Limits::new(Size::ZERO, max);
 
-        let header = self.children[HEADER].as_widget_mut().layout(
-            &mut tree.children[HEADER],
-            renderer,
-            &unbounded,
-        );
+        let header = if self.has_header {
+            self.children[HEADER].as_widget_mut().layout(
+                &mut tree.children[HEADER],
+                renderer,
+                &unbounded,
+            )
+        } else {
+            Node::new(Size::ZERO)
+        };
+
         let controls = self.children[CONTROLS].as_widget_mut().layout(
             &mut tree.children[CONTROLS],
             renderer,
@@ -144,21 +169,28 @@ impl<M> Widget<M, Theme, Renderer> for Body<'_, M> {
 
         let used = header.size().height + controls.size().height;
         let remaining = (max.height - used).max(0.0);
-        let pager = self.children[PAGER].as_widget_mut().layout(
-            &mut tree.children[PAGER],
+        let content = self.children[CONTENT].as_widget_mut().layout(
+            &mut tree.children[CONTENT],
             renderer,
             &Limits::new(Size::ZERO, Size::new(max.width, remaining)),
         );
 
-        let header_height = header.size().height;
-        let pager_height = pager.size().height;
+        let header_height = if self.has_header {
+            header.size().height
+        } else {
+            0.0
+        };
+
+        let content_height = content.size().height;
         let intrinsic = Size::new(
-            header
-                .size()
-                .width
-                .max(pager.size().width)
-                .max(controls.size().width),
-            header_height + pager_height + controls.size().height,
+            if self.has_header {
+                header.size().width
+            } else {
+                0.0
+            }
+            .max(content.size().width)
+            .max(controls.size().width),
+            header_height + content_height + controls.size().height,
         );
         let size = limits.resolve(Length::Fill, Length::Shrink, intrinsic);
 
@@ -166,8 +198,8 @@ impl<M> Widget<M, Theme, Renderer> for Body<'_, M> {
             size,
             vec![
                 header.move_to(Point::ORIGIN),
-                pager.move_to(Point::new(0.0, header_height)),
-                controls.move_to(Point::new(0.0, header_height + pager_height)),
+                content.move_to(Point::new(0.0, header_height)),
+                controls.move_to(Point::new(0.0, header_height + content_height)),
             ],
         )
     }

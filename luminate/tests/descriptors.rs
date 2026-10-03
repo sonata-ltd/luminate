@@ -108,7 +108,9 @@ fn a_card_header_goes_through_its_cache_once() {
     let header = TextureCache::new();
     let root = luminate.card(
         Card::new("Title")
-            .pages([Element::from(text("one")), Element::from(text("two"))], 1)
+            .content(luminate.pager(
+                Pager::new([Element::from(text("one")), Element::from(text("two"))]).current(1),
+            ))
             .controls(Element::from(text("controls")))
             .max_height(300)
             .header_cache(header.clone()),

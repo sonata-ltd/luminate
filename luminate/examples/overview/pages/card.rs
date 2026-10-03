@@ -6,7 +6,7 @@
 //! Step 2's "Summary" field has no `on_input`: that is how a read-only input
 //! looks.
 
-use iced_luminate::descriptor::{Button, ButtonHierarchy, Card, Input};
+use iced_luminate::descriptor::{Button, ButtonHierarchy, Card, Input, Pager};
 use iced_luminate::iced::font::Weight;
 use iced_luminate::iced::widget::{column, container, row, scrollable, space};
 use iced_luminate::iced::{Length, Padding};
@@ -105,7 +105,9 @@ impl Page for CardPage {
         let mut card = Card::new("Add External Runtime")
             .header_cache(self.header_cache.clone())
             .width(418)
-            .pages([self.step_1(), self.step_2()], self.current)
+            .content(
+                luminate.pager(Pager::new([self.step_1(), self.step_2()]).current(self.current)),
+            )
             .controls(controls);
         if let Ok(height) = self.max_height.parse::<f32>() {
             card = card.max_height(height);

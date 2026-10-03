@@ -61,7 +61,7 @@ impl Page for Home {
     fn view(&self) -> Element<'_, ()> {
         self.luminate.card(
             Card::new("Home")
-                .pages([Element::from(text("home body"))], 0)
+                .content(text("home body"))
                 .header_cache(self.header.clone()),
         )
     }
@@ -98,7 +98,7 @@ impl Page for About {
     fn view(&self) -> Element<'_, ()> {
         self.luminate.card(
             Card::new("About")
-                .pages([Element::from(text("about body"))], 0)
+                .content(text("about body"))
                 .header_cache(self.header.clone()),
         )
     }

@@ -286,7 +286,7 @@ fn a_card_keeps_its_controls_inside_the_cap() {
     let tall: Element<'_, Message> = Space::new().height(1000).into();
     let root = luminate.card(
         Card::new("Title")
-            .pages([tall], 0)
+            .content(tall)
             .controls(luminate.button(Button::new("control").on_press(Message::Pressed)))
             .max_height(200),
     );
@@ -329,7 +329,7 @@ fn a_custom_theme_reaches_the_widgets() {
     };
     let luminate = Luminate::with_theme(theme);
     let page: Element<'_, Message> = text("page").width(Length::Fill).into();
-    let root = luminate.card(Card::new("Title").pages([page], 0));
+    let root = luminate.card(Card::new("Title").content(page));
 
     let mut ui = simulator(luminate.host(root));
     settle(&mut ui);
