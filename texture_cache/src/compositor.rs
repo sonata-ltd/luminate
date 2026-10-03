@@ -184,7 +184,18 @@ mod gpu {
             {
                 Ok((device, queue)) => {
                     let max_texture_dimension = device.limits().max_texture_dimension_2d;
-                    let filter_quality = crate::filter::auto(adapter.get_info().device_type);
+                    let device_type = adapter.get_info().device_type;
+                    let filter_quality = crate::filter::auto(device_type);
+
+                    match crate::filter::filter_quality() {
+                        Some(filter) => log::info!(
+                            "reconstruction filter quality: {filter:?} (set_filter_quality; {device_type:?} would pick {filter_quality:?})"
+                        ),
+                        None => log::info!(
+                            "selected reconstruction filter quality: {filter_quality:?} (auto for {device_type:?})"
+                        ),
+                    }
+
                     let engine = Engine::new(
                         adapter,
                         device.clone(),
@@ -588,6 +599,7 @@ pub(crate) use gpu::{headless_format, instance_flags, request_gpu};
 mod cpu {
     use super::{Arc, Color, Information, Shell, SurfaceError, Viewport, compositor};
 
+    use crate::FilterQuality;
     use crate::record::TinySkiaCacheStore;
     use crate::renderer::TinySkiaRenderer;
 
@@ -628,6 +640,14 @@ mod cpu {
                 .await?;
 
             log::info!("using the tiny_skia software backend");
+
+            let filter = crate::filter::filter_quality().unwrap_or(FilterQuality::Bilinear);
+            match filter {
+                FilterQuality::CatmullRom => log::info!(
+                    "selected reconstruction filter quality: {filter:?} (composited as Bilinear: no bicubic kernel)"
+                ),
+                _ => log::info!("selected reconstruction filter quality: {filter:?}"),
+            }
 
             Ok(Self {
                 inner,
