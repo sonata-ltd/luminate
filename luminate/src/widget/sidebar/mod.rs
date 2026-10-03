@@ -3,6 +3,7 @@
 use iced::advanced::renderer::Quad;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, svg};
+use iced::border::Radius;
 use iced::gradient::Linear;
 use iced::{
     Color, Degrees, Event, Gradient, Length, Padding, Pixels, Rectangle, Size, Vector, touch,
@@ -115,6 +116,8 @@ where
     /// Engine driving the collapse. Without one the sidebar collapses in a
     /// single frame.
     motion: Option<Motion>,
+    /// Corners of the background, each its own radius. Square by default.
+    border_radius: Radius,
     class: Theme::Class<'a>,
 }
 
@@ -213,6 +216,7 @@ where
             axis: Axis::Vertical,
             on_toggle: None,
             motion: None,
+            border_radius: Radius::default(),
             class: Theme::default(),
         }
         .extend(children)
@@ -328,6 +332,18 @@ where
         self
     }
 
+    /// Rounds the corners of the background, each by its own radius:
+    /// `12.0` for all four, `border::bottom_left(25.0)` for one, or
+    /// `Radius::default().top_left(4.0).bottom_left(25.0)` for any mix.
+    ///
+    /// Only the fill is rounded, nothing is clipped: children stay clear of
+    /// the corners as long as the padding is at least `0.3 × radius`.
+    #[must_use]
+    pub fn border_radius(mut self, radius: impl Into<Radius>) -> Self {
+        self.border_radius = radius.into();
+        self
+    }
+
     /// Sets the style with a closure.
     #[must_use]
     pub fn style(mut self, style: impl Fn(&Theme) -> Style + 'a) -> Self
@@ -363,6 +379,22 @@ where
             y: bounds.y + pad,
             width: self.icon_size,
             height: self.icon_size,
+        }
+    }
+
+    /// The corners of the edge-shadow band. The band runs along the inner
+    /// edge, so it takes that edge's corners: otherwise it would square them
+    /// off again.
+    fn edge_shadow_radius(&self) -> Radius {
+        let r = self.border_radius;
+
+        match self.axis {
+            Axis::Vertical => Radius::default()
+                .top_right(r.top_right)
+                .bottom_right(r.bottom_right),
+            Axis::Horizontal => Radius::default()
+                .bottom_left(r.bottom_left)
+                .bottom_right(r.bottom_right),
         }
     }
 }
@@ -523,6 +555,10 @@ where
         renderer.fill_quad(
             Quad {
                 bounds,
+                border: iced::Border {
+                    radius: self.border_radius,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             colors.background,
@@ -553,6 +589,10 @@ where
             renderer.fill_quad(
                 Quad {
                     bounds: strip,
+                    border: iced::Border {
+                        radius: self.edge_shadow_radius(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 Gradient::Linear(

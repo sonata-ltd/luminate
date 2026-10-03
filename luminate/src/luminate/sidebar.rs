@@ -24,7 +24,8 @@ impl Luminate {
             .header_size(tokens.header_size)
             .icon_size(tokens.icon_size)
             .padding(tokens.padding)
-            .spacing(tokens.spacing(descriptor.axis));
+            .spacing(tokens.spacing(descriptor.axis))
+            .border_radius(descriptor.border_radius);
 
         if let Some(on_toggle) = descriptor.on_toggle {
             sidebar = sidebar.on_toggle(on_toggle);

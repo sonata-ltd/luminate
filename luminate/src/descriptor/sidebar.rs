@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use iced::border::Radius;
 use iced_animate::AnimLength;
 
 use crate::Element;
@@ -37,6 +38,8 @@ pub struct Sidebar<'a, Message> {
     /// Called with the requested `collapsed` value when the toggle is
     /// pressed.
     pub on_toggle: Option<Box<dyn Fn(bool) -> Message + 'a>>,
+    /// Corners of the background, each its own radius (default square).
+    pub border_radius: Radius,
 }
 
 impl<'a, Message> Sidebar<'a, Message> {
@@ -51,6 +54,7 @@ impl<'a, Message> Sidebar<'a, Message> {
             collapsed: false,
             show_toggle: false,
             on_toggle: None,
+            border_radius: Radius::default(),
         }
     }
 
@@ -103,6 +107,15 @@ impl<'a, Message> Sidebar<'a, Message> {
         self.on_toggle = Some(Box::new(on_toggle));
         self
     }
+
+    /// Rounds the corners of the background, each by its own radius:
+    /// `12.0` for all four, `border::bottom_left(25.0)` for one, or
+    /// `Radius::default().top_left(4.0).bottom_left(25.0)` for any mix.
+    #[must_use]
+    pub fn border_radius(mut self, radius: impl Into<Radius>) -> Self {
+        self.border_radius = radius.into();
+        self
+    }
 }
 
 impl<Message> fmt::Debug for Sidebar<'_, Message> {
@@ -115,6 +128,7 @@ impl<Message> fmt::Debug for Sidebar<'_, Message> {
             .field("collapsed", &self.collapsed)
             .field("show_toggle", &self.show_toggle)
             .field("toggles", &self.on_toggle.is_some())
+            .field("border_radius", &self.border_radius)
             .finish()
     }
 }
