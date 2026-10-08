@@ -328,6 +328,25 @@ pub struct FadingScrollableTheme {
     pub radius: f32,
 }
 
+/// Pick indicator tokens ([`widget::pick_indicator`](crate::widget::pick_indicator)).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PickIndicatorTheme {
+    /// Diameter of the outer circle.
+    pub size: f32,
+    /// Diameter of the inner circle.
+    pub dot_size: f32,
+    /// Width of the outline.
+    pub ring_width: f32,
+    /// Ring of an unpicked indicator.
+    pub ring: Color,
+    /// Ring of a picked or pending indicator.
+    pub ring_on: Color,
+    /// The inner circle.
+    pub dot: Color,
+    /// Fill of the outer circle of a picked indicator.
+    pub fill: Color,
+}
+
 /// The values Luminate draws with. This is also an iced theme: it implements
 /// `iced::theme::Base` and a `Catalog` for every widget the kit uses. See
 /// [`theme`](crate::theme).
@@ -369,6 +388,8 @@ pub struct Theme {
     pub scrollable: ScrollableTheme,
     /// Fading-scrollable tokens.
     pub fading_scrollable: FadingScrollableTheme,
+    /// Pick indicator tokens.
+    pub pick_indicator: PickIndicatorTheme,
 }
 
 /// The light look's `button` tokens; see [`Theme::light`].
@@ -573,6 +594,19 @@ const fn light_fading_scrollable(p: &Palette) -> FadingScrollableTheme {
     }
 }
 
+/// The light look's `pick_indicator` tokens; see [`Theme::light`].
+const fn light_pick_indicator(p: &Palette) -> PickIndicatorTheme {
+    PickIndicatorTheme {
+        size: 18.0,
+        dot_size: 9.0,
+        ring_width: 1.0,
+        ring: p.gray.s300,
+        ring_on: p.accent,
+        dot: Color::WHITE,
+        fill: p.accent,
+    }
+}
+
 /// The dark look's `button` tokens; see [`Theme::dark`].
 const fn dark_button(p: &Palette, background: Color, light: &Theme) -> ButtonTheme {
     ButtonTheme {
@@ -733,6 +767,7 @@ impl Theme {
             error_bubble: light_error_bubble(&p, &typography),
             scrollable: light_scrollable(&p),
             fading_scrollable: light_fading_scrollable(&p),
+            pick_indicator: light_pick_indicator(&p),
         }
     }
 
@@ -781,6 +816,10 @@ impl Theme {
                 scroller_hover: p.gray.s500,
                 scroller_dragged: p.gray.s400,
                 ..light.fading_scrollable
+            },
+            pick_indicator: PickIndicatorTheme {
+                ring: p.gray.s500,
+                ..light.pick_indicator
             },
             ..light
         }

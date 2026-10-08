@@ -25,6 +25,7 @@ use iced::{Background, Border, Color, Shadow, Vector, border};
 use crate::descriptor::ButtonHierarchy;
 use crate::theme::Theme;
 use crate::theme::palette::mix;
+use crate::widget::pick_indicator::{self, Pick};
 use crate::widget::{error_bubble, fading_scrollable, multi_border, sidebar};
 
 // --- Base ---------------------------------------------------------------
@@ -1084,6 +1085,30 @@ impl multi_border::Catalog for Theme {
 
     fn style(&self, class: &Self::Class<'_>, status: multi_border::Status) -> multi_border::Style {
         class(self, status)
+    }
+}
+
+impl pick_indicator::Catalog for Theme {
+    type Class<'a> = pick_indicator::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme: &Theme, pick: Pick| {
+            let tokens = theme.pick_indicator;
+
+            pick_indicator::Style {
+                ring: if pick == Pick::Off {
+                    tokens.ring
+                } else {
+                    tokens.ring_on
+                },
+                dot: tokens.dot,
+                fill: tokens.fill,
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>, pick: Pick) -> pick_indicator::Style {
+        class(self, pick)
     }
 }
 

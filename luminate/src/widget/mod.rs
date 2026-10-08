@@ -19,7 +19,7 @@
 macro_rules! catalog {
     // A style that depends on an interaction status.
     (status: $status:ty, |$theme:ident, $st:ident| $default:expr) => {
-        /// Computes the [`Style`] for a [`Status`].
+        /// Computes the [`Style`] for a status.
         pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme, $status) -> Style + 'a>;
 
         /// A theme that can style this widget.
@@ -82,5 +82,6 @@ pub mod error_bubble;
 pub mod fading_scrollable;
 pub mod interaction_override;
 pub mod multi_border;
+pub mod pick_indicator;
 pub mod sidebar;
 pub mod tabs;
