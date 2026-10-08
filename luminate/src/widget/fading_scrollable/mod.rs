@@ -3322,6 +3322,21 @@ where
     })
 }
 
+/// A scroll an operation asked a [`FadingScrollable`] for, handed to
+/// operations through `Operation::custom`. The widget takes it on its next
+/// event and glides there the way it does after a turn of the wheel.
+#[derive(Debug, Default)]
+pub struct Glide {
+    to: Option<AbsoluteOffset<Option<f32>>>,
+}
+
+impl Glide {
+    /// Asks the scrollable to glide to `offset`.
+    pub fn to(&mut self, offset: AbsoluteOffset<Option<f32>>) {
+        self.to = Some(offset);
+    }
+}
+
 /// Everything one [`FadingScrollable`] remembers between frames.
 #[derive(Debug)]
 struct State {
@@ -3382,6 +3397,8 @@ struct State {
     /// counts it as heard, so if the content comes to rest exactly there it
     /// stays quiet, and this is what gets delivered instead.
     withheld: Option<scrollable::Viewport>,
+    /// A scroll an operation asked for, taken on the next event.
+    requested: Glide,
 }
 
 impl State {
@@ -3433,6 +3450,7 @@ impl State {
                 vertical: 1.0,
                 horizontal: 1.0,
             },
+            requested: Glide::default(),
         }
     }
 
@@ -3804,6 +3822,7 @@ where
         state: &mut State,
         seen: Axes<Reach>,
         dragged: Option<AbsoluteOffset<Option<f32>>>,
+        requested: Option<AbsoluteOffset<Option<f32>>>,
         event: &Event,
         shell: &mut Shell<'_, Message>,
     ) -> Option<AbsoluteOffset<Option<f32>>> {
@@ -3822,6 +3841,9 @@ where
             // headed. Anything else is already where it belongs.
             let aim = match dragged.and_then(|dragged| axis.component(dragged)) {
                 Some(to) => Some((to, false)),
+                None if let Some(to) = requested.and_then(|r| axis.component(r)) => {
+                    Some((to, self.smooth))
+                }
                 None if moved == 0.0 => None,
                 None if travelling => {
                     // Adding to the target is what makes a flurry of notches
@@ -4150,10 +4172,12 @@ where
         // Last, so it sees whatever this event did to the offset — the
         // wheel the scrollable just spent, or the drag taken above.
         let seen = self.reach(tree, layout, renderer, None);
+        let requested = tree.state.downcast_mut::<State>().requested.to.take();
         let to = self.aim(
             tree.state.downcast_mut::<State>(),
             seen,
             take_to,
+            requested,
             event,
             shell,
         );
@@ -4188,6 +4212,10 @@ where
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
+        let state = tree.state.downcast_mut::<State>();
+
+        operation.custom(None, layout.bounds(), &mut state.requested);
+
         self.inner_mut()
             .operate(&mut tree.children[0], layout, renderer, operation);
     }
