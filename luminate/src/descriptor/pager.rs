@@ -16,6 +16,8 @@ pub struct Pager<'a, Message> {
     pub width: Length,
     /// Caps the height; overflowing pages are clipped.
     pub max_height: Option<Pixels>,
+    /// Keeps the height of the page a slide arrived at (default `false`).
+    pub lock_height: bool,
 }
 
 impl<'a, Message> Pager<'a, Message> {
@@ -27,6 +29,7 @@ impl<'a, Message> Pager<'a, Message> {
             current: 0,
             width: Length::Fill,
             max_height: None,
+            lock_height: false,
         }
     }
 
@@ -50,6 +53,15 @@ impl<'a, Message> Pager<'a, Message> {
         self.max_height = Some(max_height.into());
         self
     }
+
+    /// Holds the height after a slide: it interpolates to the next page's
+    /// height, then stays there even if the page's own height changes later.
+    /// Measured again on the next switch or when the width changes.
+    #[must_use]
+    pub fn lock_height(mut self, lock: bool) -> Self {
+        self.lock_height = lock;
+        self
+    }
 }
 
 impl<Message> fmt::Debug for Pager<'_, Message> {
@@ -59,6 +71,7 @@ impl<Message> fmt::Debug for Pager<'_, Message> {
             .field("current", &self.current)
             .field("width", &self.width)
             .field("max_height", &self.max_height)
+            .field("lock_height", &self.lock_height)
             .finish()
     }
 }

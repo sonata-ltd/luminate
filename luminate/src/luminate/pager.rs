@@ -17,6 +17,7 @@ impl Luminate {
             current,
             width,
             max_height,
+            lock_height,
         } = descriptor;
 
         let mut pager = Pager::new(pages)
@@ -24,6 +25,7 @@ impl Luminate {
             .motion(self.motion.clone())
             .width(width)
             .curve(curves::sharp::STRUCTURAL)
+            .lock_height(lock_height)
             .pixel_snap(PixelSnap::LayoutOnly);
 
         if let Some(max_height) = max_height {

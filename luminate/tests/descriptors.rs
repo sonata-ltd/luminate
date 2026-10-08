@@ -140,6 +140,16 @@ fn a_pager_clamps_an_out_of_range_index() {
 }
 
 #[test]
+fn a_pager_with_a_locked_height_builds_and_draws() {
+    let luminate = Luminate::new();
+    let pages: Vec<Element<'_, Message>> = vec![text("first").into(), text("last").into()];
+    let pager = Pager::new(pages).current(1).lock_height(true);
+    let mut ui = simulator(luminate.host(luminate.pager(pager)));
+    redraw(&mut ui);
+    let _ = ui.find("last").expect("the page is shown");
+}
+
+#[test]
 fn luminate_clones_share_one_engine_and_theme() {
     let a = Luminate::with_theme(Theme::DARK);
     let b = a.clone();

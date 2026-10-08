@@ -58,6 +58,8 @@ const BLEED: u32 = 0;
 ///   nothing to that measurement.
 /// * [`max_height`](Self::max_height) caps the pager's height; pages are laid
 ///   out within it and anything that overflows is clipped.
+/// * [`lock_height`](Self::lock_height) keeps the height of the page a slide
+///   arrived at, instead of following its later size changes.
 ///
 /// # Motion
 ///
@@ -90,6 +92,7 @@ pub struct Pager<'a, Message, Theme = iced_core::Theme, Renderer = crate::Render
     children: Vec<Element<'a, Message, Theme, Renderer>>,
     width: Length,
     max_height: f32,
+    lock_height: bool,
     current: usize,
     /// Engine driving the slide. Without one the pager jumps straight to the
     /// requested page instead of animating against a clock nothing ticks.
@@ -107,6 +110,7 @@ impl<Message, Theme, Renderer> std::fmt::Debug for Pager<'_, Message, Theme, Ren
             .field("pages", &self.children.len())
             .field("width", &self.width)
             .field("max_height", &self.max_height)
+            .field("lock_height", &self.lock_height)
             .field("current", &self.current)
             .field("motion", &self.motion)
             .field("curve", &self.curve)
@@ -125,6 +129,16 @@ where
     Renderer: renderer::Renderer,
 {
     Pager::new(children)
+}
+
+/// The height a [`Pager::lock_height`] pager holds once a slide has arrived.
+#[derive(Debug, Clone, Copy)]
+struct Locked {
+    page: usize,
+    /// The width it was measured at: a different width re-wraps the content,
+    /// so the height is measured again.
+    width: f32,
+    height: f32,
 }
 
 /// Per-page bookkeeping.
@@ -169,6 +183,8 @@ struct State {
     /// for so operations (focus) reach it. Layout children are emitted in
     /// this order, so index order == layout-child order.
     visible: [Option<usize>; 3],
+    /// Set by `layout` while [`Pager::lock_height`] is on.
+    locked: Option<Locked>,
 }
 
 /// The one or two pages under the camera at a clamped `position`.
@@ -241,6 +257,7 @@ impl State {
             slide: Anim::constant(0.0),
             pages: (0..page_count).map(|_| Page::new()).collect(),
             visible: [None; 3],
+            locked: None,
         };
 
         state.retarget(motion, curve);
@@ -296,6 +313,7 @@ where
             children: Vec::with_capacity(capacity),
             width: Length::Fill,
             max_height: f32::INFINITY,
+            lock_height: false,
             current: 0,
             motion: None,
             curve: STRUCTURAL,
@@ -432,6 +450,21 @@ where
         self
     }
 
+    /// Holds the pager's height once a slide has arrived (default `false`).
+    ///
+    /// The height still interpolates from the outgoing page to the incoming
+    /// one during the slide; on arrival the incoming page's height is kept, and
+    /// later changes to the page's own height no longer resize the pager (an
+    /// overflowing page is clipped). The height is measured again on the next
+    /// switch and when the pager's width changes. At rest the page is aligned
+    /// to the top instead of being centred, and is laid out within the held
+    /// height, so a page that fills its height fills the held one.
+    #[must_use]
+    pub fn lock_height(mut self, lock: bool) -> Self {
+        self.lock_height = lock;
+        self
+    }
+
     /// Sets the width. See "Width and height" on [`Pager`].
     #[must_use]
     pub fn width(mut self, width: impl Into<Length>) -> Self {
@@ -508,6 +541,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
         let max_height = limits.max().height.min(self.max_height);
         // Inside a scroll the height is compressed: a page that fills it has
@@ -516,9 +550,14 @@ where
         let compression = Size::new(false, limits.compression().height);
         let page_count = self.children.len();
 
-        let (camera, pending) = {
+        let (camera, pending, sliding, locked) = {
             let state = tree.state.downcast_ref::<State>();
-            (camera(state.position(), page_count), state.switch.pending)
+            (
+                camera(state.position(), page_count),
+                state.switch.pending,
+                state.is_sliding(),
+                state.locked,
+            )
         };
         let visible = visible_indices(camera, pending, page_count);
 
@@ -558,15 +597,27 @@ where
             }
         };
 
+        // A locked pager at rest holds the height its page arrived at: the
+        // page is laid out within it, so a `Fill` page fills the held height
+        // instead of the whole available one.
+        let held_cap = locked
+            .filter(|held| {
+                self.lock_height && !sliding && held.page == camera.first && held.width == width
+            })
+            .map(|held| held.height);
         let child_limits = Limits::with_compression(
             Size::new(width, 0.0),
-            Size::new(width, max_height),
+            Size::new(
+                width,
+                held_cap.map_or(max_height, |cap| cap.min(max_height)),
+            ),
             compression,
         );
         for (slot, i) in nodes.iter_mut().zip(laid_out_indices(&visible)) {
-            let reusable = slot
-                .as_ref()
-                .is_some_and(|(_, node)| node.size().width == width);
+            let reusable = held_cap.is_none()
+                && slot
+                    .as_ref()
+                    .is_some_and(|(_, node)| node.size().width == width);
             if !reusable {
                 *slot = Some((
                     i,
@@ -586,11 +637,35 @@ where
                 .find(|(i, _)| *i == index)
                 .map_or(0.0, |(_, node)| node.size().height)
         };
-        let height = lerp(
-            height_of(camera.first),
-            height_of(camera.second),
-            camera.position.fract(),
-        );
+        let lock = self.lock_height && page_count > 0;
+        // A locked height outlives the page's own measurement, so the slide
+        // leaves the page it started from at the height it was held at.
+        let slide_height_of = |index: usize| -> f32 {
+            locked
+                .filter(|held| lock && held.page == index && held.width == width)
+                .map_or_else(|| height_of(index), |held| held.height)
+        };
+
+        let mut held = None;
+        let height = if lock && !sliding {
+            let kept = held.insert(
+                locked
+                    .filter(|held| held.page == camera.first && held.width == width)
+                    .unwrap_or(Locked {
+                        page: camera.first,
+                        width,
+                        height: height_of(camera.first),
+                    }),
+            );
+            kept.height.min(max_height)
+        } else {
+            lerp(
+                slide_height_of(camera.first),
+                slide_height_of(camera.second),
+                camera.position.fract(),
+            )
+        };
+        let top_aligned = held.is_some();
 
         // Pages are positioned by the slide itself, so every walk (operate,
         // events, overlays, draw) sees them where they really are.
@@ -602,12 +677,23 @@ where
                 let page_height = node.size().height;
                 node.move_to(Point::new(
                     i as f32 * width - offset_x,
-                    (height - page_height) / 2.0,
+                    if top_aligned {
+                        0.0
+                    } else {
+                        (height - page_height) / 2.0
+                    },
                 ))
             })
             .collect();
 
-        tree.state.downcast_mut::<State>().visible = visible;
+        let state = tree.state.downcast_mut::<State>();
+        state.visible = visible;
+        if lock {
+            // Mid-slide the held height is kept: it is the departure height.
+            state.locked = held.or(state.locked);
+        } else {
+            state.locked = None;
+        }
 
         Node::with_children(Size { width, height }, children)
     }
@@ -1388,6 +1474,134 @@ mod tests {
         let node = pager.layout(&mut tree, &renderer, &limits(300.0, 200.0));
 
         assert_eq!(node.size().height, 200.0);
+    }
+
+    /// A page whose height is set from outside the tree, so a test can grow
+    /// it between layouts.
+    fn growable_pages<'a>(heights: &[f32]) -> Vec<crate::Element<'a, ()>> {
+        heights
+            .iter()
+            .map(|h| shape().width(40.0).height(*h).fill(Color::BLACK).into())
+            .collect()
+    }
+
+    fn settle(motion: &Motion, tree: &Tree, start: Instant) {
+        let _ = motion.tick(start);
+        for frame in 1..=200 {
+            let _ = motion.tick(start + Duration::from_millis(16 * frame));
+        }
+        assert!(!state(tree).is_sliding());
+    }
+
+    #[test]
+    fn lock_height_keeps_the_arrived_height_when_the_page_grows() {
+        let renderer = crate::testing::headless_tiny_skia();
+
+        for (lock, expected) in [(true, 50.0), (false, 80.0)] {
+            let motion = Motion::new();
+            let build = |heights: &[f32], current: usize, lock: bool| -> TestPager<'static> {
+                Pager::new(growable_pages(heights))
+                    .width(300.0)
+                    .current(current)
+                    .motion(motion.clone())
+                    .lock_height(lock)
+            };
+            let mut tree = tree_of(&build(&[10.0, 50.0], 0, lock));
+            let mut pager = build(&[10.0, 50.0], 1, lock);
+            pager.diff(&mut tree);
+            settle(&motion, &tree, Instant::now());
+            let node = pager.layout(&mut tree, &renderer, &limits(300.0, 200.0));
+            assert_eq!(node.size().height, 50.0, "arrived");
+
+            // The page grows after arrival.
+            let mut grown = build(&[10.0, 80.0], 1, lock);
+            grown.diff(&mut tree);
+            let node = grown.layout(&mut tree, &renderer, &limits(300.0, 200.0));
+            assert_eq!(node.size().height, expected, "lock = {lock}");
+        }
+    }
+
+    #[test]
+    fn lock_height_interpolates_from_the_held_height_and_remeasures_on_the_next_switch() {
+        let renderer = crate::testing::headless_tiny_skia();
+        let motion = Motion::new();
+        let build = |heights: &[f32], current: usize| -> TestPager<'static> {
+            Pager::new(growable_pages(heights))
+                .width(300.0)
+                .current(current)
+                .motion(motion.clone())
+                .lock_height(true)
+        };
+
+        let mut tree = tree_of(&build(&[10.0, 50.0], 0));
+        build(&[10.0, 50.0], 0).layout(&mut tree, &renderer, &limits(300.0, 200.0));
+
+        // Page 0 grows, then a switch starts: it departs from the held 10.
+        let mut pager = build(&[40.0, 50.0], 1);
+        pager.diff(&mut tree);
+        let start = Instant::now();
+        let _ = motion.tick(start);
+        let _ = motion.tick(start + Duration::from_millis(16));
+        let node = pager.layout(&mut tree, &renderer, &limits(300.0, 200.0));
+        let height = node.size().height;
+        assert!((10.0..50.0).contains(&height), "interpolating: {height}");
+
+        settle(&motion, &tree, start + Duration::from_millis(32));
+        let node = pager.layout(&mut tree, &renderer, &limits(300.0, 200.0));
+        assert_eq!(node.size().height, 50.0);
+
+        // Back to page 0: measured again (now 40), not the stale 10.
+        let mut back = build(&[40.0, 50.0], 0);
+        back.diff(&mut tree);
+        settle(&motion, &tree, start + Duration::from_secs(10));
+        let node = back.layout(&mut tree, &renderer, &limits(300.0, 200.0));
+        assert_eq!(node.size().height, 40.0);
+    }
+
+    #[test]
+    fn lock_height_is_remeasured_when_the_width_changes() {
+        let renderer = crate::testing::headless_tiny_skia();
+        let mut pager: TestPager<'_> = Pager::new(growable_pages(&[10.0, 20.0])).lock_height(true);
+        let mut tree = tree_of(&pager);
+        pager.layout(&mut tree, &renderer, &limits(300.0, 200.0));
+        assert_eq!(state(&tree).locked.map(|l| l.width), Some(300.0));
+        pager.layout(&mut tree, &renderer, &limits(200.0, 200.0));
+        assert_eq!(state(&tree).locked.map(|l| l.width), Some(200.0));
+    }
+
+    #[test]
+    fn lock_height_off_holds_nothing() {
+        let renderer = crate::testing::headless_tiny_skia();
+        let mut pager: TestPager<'_> = Pager::new(pages(2));
+        let mut tree = tree_of(&pager);
+        pager.layout(&mut tree, &renderer, &limits(300.0, 200.0));
+        assert!(state(&tree).locked.is_none());
+    }
+
+    #[test]
+    fn lock_height_makes_a_filling_page_fill_the_held_height() {
+        let renderer = crate::testing::headless_tiny_skia();
+        let build = |filling: bool| -> TestPager<'static> {
+            let page: crate::Element<'static, ()> = if filling {
+                iced::widget::container(text("e"))
+                    .height(Length::Fill)
+                    .into()
+            } else {
+                shape().width(40.0).height(70.0).fill(Color::BLACK).into()
+            };
+            Pager::new([page]).width(300.0).lock_height(true)
+        };
+
+        let mut tree = tree_of(&build(false));
+        let node = build(false).layout(&mut tree, &renderer, &limits(300.0, 500.0));
+        assert_eq!(node.size().height, 70.0, "arrived at the content height");
+
+        // The same page is swapped for one that fills: it takes 70, not 500.
+        let mut filling = build(true);
+        filling.diff(&mut tree);
+        let node = filling.layout(&mut tree, &renderer, &limits(300.0, 500.0));
+        assert_eq!(node.size().height, 70.0);
+        assert_eq!(node.children()[0].size().height, 70.0);
     }
 
     #[test]
