@@ -12,6 +12,7 @@ mod card;
 mod input;
 mod pager;
 mod sidebar;
+mod table;
 
 /// Builds Luminate elements from [`descriptor`](crate::descriptor)s.
 ///

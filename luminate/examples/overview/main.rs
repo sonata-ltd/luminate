@@ -19,6 +19,7 @@ use iced_luminate::{Element, Luminate, Router, Theme};
 use iced_texture_cache::{FilterQuality, set_filter_quality};
 use luminate_examples_support::bench::Bench;
 
+use crate::pages::table::TablePage;
 use crate::pages::tabs::Tabs;
 use crate::pages::typo::Typography;
 use crate::pages::{
@@ -95,7 +96,8 @@ impl App {
             .add::<ShowcasePage>("Showcase")
             .add::<NestedSidebar>("Nested sidebar")
             .add::<Typography>("Typography")
-            .add::<Tabs>("Tabs");
+            .add::<Tabs>("Tabs")
+            .add::<TablePage>("Table");
         router
             .navigate::<ButtonsPage>()
             .expect("ButtonsPage was added above");

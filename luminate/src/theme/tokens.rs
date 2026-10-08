@@ -347,6 +347,53 @@ pub struct PickIndicatorTheme {
     pub fill: Color,
 }
 
+/// Table tokens ([`widget::table`](crate::widget::table)).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TableTheme {
+    /// Height of a row.
+    pub row_height: f32,
+    /// Height of the header.
+    pub header_height: f32,
+    /// Horizontal padding of a cell.
+    pub padding_x: f32,
+    /// Padding between the table edge and its rows.
+    pub inset: Padding,
+    /// Corner radius of the table border.
+    pub radius: f32,
+    /// Width of the table border.
+    pub border_width: f32,
+    /// Color of the table border.
+    pub border: Color,
+    /// Table background.
+    pub background: Color,
+    /// Header background.
+    pub header_background: Color,
+    /// Text style of the column headers.
+    pub header_style: TextStyle,
+    /// Text color of the column headers.
+    pub header_text: Color,
+    /// Line under the header.
+    pub divider: Color,
+    /// Background of an odd row of a striped table.
+    pub row_stripe: Color,
+    /// Background of the row under the cursor.
+    pub row_hover: Color,
+    /// Background of a pressed row.
+    pub row_pressed: Color,
+    /// Background of a selected row.
+    pub row_selected: Color,
+    /// Veil over a disabled row.
+    pub veil: Color,
+    /// Radius of the cell.
+    pub cell_radius: f32,
+    /// Border of the keyboard cursor.
+    pub focus_ring: Color,
+    /// Width of the keyboard cursor border.
+    pub focus_ring_width: f32,
+    /// Radius of the keyboard cursor border.
+    pub focus_ring_radius: f32,
+}
+
 /// The values Luminate draws with. This is also an iced theme: it implements
 /// `iced::theme::Base` and a `Catalog` for every widget the kit uses. See
 /// [`theme`](crate::theme).
@@ -388,6 +435,8 @@ pub struct Theme {
     pub scrollable: ScrollableTheme,
     /// Fading-scrollable tokens.
     pub fading_scrollable: FadingScrollableTheme,
+    /// Table tokens.
+    pub table: TableTheme,
     /// Pick indicator tokens.
     pub pick_indicator: PickIndicatorTheme,
 }
@@ -594,6 +643,33 @@ const fn light_fading_scrollable(p: &Palette) -> FadingScrollableTheme {
     }
 }
 
+/// The light look's `table` tokens; see [`Theme::light`].
+const fn light_table(p: &Palette, typography: &TypographyTheme) -> TableTheme {
+    TableTheme {
+        row_height: 32.0,
+        header_height: 26.0,
+        padding_x: 6.0,
+        inset: Padding::ZERO,
+        radius: 12.0,
+        border_width: 1.0,
+        border: p.gray.s50,
+        background: p.white,
+        header_background: p.white,
+        header_style: typography.label,
+        header_text: p.text_secondary,
+        divider: p.gray.s50,
+        row_stripe: p.gray.s40,
+        row_hover: with_alpha(p.black, 0.04),
+        row_pressed: with_alpha(p.black, 0.08),
+        row_selected: p.focus,
+        veil: with_alpha(p.white, 0.5),
+        cell_radius: 0.0,
+        focus_ring: p.accent,
+        focus_ring_width: 1.0,
+        focus_ring_radius: 0.0,
+    }
+}
+
 /// The light look's `pick_indicator` tokens; see [`Theme::light`].
 const fn light_pick_indicator(p: &Palette) -> PickIndicatorTheme {
     PickIndicatorTheme {
@@ -767,6 +843,7 @@ impl Theme {
             error_bubble: light_error_bubble(&p, &typography),
             scrollable: light_scrollable(&p),
             fading_scrollable: light_fading_scrollable(&p),
+            table: light_table(&p, &typography),
             pick_indicator: light_pick_indicator(&p),
         }
     }
@@ -816,6 +893,19 @@ impl Theme {
                 scroller_hover: p.gray.s500,
                 scroller_dragged: p.gray.s400,
                 ..light.fading_scrollable
+            },
+            table: TableTheme {
+                border: p.gray.s700,
+                background,
+                header_background: p.gray.s800,
+                header_text: p.text_secondary,
+                divider: p.gray.s700,
+                row_stripe: p.gray.s800,
+                row_hover: with_alpha(p.white, 0.06),
+                row_pressed: with_alpha(p.white, 0.10),
+                row_selected: with_alpha(p.accent, 0.25),
+                veil: with_alpha(background, 0.5),
+                ..light.table
             },
             pick_indicator: PickIndicatorTheme {
                 ring: p.gray.s500,

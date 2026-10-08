@@ -26,7 +26,7 @@ use crate::descriptor::ButtonHierarchy;
 use crate::theme::Theme;
 use crate::theme::palette::mix;
 use crate::widget::pick_indicator::{self, Pick};
-use crate::widget::{error_bubble, fading_scrollable, multi_border, sidebar};
+use crate::widget::{error_bubble, fading_scrollable, multi_border, sidebar, table};
 
 // --- Base ---------------------------------------------------------------
 
@@ -1109,6 +1109,58 @@ impl pick_indicator::Catalog for Theme {
 
     fn style(&self, class: &Self::Class<'_>, pick: Pick) -> pick_indicator::Style {
         class(self, pick)
+    }
+}
+
+impl table::Catalog for Theme {
+    type Class<'a> = table::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme: &Theme, status: table::Status| {
+            let tokens = theme.table;
+            let indicator = theme.pick_indicator;
+
+            let row_background = match status {
+                table::Status { pick: Pick::On, .. } => Some(tokens.row_selected),
+                table::Status { pressed: true, .. } => Some(tokens.row_pressed),
+                table::Status { hovered: true, .. } => Some(tokens.row_hover),
+                table::Status { odd: true, .. } => Some(tokens.row_stripe),
+                _ => None,
+            };
+
+            table::Style {
+                background: Some(tokens.background.into()),
+                border: Border {
+                    color: tokens.border,
+                    width: tokens.border_width,
+                    radius: tokens.radius.into(),
+                },
+                header_background: Some(tokens.header_background.into()),
+                header_text: tokens.header_text,
+                divider: tokens.divider,
+                row_background: row_background.map(Background::from),
+                row_veil: Some(tokens.veil.into()),
+                cell_radius: tokens.cell_radius,
+                focus_ring: Border {
+                    color: tokens.focus_ring,
+                    width: tokens.focus_ring_width,
+                    radius: tokens.focus_ring_radius.into(),
+                },
+                indicator: pick_indicator::Style {
+                    ring: if status.pick == Pick::Off {
+                        indicator.ring
+                    } else {
+                        indicator.ring_on
+                    },
+                    dot: indicator.dot,
+                    fill: indicator.fill,
+                },
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>, status: table::Status) -> table::Style {
+        class(self, status)
     }
 }
 

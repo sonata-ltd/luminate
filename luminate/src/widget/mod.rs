@@ -84,4 +84,6 @@ pub mod interaction_override;
 pub mod multi_border;
 pub mod pick_indicator;
 pub mod sidebar;
+pub mod table;
 pub mod tabs;
+pub mod virtual_list;
