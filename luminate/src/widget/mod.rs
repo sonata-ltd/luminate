@@ -78,6 +78,7 @@ macro_rules! catalog {
 }
 
 pub mod animated_text;
+pub mod dropdown;
 pub mod error_bubble;
 pub mod fading_scrollable;
 pub mod interaction_override;

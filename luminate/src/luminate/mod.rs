@@ -9,6 +9,7 @@ use crate::theme::Theme;
 
 mod button;
 mod card;
+mod dropdown;
 mod input;
 mod pager;
 mod sidebar;

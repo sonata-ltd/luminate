@@ -26,7 +26,7 @@ use crate::descriptor::ButtonHierarchy;
 use crate::theme::Theme;
 use crate::theme::palette::mix;
 use crate::widget::pick_indicator::{self, Pick};
-use crate::widget::{error_bubble, fading_scrollable, multi_border, sidebar, table};
+use crate::widget::{dropdown, error_bubble, fading_scrollable, multi_border, sidebar, table};
 
 // --- Base ---------------------------------------------------------------
 
@@ -1084,6 +1084,55 @@ impl multi_border::Catalog for Theme {
     }
 
     fn style(&self, class: &Self::Class<'_>, status: multi_border::Status) -> multi_border::Style {
+        class(self, status)
+    }
+}
+
+impl dropdown::Catalog for Theme {
+    type Class<'a> = dropdown::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme: &Theme, status: dropdown::Status| {
+            let input = theme.input;
+            let tokens = theme.dropdown;
+            let disabled = status == dropdown::Status::Disabled;
+
+            dropdown::Style {
+                background: Background::Color(if disabled {
+                    input.background_disabled
+                } else {
+                    input.background
+                }),
+                border: Border {
+                    color: input.border,
+                    width: 1.0,
+                    radius: input.radius.into(),
+                },
+                text: if disabled {
+                    theme.palette.text_disabled
+                } else {
+                    input.text
+                },
+                placeholder: input.placeholder,
+                handle: tokens.handle,
+                menu_background: tokens.menu_background.into(),
+                menu_border: Border {
+                    color: tokens.menu_border,
+                    width: 1.0,
+                    radius: tokens.menu_radius.into(),
+                },
+                menu_shadow: tokens.menu_shadow,
+                item_hovered: tokens.item_hover.into(),
+                item_selected: tokens.item_selected.into(),
+                item_radius: tokens.item_radius,
+                item_text: tokens.item_text,
+                item_selected_text: tokens.item_selected_text,
+                check: tokens.check,
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>, status: dropdown::Status) -> dropdown::Style {
         class(self, status)
     }
 }

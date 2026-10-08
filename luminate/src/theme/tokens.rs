@@ -328,6 +328,45 @@ pub struct FadingScrollableTheme {
     pub radius: f32,
 }
 
+/// Dropdown tokens ([`widget::dropdown`](crate::widget::dropdown)). The field
+/// takes its colors and metrics from [`InputTheme`] to look like an input;
+/// these are the menu and its items.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DropdownTheme {
+    /// Largest height of the menu.
+    pub menu_height: f32,
+    /// Padding inside the menu around the items.
+    pub menu_padding: f32,
+    /// Corner radius of the menu.
+    pub menu_radius: f32,
+    /// Menu background.
+    pub menu_background: Color,
+    /// Menu border.
+    pub menu_border: Color,
+    /// Menu shadow.
+    pub menu_shadow: Shadow,
+    /// Height of an item.
+    pub item_height: f32,
+    /// Padding inside an item.
+    pub item_padding: Padding,
+    /// Corner radius of an item background.
+    pub item_radius: f32,
+    /// Background of the highlighted item.
+    pub item_hover: Color,
+    /// Background of the selected item.
+    pub item_selected: Color,
+    /// Text of an item.
+    pub item_text: Color,
+    /// Text of the selected item.
+    pub item_selected_text: Color,
+    /// Check mark of the selected item.
+    pub check: Color,
+    /// Chevron of the field.
+    pub handle: Color,
+    /// Size of the chevron.
+    pub handle_size: f32,
+}
+
 /// Pick indicator tokens ([`widget::pick_indicator`](crate::widget::pick_indicator)).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PickIndicatorTheme {
@@ -437,6 +476,8 @@ pub struct Theme {
     pub fading_scrollable: FadingScrollableTheme,
     /// Table tokens.
     pub table: TableTheme,
+    /// Dropdown tokens.
+    pub dropdown: DropdownTheme,
     /// Pick indicator tokens.
     pub pick_indicator: PickIndicatorTheme,
 }
@@ -670,6 +711,37 @@ const fn light_table(p: &Palette, typography: &TypographyTheme) -> TableTheme {
     }
 }
 
+/// The light look's `dropdown` tokens; see [`Theme::light`].
+const fn light_dropdown(p: &Palette) -> DropdownTheme {
+    DropdownTheme {
+        menu_height: 200.0,
+        menu_padding: 10.0,
+        menu_radius: 10.0,
+        menu_background: p.white,
+        menu_border: p.gray.s50,
+        menu_shadow: Shadow {
+            color: with_alpha(p.black, 0.1),
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 8.0,
+        },
+        item_height: 34.0,
+        item_padding: Padding {
+            top: 7.0,
+            right: 8.0,
+            bottom: 7.0,
+            left: 8.0,
+        },
+        item_radius: 6.0,
+        item_hover: with_alpha(p.black, 0.04),
+        item_selected: p.gray.s50,
+        item_text: p.text_secondary,
+        item_selected_text: p.text_primary,
+        check: p.text_primary,
+        handle: p.text_secondary,
+        handle_size: 20.0,
+    }
+}
+
 /// The light look's `pick_indicator` tokens; see [`Theme::light`].
 const fn light_pick_indicator(p: &Palette) -> PickIndicatorTheme {
     PickIndicatorTheme {
@@ -844,6 +916,7 @@ impl Theme {
             scrollable: light_scrollable(&p),
             fading_scrollable: light_fading_scrollable(&p),
             table: light_table(&p, &typography),
+            dropdown: light_dropdown(&p),
             pick_indicator: light_pick_indicator(&p),
         }
     }
@@ -906,6 +979,17 @@ impl Theme {
                 row_selected: with_alpha(p.accent, 0.25),
                 veil: with_alpha(background, 0.5),
                 ..light.table
+            },
+            dropdown: DropdownTheme {
+                menu_background: p.gray.s800,
+                menu_border: p.gray.s700,
+                menu_shadow: Shadow {
+                    color: with_alpha(p.black, 0.3),
+                    ..light.dropdown.menu_shadow
+                },
+                item_hover: with_alpha(p.white, 0.06),
+                item_selected: with_alpha(p.white, 0.10),
+                ..light.dropdown
             },
             pick_indicator: PickIndicatorTheme {
                 ring: p.gray.s500,
