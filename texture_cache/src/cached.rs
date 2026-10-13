@@ -1,5 +1,7 @@
 //! [`Cached`]: rasterize a subtree once, composite it every frame.
 
+use std::rc::Rc;
+
 use iced_animate::{Anim, Tier};
 use iced_core::layout::{self, Layout};
 use iced_core::widget::{Operation, Tree, Widget, tree};
@@ -11,6 +13,9 @@ use iced_core::{
 use crate::ancestors;
 use crate::filter::FilterQuality;
 use crate::geometry;
+#[cfg(doc)]
+use crate::morph::Morph;
+use crate::morph::{MorphFrame, MorphPath};
 use crate::reaction::{Activity, observe};
 use crate::record::{Composite, Record, TextureRenderer};
 use crate::renderer::Backend;
@@ -172,6 +177,10 @@ where
     warp_shape: Option<GenieShape>,
     /// Genie progress. Meaningless without an anchor.
     warp_progress: Anim<f32>,
+    /// Where a morph takes the content, or `None` for no morph at all.
+    morph: Option<Rc<dyn MorphPath>>,
+    /// Morph progress. Meaningless without a target.
+    morph_progress: Anim<f32>,
     /// See [`Cached::border_radius`].
     corners: border::Radius,
 }
@@ -194,6 +203,8 @@ where
             .field("filter", &self.filter)
             .field("warp_shape", &self.warp_shape)
             .field("warp_progress", &self.warp_progress)
+            .field("morph", &self.morph.is_some())
+            .field("morph_progress", &self.morph_progress)
             .field("corners", &self.corners)
             .finish_non_exhaustive()
     }
@@ -235,6 +246,8 @@ where
             filter: None,
             warp_shape: None,
             warp_progress: Anim::constant(1.0),
+            morph: None,
+            morph_progress: Anim::constant(1.0),
             corners: border::Radius::default(),
         }
     }
@@ -446,6 +459,77 @@ where
         self
     }
 
+    /// Carries the content into another rectangle when compositing, the way
+    /// an app's screen closes into its icon. `path` says where: at each
+    /// progress, the rectangle the content is shown in and its corner
+    /// radius, from the content's own bounds at progress `1`. [`Morph`] is
+    /// the straight path; implement [`MorphPath`] to choreograph your own.
+    ///
+    /// The content is not stretched with the rectangle. It is scaled
+    /// uniformly by whatever makes it cover the rectangle, centred on it,
+    /// and the rectangle cuts away what overhangs, with a rounded mask on
+    /// wgpu that keeps the corners at their radius in screen pixels
+    /// ([`MorphFrame::cover`]). Resolved every frame inside the widget, like
+    /// [`genie`](Self::genie): no relayout, no re-record
+    /// ([`Tier::Composite`]). The same path and [`MorphFrame::cover`] give
+    /// whatever has to follow the same rectangle — a shadow drawn outside
+    /// the texture, say — the very same frame.
+    ///
+    /// While the morph runs the composite drops to
+    /// [`FilterQuality::Bilinear`], since a small rectangle is a heavy
+    /// minification of a texture with no mip chain, and the layer is never
+    /// drawn live. [`translate`](Self::translate) and [`scale`](Self::scale)
+    /// still apply, on top of the morph. A morph and a genie are not
+    /// combined: while a morph runs it is what is drawn.
+    ///
+    /// The pointer follows the picture: a press lands on the content it is
+    /// drawn over, and outside the rectangle the content sees no cursor.
+    ///
+    /// On the software backend the rounded mask is cut on the CPU again
+    /// on every frame of the morph, and its edges scale with the content.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use iced::Rectangle;
+    /// use iced::widget::text;
+    /// use iced_texture_cache::{Morph, TextureCache, cached};
+    ///
+    /// let icon = Morph {
+    ///     target: Rectangle::new([900.0, 10.0].into(), [32.0, 32.0].into()),
+    ///     radius: 16.0,
+    ///     target_radius: 8.0,
+    /// };
+    /// let _: iced_texture_cache::Element<'_, ()> = cached(TextureCache::new(), text("closing"))
+    ///     .morph(0.5, icon)
+    ///     .into();
+    /// ```
+    #[must_use]
+    pub fn morph(mut self, progress: impl Into<Anim<f32>>, path: impl MorphPath) -> Self {
+        self.morph = Some(Rc::new(path));
+        self.morph_progress = progress.into();
+        self.morph_progress.mark_tier(Tier::Composite);
+        self
+    }
+
+    /// The morph composited this frame for content at `bounds`, or `None`
+    /// at rest.
+    fn morph_frame(&self, bounds: Rectangle) -> Option<MorphFrame> {
+        let (frame, radius) = self
+            .morph
+            .as_ref()?
+            .shape(bounds, self.morph_progress.get())?;
+        MorphFrame::cover(bounds, frame, radius)
+    }
+
+    /// Whether a morph is anywhere but at rest. The same test as
+    /// [`Morph::at`]'s, without needing the bounds.
+    fn is_morphing(&self) -> bool {
+        self.morph
+            .as_ref()
+            .is_some_and(|path| !path.at_rest(self.morph_progress.get()))
+    }
+
     /// The warp composited this frame, built from the anchor and whatever
     /// progress has reached.
     fn warp(&self) -> Warp {
@@ -461,6 +545,7 @@ where
         self.translate.is_animating()
             || self.scale.is_animating()
             || self.warp_progress.is_animating()
+            || self.morph_progress.is_animating()
     }
 
     /// Whether this frame is drawn live rather than composited from a
@@ -471,6 +556,7 @@ where
             && !self.opacity.is_animating()
             && self.opacity.get() >= 1.0
             && !self.warp().is_live()
+            && !self.is_morphing()
             // Drawn live there is no texture to cut, and a rounded layer
             // would show square corners at rest and round ones in motion.
             && !has_corners(self.corners)
@@ -524,7 +610,7 @@ where
     fn composite_filter(&self, renderer: &Renderer, warp: Warp) -> FilterQuality {
         let filter = self.filter.unwrap_or_else(|| renderer.filter_quality());
 
-        if warp.is_live() && !filter.snaps() {
+        if (warp.is_live() || self.is_morphing()) && !filter.snaps() {
             FilterQuality::Bilinear
         } else {
             filter
@@ -576,7 +662,7 @@ where
         let snap = geometry::snap_decision(
             filter,
             self.pixel_snap,
-            self.scale.is_live() || warp.is_live(),
+            self.scale.is_live() || warp.is_live() || self.is_morphing(),
             geometry::is_translation_only(&user_transform),
             at_rest,
         );
@@ -586,49 +672,44 @@ where
             user_transform
         };
 
+        // A morph is measured on the content as composited, so a snapped
+        // layout origin moves its frame with the picture.
+        let morph = self.morph_frame(composite.content_bounds);
+        if morph.is_some_and(MorphFrame::is_empty) {
+            return;
+        }
+
         // Off-screen content has nowhere to show: not worth a record either.
-        let Some(clip) = geometry::composite_clip(composite.cache_bounds, transform, viewport)
-        else {
+        // A morph shows only its frame, wherever the content was laid out.
+        let clip = match morph {
+            Some(morph) => morph.clip(transform, viewport),
+            None => geometry::composite_clip(composite.cache_bounds, transform, viewport),
+        };
+        let Some(clip) = clip else {
             return;
         };
 
         let cursor = self.content_cursor(cursor, bounds, user_transform, renderer);
         let content = &self.content;
         let content_tree = &tree.children[0];
-        // The content's layout origin lands `BLEED` texels into the texture,
-        // whatever the texture is composited at: with `LayoutOnly` that is
-        // the snapped origin, which displaces the image by the snap delta
-        // (up to ½ device pixel) instead of resampling it. The viewport is
-        // the texture's extent in the content's own space.
-        let origin = Vector::new(BLEED as f32 - bounds.x, BLEED as f32 - bounds.y);
-        let record_viewport = Rectangle {
-            x: bounds.x - BLEED as f32,
-            y: bounds.y - BLEED as f32,
-            ..composite.cache_bounds
-        };
+        let record = self.record(tree, renderer, theme, style, layout, cursor, &composite);
 
-        let record = renderer.record(
-            &self.cache,
-            composite.physical,
-            composite.texture_scale,
-            |r| {
-                // Texture space: `(0, 0)` is the (padded, possibly snapped) origin.
-                r.with_translation(origin, |r| {
-                    content.as_widget().draw(
-                        content_tree,
-                        r,
-                        theme,
-                        style,
-                        layout,
-                        cursor,
-                        &record_viewport,
-                    );
-                });
-            },
-        );
-
-        match record {
-            Record::Fresh | Record::Reused => {
+        match (record, morph) {
+            (Record::Fresh | Record::Reused, Some(morph)) => {
+                renderer.draw_cached(
+                    &self.cache,
+                    composite.cache_bounds,
+                    morph.crop,
+                    clip,
+                    transform * morph.transform(),
+                    Composite {
+                        opacity,
+                        corners: morph.corners(),
+                        ..Composite::plain(filter)
+                    },
+                );
+            }
+            (Record::Fresh | Record::Reused, None) => {
                 renderer.draw_cached(
                     &self.cache,
                     composite.cache_bounds,
@@ -643,7 +724,7 @@ where
                     },
                 );
             }
-            Record::Uncacheable => {
+            (Record::Uncacheable, morph) => {
                 // Too large for a texture: draw in place with the same clip
                 // (opened in the enclosing layout space, outside the user
                 // transform, because iced's clip layers do not intersect with
@@ -651,12 +732,17 @@ where
                 // be applied without a texture, and neither can the genie:
                 // the software backend's affine approximation stands in, so
                 // the content still collapses and the pointer mapping above
-                // agrees with what is drawn. The viewport is that clip in
-                // the content's space, so huge content still culls.
-                let Some(fallback) = warp.affine_transform(bounds) else {
-                    return;
+                // agrees with what is drawn. A morph keeps its scale and its
+                // crop, square-cornered. The viewport is that clip in the
+                // content's space, so huge content still culls.
+                let transform = if let Some(morph) = morph {
+                    transform * morph.transform()
+                } else {
+                    let Some(fallback) = warp.affine_transform(bounds) else {
+                        return;
+                    };
+                    transform * fallback
                 };
-                let transform = transform * fallback;
                 let content_viewport = clip * transform.inverse();
                 renderer.with_layer(clip, |r| {
                     r.with_transformation(transform, |r| {
@@ -675,6 +761,55 @@ where
         }
     }
 
+    /// Records the content into the texture if it is stale, at the place
+    /// and scale `composite` gives it; see [`TextureRenderer::record`].
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        composite: &geometry::CompositeGeometry,
+    ) -> Record {
+        let bounds = layout.bounds();
+        let content = &self.content;
+        let content_tree = &tree.children[0];
+        // The content's layout origin lands `BLEED` texels into the texture,
+        // whatever the texture is composited at: with `LayoutOnly` that is
+        // the snapped origin, which displaces the image by the snap delta
+        // (up to ½ device pixel) instead of resampling it. The viewport is
+        // the texture's extent in the content's own space.
+        let origin = Vector::new(BLEED as f32 - bounds.x, BLEED as f32 - bounds.y);
+        let record_viewport = Rectangle {
+            x: bounds.x - BLEED as f32,
+            y: bounds.y - BLEED as f32,
+            ..composite.cache_bounds
+        };
+
+        renderer.record(
+            &self.cache,
+            composite.physical,
+            composite.texture_scale,
+            |r| {
+                // Texture space: `(0, 0)` is the (padded, possibly snapped) origin.
+                r.with_translation(origin, |r| {
+                    content.as_widget().draw(
+                        content_tree,
+                        r,
+                        theme,
+                        style,
+                        layout,
+                        cursor,
+                        &record_viewport,
+                    );
+                });
+            },
+        )
+    }
+
     /// Invalidates the texture when recording follows live drawing. `update`
     /// does this on each frame's `RedrawRequested`; a frame drawn before that
     /// reached `update` still has the flag from its live spell, and a texture
@@ -691,9 +826,9 @@ where
     }
 
     /// The cursor as the content sees it: back through the affine
-    /// transform, then through whatever warp is actually being drawn, so a
-    /// press lands on the pixel it was aimed at and collapsed content is
-    /// not clickable where it used to be. The shader draws the genie
+    /// transform, then through the morph or whatever warp is actually being
+    /// drawn, so a press lands on the pixel it was aimed at and collapsed
+    /// content is not clickable where it used to be. The shader draws the genie
     /// itself; the software backend, and content too large for a texture
     /// on either, draw the affine approximation.
     fn content_cursor(
@@ -704,6 +839,20 @@ where
         renderer: &Renderer,
     ) -> mouse::Cursor {
         let cursor = geometry::translate_cursor(cursor, transform);
+
+        if let Some(morph) = self.morph_frame(bounds) {
+            let map = |point| morph.source_point(point);
+            return match cursor {
+                mouse::Cursor::Available(point) => {
+                    map(point).map_or(mouse::Cursor::Unavailable, mouse::Cursor::Available)
+                }
+                mouse::Cursor::Levitating(point) => {
+                    map(point).map_or(mouse::Cursor::Unavailable, mouse::Cursor::Levitating)
+                }
+                mouse::Cursor::Unavailable => mouse::Cursor::Unavailable,
+            };
+        }
+
         let exact = renderer.backend() == Backend::Wgpu && !self.cache.is_uncacheable();
         self.warp().map_cursor(exact, bounds, cursor)
     }
@@ -1298,6 +1447,95 @@ mod tests {
         harness.frame(now);
         harness.click("go");
         assert_eq!(harness.into_messages(), vec![Message::Go]);
+    }
+
+    /// Red on the left half, blue on the right: 100 by 50 at the origin.
+    fn halves<'a>() -> crate::Element<'a, Message> {
+        row![
+            shape()
+                .width(50.0)
+                .height(50.0)
+                .fill(Color::from_rgb(1.0, 0.0, 0.0)),
+            shape()
+                .width(50.0)
+                .height(50.0)
+                .fill(Color::from_rgb(0.0, 0.0, 1.0)),
+        ]
+        .into()
+    }
+
+    const SQUARE: crate::Morph = crate::Morph {
+        target: Rectangle {
+            x: 150.0,
+            y: 10.0,
+            width: 20.0,
+            height: 20.0,
+        },
+        radius: 0.0,
+        target_radius: 0.0,
+    };
+
+    #[test]
+    fn a_morph_at_rest_draws_the_content_where_it_is() {
+        let cache = TextureCache::new();
+        let mut harness = Harness::new(
+            Size::new(200.0, 60.0),
+            cached(cache.clone(), halves()).morph(1.0, SQUARE),
+        );
+        harness.frame(Instant::now());
+        let shot = harness.screenshot(1.0);
+
+        assert_eq!(&shot.pixel(20, 20)[..3], &[255, 0, 0]);
+        assert_eq!(&shot.pixel(80, 20)[..3], &[0, 0, 255]);
+        assert_eq!(&shot.pixel(160, 20)[..3], &[255, 255, 255]);
+    }
+
+    #[test]
+    fn a_morphed_layer_covers_its_target_without_stretching() {
+        let cache = TextureCache::new();
+        let mut harness = Harness::new(
+            Size::new(200.0, 60.0),
+            cached(cache.clone(), halves()).morph(0.0, SQUARE),
+        );
+        harness.frame(Instant::now());
+        let shot = harness.screenshot(1.0);
+
+        // A square over 2:1 content: the height decides the scale, so the
+        // middle half of the content fills it — red on its left, blue on
+        // its right — and the outer quarters are cut away.
+        assert_eq!(&shot.pixel(153, 20)[..3], &[255, 0, 0], "left of centre");
+        assert_eq!(&shot.pixel(167, 20)[..3], &[0, 0, 255], "right of centre");
+        assert_eq!(&shot.pixel(145, 20)[..3], &[255, 255, 255], "cut left");
+        assert_eq!(&shot.pixel(175, 20)[..3], &[255, 255, 255], "cut right");
+        assert_eq!(&shot.pixel(20, 20)[..3], &[255, 255, 255], "gone from home");
+        assert_eq!(cache.record_count(), 1, "composited, not re-recorded");
+    }
+
+    #[test]
+    fn a_morphed_layer_is_clicked_where_it_is_drawn() {
+        let build = |cache: &TextureCache| -> crate::Element<'_, Message> {
+            cached(
+                cache.clone(),
+                button("go").on_press(Message::Go).width(100.0).height(50.0),
+            )
+            .morph(0.0, SQUARE)
+            .into()
+        };
+
+        let cache = TextureCache::new();
+        let mut harness = Harness::new(Size::new(200.0, 60.0), build(&cache));
+        harness.frame(Instant::now());
+        harness.click_at(Point::new(20.0, 20.0));
+        assert_eq!(harness.into_messages(), vec![], "not where it was laid out");
+
+        let mut harness = Harness::new(Size::new(200.0, 60.0), build(&cache));
+        harness.frame(Instant::now());
+        harness.click_at(SQUARE.target.center());
+        assert_eq!(
+            harness.into_messages(),
+            vec![Message::Go],
+            "where it is drawn"
+        );
     }
 
     #[test]

@@ -500,8 +500,17 @@ impl TextureRenderer for WgpuRenderer {
             },
             ..crate::composite::Mask::whole(bounds.size(), composite.corners)
         };
-        let frame =
-            crate::composite::Frame::new(bounds, content, composite.corners, self.scale_factor());
+        // Device pixels per unit of the quad *as drawn*: the masks ramp
+        // across one device pixel on screen, and a composite scaled down by
+        // its transform would otherwise ramp across a fraction of one and
+        // step its edges. The units change together, so the shapes do not.
+        let drawn = (self.transformations.current() * transform).scale_factor();
+        let scale = if drawn.is_finite() && drawn > 0.0 {
+            self.scale_factor() * drawn
+        } else {
+            self.scale_factor()
+        };
+        let frame = crate::composite::Frame::new(bounds, content, composite.corners, scale);
 
         self.with_layer(clip, |renderer| {
             renderer.with_transformation(transform, |renderer| {

@@ -182,6 +182,33 @@ The software backend has no shaders, so the genie degrades there to a scale
 about the same anchor at the same progress: the motion and its timing
 survive, the neck does not, and the rounded corners scale with the rest.
 
+### Morphing
+
+`Cached::morph` carries the content into another rectangle, the way iOS
+closes an app's screen into its icon. At progress `1` the content is in its
+own bounds; at `0` it is at `Morph::target`. In between, the frame it is
+shown in is interpolated rectangle-wise — position, width and height apart,
+so its proportions change on the way — and its corner radius runs from
+`Morph::radius` to `Morph::target_radius`.
+
+The content is never stretched. It is scaled uniformly by whatever makes it
+cover the frame, centred on it, and the frame cuts away what overhangs. That
+is a transform, a clip, and on wgpu the composite's rounded mask, which also
+smooths the crop's straight edges; nothing is re-recorded or laid out again,
+and it binds at `Tier::Composite`. While it runs the composite drops to
+`FilterQuality::Bilinear`, as for a genie: the far end is heavy minification
+of a texture with no mip chain.
+
+Where the frame goes on the way is a `MorphPath`. `Morph` is the straight
+one; implement the trait to choreograph your own transition — position,
+size and corners each on their own schedule, along a curve — and the fitting
+stays the same. `MorphFrame::cover(bounds, frame, radius)` is that fitting,
+public, returning the frame, its radius, the scale and the crop. Use it for anything that has to
+follow the content — a shadow drawn outside the texture, for instance, which
+a crop would otherwise cut off on the first frame. Progress is clamped to
+`0..=1`; drive it with a critically damped spring. On the software backend
+the mask is cut on the CPU on every frame of the morph.
+
 ### Frosted glass
 
 `frosted(source)` composites a **blurred copy of somebody else's cached

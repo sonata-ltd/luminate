@@ -816,6 +816,43 @@ mod wgpu {
 
     #[test]
     #[ignore = "needs a GPU adapter"]
+    fn a_rounded_content_shape_crops_a_transformed_composite() {
+        // How `Cached::morph` draws: the whole 4 x 4 texture under a
+        // transform, with the content shape set to the part that should
+        // show. Here that is the middle two columns, scaled 2x onto x 2..6;
+        // the texture's outer columns would land on x 0..2 and 6..8, and
+        // the rounded mask on the shape must cut them away even though the
+        // clip is the whole canvas.
+        let mut renderer = headless_wgpu();
+        let cache = TextureCache::new();
+        assert_eq!(record_red(&mut renderer, &cache, 1.0), Record::Fresh);
+        renderer.reset(canvas());
+        let bounds = Rectangle::with_size(Size::new(4.0, 4.0));
+        let crop = Rectangle::new(Point::new(1.0, 0.0), Size::new(2.0, 4.0));
+        renderer.draw_cached(
+            &cache,
+            bounds,
+            crop,
+            canvas(),
+            Transformation::translate(2.0, 0.0)
+                * Transformation::scale(2.0)
+                * Transformation::translate(-1.0, 0.0),
+            Composite {
+                opacity: 1.0,
+                filter: FilterQuality::Bilinear,
+                corners: 0.5.into(),
+                warp: Warp::None,
+            },
+        );
+        let shot = renderer.screenshot(CANVAS, 1.0, Color::WHITE);
+
+        assert_red(pixel(&shot, 4, 4));
+        assert_eq!(pixel(&shot, 0, 4), WHITE, "left of the crop");
+        assert_eq!(pixel(&shot, 7, 4), WHITE, "right of the crop");
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
     fn the_filter_tiers_reconstruct_a_sub_pixel_offset_differently() {
         // The composite's viewport is set from unsnapped bounds, so a
         // fractional offset reaches the fragment shader as sub-pixel phase.
