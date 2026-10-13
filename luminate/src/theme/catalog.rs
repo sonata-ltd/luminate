@@ -26,7 +26,9 @@ use crate::descriptor::ButtonHierarchy;
 use crate::theme::Theme;
 use crate::theme::palette::mix;
 use crate::widget::pick_indicator::{self, Pick};
-use crate::widget::{dropdown, error_bubble, fading_scrollable, multi_border, sidebar, table};
+use crate::widget::{
+    dropdown, error_bubble, fading_scrollable, multi_border, sidebar, table, tabs,
+};
 
 // --- Base ---------------------------------------------------------------
 
@@ -1053,6 +1055,28 @@ impl sidebar::Catalog for Theme {
     }
 }
 
+impl tabs::Catalog for Theme {
+    type Class<'a> = tabs::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme| {
+            let tokens = theme.tabs;
+
+            tabs::Style {
+                background: tokens.background,
+                border_color: tokens.border_color,
+                backing: tokens.backing,
+                backing_shadow: tokens.backing_shadow,
+                separator: tokens.separator,
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> tabs::Style {
+        class(self)
+    }
+}
+
 impl fading_scrollable::Catalog for Theme {
     type Class<'a> = fading_scrollable::StyleFn<'a, Self>;
 
@@ -1478,6 +1502,8 @@ mod tests {
         let theme = Theme::DARK;
         let bar = sidebar::Catalog::style(&theme, &<Theme as sidebar::Catalog>::default());
         assert_eq!(bar.background, theme.sidebar.background);
+        let bar = tabs::Catalog::style(&theme, &<Theme as tabs::Catalog>::default());
+        assert_eq!(bar.backing, theme.tabs.backing);
         let bubble =
             error_bubble::Catalog::style(&theme, &<Theme as error_bubble::Catalog>::default());
         assert_eq!(bubble.background, theme.error_bubble.background);

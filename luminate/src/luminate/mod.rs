@@ -14,6 +14,7 @@ mod input;
 mod pager;
 mod sidebar;
 mod table;
+mod tabs;
 
 /// Builds Luminate elements from [`descriptor`](crate::descriptor)s.
 ///

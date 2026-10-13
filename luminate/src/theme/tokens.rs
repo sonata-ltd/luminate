@@ -232,6 +232,39 @@ impl SidebarTheme {
     }
 }
 
+/// Everything a tab bar is drawn with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabsTheme {
+    /// Fill of the bar.
+    pub background: Color,
+    /// Outline of the bar.
+    pub border_color: Color,
+    /// Fill of the selection backing.
+    pub backing: Color,
+    /// Shadow of the selection backing.
+    pub backing_shadow: Shadow,
+    /// Line between two inactive neighbours.
+    pub separator: Color,
+    /// Colour of a selected tab's label.
+    pub selected_label_color: Color,
+    /// Type style of a selected tab's label.
+    pub selected_label_style: TextStyle,
+    /// Colour of a tab's label.
+    pub label_color: Color,
+    /// Type style of a tab's label.
+    pub label_style: TextStyle,
+    /// Padding around a tab's label.
+    pub item_padding: f32,
+    /// Padding between the bar's edge and the tabs.
+    pub padding: f32,
+    /// Gap between tabs.
+    pub spacing: f32,
+    /// Corner radius of the bar.
+    pub radius: f32,
+    /// Corner radius of the selection backing.
+    pub backing_radius: f32,
+}
+
 /// Everything a card is drawn with.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CardTheme {
@@ -466,6 +499,8 @@ pub struct Theme {
     pub input: InputTheme,
     /// Sidebar tokens.
     pub sidebar: SidebarTheme,
+    /// Tab-bar tokens.
+    pub tabs: TabsTheme,
     /// Card tokens.
     pub card: CardTheme,
     /// Error-bubble tokens.
@@ -607,6 +642,36 @@ const fn light_sidebar(p: &Palette) -> SidebarTheme {
         padding: 10.0,
         column_spacing: 5.0,
         row_spacing: 8.0,
+    }
+}
+
+/// The light look's `tabs` tokens; see [`Theme::light`].
+const fn light_tabs(p: &Palette) -> TabsTheme {
+    TabsTheme {
+        background: p.gray.s30,
+        border_color: Color::from_rgb8(233, 234, 235),
+        backing: p.white,
+        backing_shadow: Shadow {
+            color: with_alpha(p.black, 0.15),
+            offset: Vector::ZERO,
+            blur_radius: 4.0,
+        },
+        separator: Color::from_rgb8(232, 232, 232),
+        selected_label_color: p.text_primary,
+        selected_label_style: TextStyle::text(
+            crate::theme::typography::TextSize::Sm,
+            iced::font::Weight::Medium,
+        ),
+        label_color: p.text_secondary,
+        label_style: TextStyle::text(
+            crate::theme::typography::TextSize::Sm,
+            iced::font::Weight::Normal,
+        ),
+        item_padding: 3.0,
+        padding: 4.0,
+        spacing: 5.0,
+        radius: 8.0,
+        backing_radius: 5.0,
     }
 }
 
@@ -911,6 +976,7 @@ impl Theme {
             button: light_button(&p, &typography),
             input: light_input(&p, &typography),
             sidebar: light_sidebar(&p),
+            tabs: light_tabs(&p),
             card: light_card(&p, &typography),
             error_bubble: light_error_bubble(&p, &typography),
             scrollable: light_scrollable(&p),
@@ -945,6 +1011,19 @@ impl Theme {
                 icon: p.text_primary,
                 edge_shadow: Some(with_alpha(p.white, 0.05)),
                 ..light.sidebar
+            },
+            tabs: TabsTheme {
+                background: p.gray.s800,
+                border_color: p.gray.s700,
+                backing: p.gray.s700,
+                backing_shadow: Shadow {
+                    color: with_alpha(p.black, 0.4),
+                    ..light.tabs.backing_shadow
+                },
+                separator: p.gray.s700,
+                selected_label_color: p.text_primary,
+                label_color: p.text_secondary,
+                ..light.tabs
             },
             card: dark_card(&p, &light),
             error_bubble: ErrorBubbleTheme {

@@ -1,9 +1,5 @@
-use iced::{Alignment, Color, Length, Padding, font::Weight, widget::container};
-use iced_luminate::{
-    Element, Luminate, Renderer, Theme,
-    theme::typography::{TextSize, TextStyle, styled_text},
-    widget::tabs::tabs,
-};
+use iced::{Padding, widget::container};
+use iced_luminate::{Element, Luminate, Renderer, Theme, descriptor::Tabs as TabBar};
 use iced_page_router::{Action, Page};
 
 pub(crate) struct Tabs {
@@ -40,28 +36,13 @@ impl Page for Tabs {
 
     fn view(&self) -> Element<'_, Self::Message> {
         container(
-            tabs([
-                tab_item("Section 1"),
-                tab_item("Section 2"),
-                tab_item("Section 3"),
-            ])
-            .active(self.active_tab)
-            .on_select(Message::SelectTab)
-            .motion(self.luminate.motion().clone()),
+            self.luminate.tabs(
+                TabBar::new(["Section 1", "Section 2", "Section 3"])
+                    .active(self.active_tab)
+                    .on_select(Message::SelectTab),
+            ),
         )
         .padding(Padding::from(5))
         .into()
     }
-}
-
-fn tab_item(label: &str) -> Element<'_, Message> {
-    container(
-        styled_text(label, TextStyle::text(TextSize::Sm, Weight::Normal))
-            .color(Color::from_rgb8(25, 31, 38))
-            .width(Length::Fill)
-            .align_x(Alignment::Center),
-    )
-    .padding(Padding::from(3))
-    .width(Length::Fill)
-    .into()
 }

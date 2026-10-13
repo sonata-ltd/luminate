@@ -16,7 +16,41 @@ use crate::widget::tabs::separator::SeparatorState;
 
 mod separator;
 
-const PADDING: f32 = 4.0;
+/// Colours a [`Tabs`] bar is drawn with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Style {
+    /// Fill of the bar.
+    pub background: Color,
+    /// Outline of the bar.
+    pub border_color: Color,
+    /// Fill of the selection backing under the active tab.
+    pub backing: Color,
+    /// Shadow of the selection backing.
+    pub backing_shadow: Shadow,
+    /// Colour of the line between two inactive neighbours.
+    pub separator: Color,
+}
+
+catalog!(|theme| {
+    let palette = theme.extended_palette();
+
+    Style {
+        background: palette.background.weak.color,
+        border_color: palette.background.strong.color,
+        backing: palette.background.base.color,
+        backing_shadow: Shadow {
+            color: Color::from_rgba8(0, 0, 0, 0.15),
+            offset: Vector::ZERO,
+            blur_radius: 4.0,
+        },
+        separator: palette.background.strong.color,
+    }
+});
+
+const DEFAULT_PADDING: f32 = 4.0;
+const DEFAULT_SPACING: f32 = 5.0;
+const DEFAULT_RADIUS: f32 = 8.0;
+const DEFAULT_BACKING_RADIUS: f32 = 5.0;
 
 /// Width of the line drawn between two tabs.
 const SEPARATOR_WIDTH: f32 = 1.0;
@@ -25,22 +59,38 @@ const SEPARATOR_WIDTH: f32 = 1.0;
 const SEPARATOR_INSET: f32 = 7.0;
 
 /// Tab struct
-pub struct Tabs<'a, Message, Theme = iced::Theme, Renderer = crate::Renderer> {
+pub struct Tabs<'a, Message, Theme = iced::Theme, Renderer = crate::Renderer>
+where
+    Theme: Catalog,
+{
     children: Vec<iced::Element<'a, Message, Theme, Renderer>>,
     width: Length,
     height: Length,
     active_index: usize,
     on_select: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     motion: Option<Motion>,
+    padding: f32,
+    spacing: f32,
+    radius: f32,
+    backing_radius: f32,
+    class: Theme::Class<'a>,
 }
 
-impl<Message, Theme, Renderer> std::fmt::Debug for Tabs<'_, Message, Theme, Renderer> {
+impl<Message, Theme, Renderer> std::fmt::Debug for Tabs<'_, Message, Theme, Renderer>
+where
+    Theme: Catalog,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Tabs")
             .field("children", &self.children.len())
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("active_index", &self.active_index)
             .field("motion", &self.motion)
+            .field("padding", &self.padding)
+            .field("spacing", &self.spacing)
+            .field("radius", &self.radius)
+            .field("backing_radius", &self.backing_radius)
             .finish_non_exhaustive()
     }
 }
@@ -128,6 +178,7 @@ impl State {
 
 impl<'a, Message, Theme, Renderer> Tabs<'a, Message, Theme, Renderer>
 where
+    Theme: Catalog,
     Renderer: renderer::Renderer,
 {
     /// Creates an empty [`Tabs`].
@@ -148,6 +199,11 @@ where
             active_index: 0,
             motion: None,
             on_select: None,
+            padding: DEFAULT_PADDING,
+            spacing: DEFAULT_SPACING,
+            radius: DEFAULT_RADIUS,
+            backing_radius: DEFAULT_BACKING_RADIUS,
+            class: Theme::default(),
         }
         .extend(children)
     }
@@ -198,6 +254,59 @@ where
         self
     }
 
+    /// Sets the width of the bar (default `Fill`).
+    #[must_use]
+    pub fn width(mut self, width: impl Into<Length>) -> Self {
+        self.width = width.into();
+        self
+    }
+
+    /// Padding between the bar's edge and the tabs; also the inset of the
+    /// selection backing (default 4).
+    #[must_use]
+    pub fn padding(mut self, padding: f32) -> Self {
+        self.padding = padding;
+        self
+    }
+
+    /// Gap between neighbouring tabs (default 5).
+    #[must_use]
+    pub fn spacing(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
+    }
+
+    /// Corner radius of the bar (default 8).
+    #[must_use]
+    pub fn radius(mut self, radius: f32) -> Self {
+        self.radius = radius;
+        self
+    }
+
+    /// Corner radius of the selection backing (default 5).
+    #[must_use]
+    pub fn backing_radius(mut self, radius: f32) -> Self {
+        self.backing_radius = radius;
+        self
+    }
+
+    /// Sets the style of the bar from a closure.
+    #[must_use]
+    pub fn style(mut self, style: impl Fn(&Theme) -> Style + 'a) -> Self
+    where
+        Theme::Class<'a>: From<StyleFn<'a, Theme>>,
+    {
+        self.class = (Box::new(style) as StyleFn<'a, Theme>).into();
+        self
+    }
+
+    /// Uses a class from the theme's catalog.
+    #[must_use]
+    pub fn class(mut self, class: impl Into<Theme::Class<'a>>) -> Self {
+        self.class = class.into();
+        self
+    }
+
     fn backing_geometry(tabs: iced::Rectangle, tab: iced::Rectangle) -> (f32, f32) {
         if tabs.width <= 0.0 {
             return (0.0, 0.0);
@@ -212,6 +321,7 @@ where
 
 impl<Message, Theme, Renderer> Default for Tabs<'_, Message, Theme, Renderer>
 where
+    Theme: Catalog,
     Renderer: renderer::Renderer,
 {
     fn default() -> Self {
@@ -222,6 +332,7 @@ where
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Tabs<'_, Message, Theme, Renderer>
 where
+    Theme: Catalog,
     Renderer: renderer::Renderer,
 {
     fn size(&self) -> iced::Size<Length> {
@@ -329,8 +440,8 @@ where
             limits,
             self.width,
             self.height,
-            Padding::from(PADDING),
-            5.0,
+            Padding::from(self.padding),
+            self.spacing,
             iced::Alignment::Center,
             &mut self.children,
             &mut tree.children,
@@ -379,6 +490,7 @@ where
         };
 
         let state = tree.state.downcast_ref::<State>();
+        let colors = theme.style(&self.class);
 
         let position = state.position();
         let width = state.width();
@@ -395,21 +507,21 @@ where
             Quad {
                 bounds: background,
                 border: Border {
-                    color: Color::from_rgb8(233, 234, 235),
+                    color: colors.border_color,
                     width: 1.0,
-                    radius: Radius::from(8),
+                    radius: Radius::from(self.radius),
                 },
                 snap: false,
                 ..Default::default()
             },
-            Color::from_rgb8(250, 250, 250),
+            colors.background,
         );
 
         let backing = Rectangle {
             x: bounds.x + position * bounds.width,
-            y: bounds.y + PADDING,
+            y: bounds.y + self.padding,
             width: width * bounds.width,
-            height: bounds.height - PADDING * 2.0,
+            height: (bounds.height - self.padding * 2.0).max(0.0),
         };
 
         // Draw separators
@@ -439,7 +551,10 @@ where
                     snap: false,
                     ..Default::default()
                 },
-                Color::from_rgba8(232, 232, 232, opacity),
+                Color {
+                    a: colors.separator.a * opacity,
+                    ..colors.separator
+                },
             );
         }
 
@@ -450,16 +565,12 @@ where
                 border: Border {
                     color: Color::TRANSPARENT,
                     width: 0.0,
-                    radius: Radius::from(5),
+                    radius: Radius::from(self.backing_radius),
                 },
-                shadow: Shadow {
-                    color: Color::from_rgba8(0, 0, 0, 0.15),
-                    offset: Vector::ZERO,
-                    blur_radius: 4.0,
-                },
+                shadow: colors.backing_shadow,
                 snap: false,
             },
-            Color::WHITE,
+            colors.backing,
         );
 
         for ((child, child_tree), child_layout) in self
@@ -528,7 +639,7 @@ impl<'a, Message, Theme, Renderer> From<Tabs<'a, Message, Theme, Renderer>>
     for iced::Element<'a, Message, Theme, Renderer>
 where
     Message: 'a,
-    Theme: 'a,
+    Theme: Catalog + 'a,
     Renderer: renderer::Renderer + 'a,
 {
     fn from(tabs: Tabs<'a, Message, Theme, Renderer>) -> Self {
@@ -542,6 +653,7 @@ pub fn tabs<'a, Message, Theme, Renderer>(
     children: impl IntoIterator<Item = iced::Element<'a, Message, Theme, Renderer>>,
 ) -> Tabs<'a, Message, Theme, Renderer>
 where
+    Theme: Catalog,
     Renderer: renderer::Renderer,
 {
     Tabs::with_children(children)

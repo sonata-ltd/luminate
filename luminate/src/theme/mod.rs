@@ -37,7 +37,8 @@
 //! (and `vertical_slider`), `radio`, `pick_list`, `overlay::menu`,
 //! `combo_box`, `progress_bar` and `text_editor`, plus the kit's own
 //! [`MultiBorder`](crate::widget::multi_border::MultiBorder),
-//! [`Sidebar`](crate::widget::sidebar::Sidebar) and
+//! [`Sidebar`](crate::widget::sidebar::Sidebar),
+//! [`Tabs`](crate::widget::tabs::Tabs) and
 //! [`ErrorBubble`](crate::widget::error_bubble::ErrorBubble). Widgets without a
 //! `Catalog` here (`pane_grid`, `qr_code`, …) need `iced::Theme`.
 
@@ -56,5 +57,5 @@ pub use catalog::{
 pub use tokens::{
     ButtonPadding, ButtonStatusColors, ButtonTheme, ButtonVariant, CardTheme, DropdownTheme,
     ErrorBubbleTheme, FadingScrollableTheme, InputTheme, PickIndicatorTheme, ScrollableTheme,
-    SidebarTheme, TableTheme, Theme,
+    SidebarTheme, TableTheme, TabsTheme, Theme,
 };

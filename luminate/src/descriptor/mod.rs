@@ -26,9 +26,11 @@ mod card;
 mod input;
 mod pager;
 mod sidebar;
+mod tabs;
 
 pub use button::{Button, ButtonContent, ButtonHierarchy, ButtonSize};
 pub use card::Card;
 pub use input::Input;
 pub use pager::Pager;
 pub use sidebar::{Axis, Sidebar};
+pub use tabs::{TabItem, Tabs};
