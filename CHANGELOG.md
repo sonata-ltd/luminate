@@ -134,6 +134,17 @@ The first release. What each crate provides:
   their on-screen radius however far the rows are squeezed. The pointer
   follows the picture. The software backend draws a scale about the same
   anchor instead.
+- `Cached::morph(progress, Morph)`: carries the content into another
+  rectangle the way an app's screen closes into its icon on iOS. The frame
+  the content is shown in travels to `Morph::target` and takes its size,
+  proportions and corner radius; the content is scaled uniformly to cover it
+  and cropped, never stretched. A transform, a clip and the composite's
+  rounded mask at `Tier::Composite` — no re-record, no relayout. `Morph` is
+  the straight path; `MorphPath` lets an application choreograph its own —
+  position, size and corners on their own schedules, along a curve — and
+  `MorphFrame::cover` gives whatever has to follow the content, such as a
+  shadow drawn outside its texture, the same frame. The pointer follows the
+  picture.
 - `Frosted` / `frosted()`: a pane that composites a blurred copy of another
   `Cached`'s texture — the part lying under it — blurred once per
   rasterisation of the source (`Frost`).
@@ -194,7 +205,7 @@ The first release. What each crate provides:
 #### iced_luminate
 
 - `Luminate`: theme + motion engine; `host`, `button`, `input`, `sidebar`,
-  `card`, `pager`; `Luminate::load_fonts()`.
+  `card`, `pager`, `tabs`; `Luminate::load_fonts()`.
 - `Luminate::load_fonts()` registers the upright and italic faces straight
   into iced's font system, called once in `main` before `iced::application`,
   and declares each again at every weight in `typography::DECLARED_WEIGHTS`
@@ -213,7 +224,11 @@ The first release. What each crate provides:
   30 MB, since iced keeps each buffer and copies it again into its font
   database.
 - `descriptor::{Button, ButtonContent, ButtonHierarchy, ButtonSize, Input,
-  Sidebar, Axis, Card, Pager}` as plain data with builders.
+  Sidebar, Axis, Card, Pager, Tabs}` as plain data with builders.
+- `Tabs` takes the tabs, the `active` index, a `width` and `on_select`; the
+  selection backing and separators animate on the kit's engine, and the bar's
+  colours and metrics come from `TabsTheme` (`Theme::tabs`) through
+  `widget::tabs::Catalog`. Tabs are `TabItem`s (a label); the kit draws the selected one in the active colour and weight and the rest in the inactive look.
 - `Card` holds one `content` element rather than a page stack of its own:
   pages that slide are a `Luminate::pager` passed as that content.
   `Card::no_content_screen` stands in while there is none,
