@@ -10,6 +10,10 @@ ignore = [
   { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained; transitive via iced" },
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; transitive via iced's text stack" },
   { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained; transitive via iced's text stack" },
+  # These crates moved into zbus 6; iced_winit -> mundy still requires zbus 5.
+  { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained; transitive via iced_winit/mundy/zbus 5; no compatible upgrade" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained; transitive via iced_winit/mundy/zbus 5; no compatible upgrade" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained; transitive via iced_winit/mundy/zbus 5; no compatible upgrade" },
 ]
 
 [licenses]
