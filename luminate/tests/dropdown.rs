@@ -160,6 +160,155 @@ fn nothing_found_shows_the_empty_text() {
 }
 
 #[test]
+fn enter_selects_exact_search_keys_with_configurable_case_matching() {
+    let options = vec![String::from("Zürich"), String::from("Berlin")];
+    for (query, enabled, case_sensitive, filter, expected) in [
+        ("ZÜRICH", true, false, true, true),
+        ("Zürich", true, true, true, true),
+        ("ZÜRICH", true, true, true, false),
+        ("ZÜRICH", true, true, false, false),
+        ("Zürich", false, false, true, false),
+        ("Zür", true, false, true, false),
+        ("unknown", true, false, true, false),
+        ("", true, false, true, false),
+    ] {
+        let view = dropdown(&options, None::<&String>, Msg::Select)
+            .search(query, Msg::Search)
+            .select_on_exact_match(enabled)
+            .search_case_sensitive(case_sensitive)
+            .filter(filter)
+            .on_close(Msg::Closed);
+        let mut ui = sim(page(view));
+        open(&mut ui);
+        let _ = ui.tap_key(Key::Named(Named::Enter));
+        let messages = ui.into_messages().collect::<Vec<_>>();
+        if expected {
+            assert_eq!(
+                messages,
+                vec![
+                    Msg::Select("Zürich".into()),
+                    Msg::Search(String::new()),
+                    Msg::Closed
+                ]
+            );
+        } else {
+            assert!(messages.is_empty(), "unexpected selection for {query:?}");
+        }
+    }
+
+    let view = dropdown(&options, None::<&String>, Msg::Select)
+        .search_key(|option| format!("City: {option}"))
+        .search("City: Berlin", Msg::Search)
+        .on_close(Msg::Closed);
+    let mut ui = sim(page(view));
+    open(&mut ui);
+    let _ = ui.tap_key(Key::Named(Named::Enter));
+    assert_eq!(
+        ui.into_messages().collect::<Vec<_>>(),
+        vec![
+            Msg::Select("Berlin".into()),
+            Msg::Search(String::new()),
+            Msg::Closed
+        ]
+    );
+}
+
+#[test]
+fn dismissing_search_clears_the_query_without_changing_the_selection() {
+    for dismissal in ["escape", "outside", "tab", "window"] {
+        let options = options(5);
+        let selected = options[1].clone();
+        let view = dropdown(&options, Some(&selected), Msg::Select)
+            .search("unfinished", Msg::Search)
+            .on_close(Msg::Closed);
+        let mut ui = sim(page(view));
+        open(&mut ui);
+
+        match dismissal {
+            "escape" => {
+                let _ = ui.tap_key(Key::Named(Named::Escape));
+            }
+            "tab" => {
+                let _ = ui.tap_key(Key::Named(Named::Tab));
+            }
+            "outside" => {
+                ui.point_at(Point::new(450.0, 580.0));
+                let _ = ui.simulate(iced_test::simulator::click());
+            }
+            "window" => {
+                let _ = ui.simulate([Event::Window(window::Event::Unfocused)]);
+            }
+            _ => unreachable!(),
+        }
+
+        assert_eq!(
+            ui.into_messages().collect::<Vec<_>>(),
+            vec![Msg::Search(String::new()), Msg::Closed],
+            "{dismissal} must discard the query without selecting an option",
+        );
+    }
+}
+
+#[test]
+fn filtering_an_open_menu_discards_the_previous_highlight_before_enter() {
+    use iced_luminate::texture::testing::headless_tiny_skia;
+    use iced_test::runtime::user_interface::{Cache, UserInterface};
+
+    let options = options(10_000);
+    let selected = &options[4999];
+    let view = |query| {
+        page(
+            dropdown(&options, Some(selected), Msg::Select)
+                .search(query, Msg::Search)
+                .select_on_exact_match(false),
+        )
+    };
+    let mut renderer = headless_tiny_skia();
+    let size = Size::new(500.0, 600.0);
+    let mut clipboard = iced_luminate::iced::advanced::clipboard::Null;
+    let mut messages = Vec::new();
+    let mut ui = UserInterface::build(view(""), size, Cache::default(), &mut renderer);
+    let _ = ui.update(
+        &iced_test::simulator::click().collect::<Vec<_>>(),
+        mouse::Cursor::Available(Point::new(100.0, 55.0)),
+        &mut renderer,
+        &mut clipboard,
+        &mut messages,
+    );
+
+    // Preserve the open menu and its old highlight, as an application rebuild does.
+    // A single result which excludes the previously selected option.
+    let mut ui = UserInterface::build(view("Option 9999"), size, ui.into_cache(), &mut renderer);
+    let _ = ui.update(
+        &iced_test::simulator::tap_key(Key::Named(Named::Enter), None).collect::<Vec<_>>(),
+        mouse::Cursor::Unavailable,
+        &mut renderer,
+        &mut clipboard,
+        &mut messages,
+    );
+    assert!(messages.is_empty(), "Enter must not use the old highlight");
+
+    let events = [Named::ArrowDown, Named::Enter]
+        .into_iter()
+        .flat_map(|key| iced_test::simulator::tap_key(Key::Named(key), None))
+        .collect::<Vec<_>>();
+    let _ = ui.update(
+        &events,
+        mouse::Cursor::Unavailable,
+        &mut renderer,
+        &mut clipboard,
+        &mut messages,
+    );
+    assert_eq!(
+        messages,
+        vec![
+            Msg::Select("Option 9999".into()),
+            Msg::Search(String::new())
+        ]
+    );
+}
+
+#[test]
 fn a_click_outside_and_escape_close_the_menu() {
     let options = options(5);
 

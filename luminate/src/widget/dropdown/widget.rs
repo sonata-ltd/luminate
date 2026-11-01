@@ -12,16 +12,19 @@ use iced_animate::{Anim, Motion, MotionKey, curves};
 
 use super::menu::Menu;
 use super::search;
-use super::{Catalog, Item, Options, Shared, Status};
+use super::{Catalog, Item, Options, Shared, Status, TextSettings};
 use crate::widget::fading_scrollable::fading_scrollable;
 use crate::widget::virtual_list::VirtualList;
 use crate::{Element, Renderer, Theme};
 
 pub(super) struct DropdownWidget<'a, Message> {
+    pub(super) text_settings: TextSettings,
     pub(super) options: Rc<Options<'a, Message>>,
     pub(super) field: Element<'a, Message>,
     pub(super) searchable: bool,
     pub(super) filter: bool,
+    pub(super) select_on_exact_match: bool,
+    pub(super) search_case_sensitive: bool,
     pub(super) query: &'a str,
     pub(super) on_search: Option<Rc<dyn Fn(String) -> Message + 'a>>,
     pub(super) on_open: Option<Message>,
@@ -49,6 +52,7 @@ pub(super) struct State {
     over: bool,
     modifiers: keyboard::Modifiers,
     filter: FilterCache,
+    menu_query: String,
     menu: Tree,
     chevron_key: MotionKey,
     chevron: Anim<f32>,
@@ -57,6 +61,7 @@ pub(super) struct State {
 
 #[derive(Default)]
 struct FilterCache {
+    case_sensitive: bool,
     query: String,
     matchers: Vec<String>,
     indices: Option<Rc<Vec<usize>>>,
@@ -116,14 +121,17 @@ impl<'a, Message: Clone + 'a> DropdownWidget<'a, Message> {
             return None;
         }
 
-        let parts = search::query_parts(self.query);
+        let parts = search::query_parts(self.query, self.search_case_sensitive);
         if parts.is_empty() {
             return None;
         }
 
-        if cache.matchers.len() != self.options.count {
+        if cache.matchers.len() != self.options.count
+            || cache.case_sensitive != self.search_case_sensitive
+        {
+            cache.case_sensitive = self.search_case_sensitive;
             cache.matchers = (0..self.options.count)
-                .map(|i| search::normalize(&(self.options.key)(i)))
+                .map(|i| search::normalize(&(self.options.key)(i), self.search_case_sensitive))
                 .collect();
             cache.indices = None;
         }
@@ -164,13 +172,20 @@ impl<'a, Message: Clone + 'a> DropdownWidget<'a, Message> {
     fn close(&self, state: &mut State, shell: &mut Shell<'_, Message>) {
         state.open = false;
 
+        if let Some(on_search) = &self.on_search {
+            shell.publish(on_search(String::new()));
+        }
         if let Some(on_close) = &self.on_close {
             shell.publish(on_close.clone());
         }
         shell.request_redraw();
     }
 
-    fn build_menu(&self, indices: Option<Rc<Vec<usize>>>) -> Element<'a, Message> {
+    fn build_menu(
+        &self,
+        indices: Option<Rc<Vec<usize>>>,
+        item_height: f32,
+    ) -> Element<'a, Message> {
         let count = indices
             .as_ref()
             .map_or(self.options.count, |indices| indices.len());
@@ -181,7 +196,7 @@ impl<'a, Message: Clone + 'a> DropdownWidget<'a, Message> {
                 .width(Length::Fill)
                 .into()
         } else {
-            let list = VirtualList::new(count, self.item_height, {
+            let list = VirtualList::new(count, item_height, {
                 let options = Rc::clone(&self.options);
                 let shared = Rc::clone(&self.shared);
                 move |position| {
@@ -197,7 +212,8 @@ impl<'a, Message: Clone + 'a> DropdownWidget<'a, Message> {
                     )
                     .into()
                 }
-            });
+            })
+            .padding([self.menu_padding, 0.0]);
 
             let scroll = fading_scrollable(list).height(Length::Shrink);
             match &self.motion {
@@ -208,7 +224,10 @@ impl<'a, Message: Clone + 'a> DropdownWidget<'a, Message> {
 
         let shared = Rc::clone(&self.shared);
         container(body)
-            .padding(self.menu_padding)
+            .padding(Padding::from([
+                if count == 0 { self.menu_padding } else { 0.0 },
+                self.menu_padding,
+            ]))
             .width(Length::Fill)
             .style(move |theme: &Theme| {
                 let paint = theme.style(&shared.class, Status::Opened);
@@ -275,6 +294,7 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for DropdownWidge
             over: false,
             modifiers: keyboard::Modifiers::default(),
             filter: FilterCache::default(),
+            menu_query: String::new(),
             menu: Tree::empty(),
             chevron_key,
             chevron,
@@ -355,11 +375,17 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for DropdownWidge
         let bounds = layout.bounds();
         let over = cursor.is_over(bounds);
 
+        let mut lost_focus = false;
         if self.searchable {
+            let was_focused = state.focused;
             state.focused = text_input_focused(&children[0]);
+            lost_focus = was_focused && !state.focused;
         }
 
         match event {
+            Event::Window(iced::window::Event::Unfocused) if state.open => {
+                self.close(state, shell);
+            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
                 if state.open {
@@ -402,6 +428,10 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for DropdownWidge
                 self.cycle(*y, shell);
             }
             _ => {}
+        }
+
+        if state.open && lost_focus {
+            self.close(state, shell);
         }
 
         if !state.open {
@@ -552,19 +582,38 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for DropdownWidge
         &'b mut self,
         tree: &'b mut Tree,
         layout: Layout<'b>,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         _viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        use iced::advanced::text::Renderer as _;
+
         let state = tree.state.downcast_mut::<State>();
 
         if !state.open {
             return None;
         }
 
+        let item_height = self.text_settings.item_height(
+            self.item_height,
+            self.shared.item_padding,
+            renderer.default_size(),
+        );
+
         if self.menu.is_none() {
             let indices = self.filtered(&mut state.filter);
-            self.menu = Some(self.build_menu(indices.clone()));
+            if state.menu_query != self.query {
+                self.query.clone_into(&mut state.menu_query);
+                state.hovered = if self.query.is_empty() {
+                    self.options.selected
+                } else {
+                    None
+                };
+                self.shared.hovered.set(state.hovered);
+                self.shared.chosen.set(None);
+                state.reveal = true;
+            }
+            self.menu = Some(self.build_menu(indices.clone(), item_height));
             self.indices = indices;
         }
 
@@ -589,7 +638,8 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for DropdownWidge
             position: Point::new(bounds.x, bounds.y) + translation,
             field: bounds.size(),
             max_height: self.menu_height,
-            item_height: self.item_height,
+            item_height,
+            padding_top: self.menu_padding,
             count,
             indices: self.indices.as_deref().map(Vec::as_slice),
             element,
@@ -601,6 +651,9 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for DropdownWidge
             shared: &self.shared,
             on_close: self.on_close.as_ref(),
             on_search: self.on_search.as_deref(),
+            query: self.query,
+            select_on_exact_match: self.select_on_exact_match,
+            search_case_sensitive: self.search_case_sensitive,
         })))
     }
 }

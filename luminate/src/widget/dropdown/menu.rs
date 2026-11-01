@@ -3,7 +3,7 @@ use iced::advanced::{Clipboard, Layout, Shell, layout, mouse, overlay, renderer}
 use iced::keyboard::{self, key};
 use iced::{Event, Point, Size, touch};
 
-use super::{Options, Shared};
+use super::{Options, Shared, search};
 use crate::widget::virtual_list::scroll_into_view;
 use crate::{Element, Renderer, Theme};
 
@@ -14,6 +14,7 @@ pub(super) struct Menu<'a, 'b, Message> {
     pub(super) field: Size,
     pub(super) max_height: f32,
     pub(super) item_height: f32,
+    pub(super) padding_top: f32,
     pub(super) count: usize,
     pub(super) indices: Option<&'b [usize]>,
     pub(super) element: &'b mut Element<'a, Message>,
@@ -25,11 +26,17 @@ pub(super) struct Menu<'a, 'b, Message> {
     pub(super) shared: &'b Shared<'a>,
     pub(super) on_close: Option<&'b Message>,
     pub(super) on_search: Option<&'b (dyn Fn(String) -> Message + 'a)>,
+    pub(super) query: &'b str,
+    pub(super) select_on_exact_match: bool,
+    pub(super) search_case_sensitive: bool,
 }
 
 impl<Message: Clone> Menu<'_, '_, Message> {
     fn close(&mut self, shell: &mut Shell<'_, Message>) {
         *self.open = false;
+        if let Some(on_search) = self.on_search {
+            shell.publish(on_search(String::new()));
+        }
         if let Some(on_close) = self.on_close {
             shell.publish(on_close.clone());
         }
@@ -37,14 +44,12 @@ impl<Message: Clone> Menu<'_, '_, Message> {
     }
 
     fn choose(&mut self, position: usize, shell: &mut Shell<'_, Message>) {
-        let option = self.indices.map_or(position, |indices| indices[position]);
+        let Some(option) = option_at(self.count, self.indices, position) else {
+            return;
+        };
 
         if let Some(select) = &self.options.select {
             shell.publish(select(option));
-        }
-
-        if let Some(on_search) = self.on_search {
-            shell.publish(on_search(String::new()));
         }
 
         self.close(shell);
@@ -54,7 +59,7 @@ impl<Message: Clone> Menu<'_, '_, Message> {
         *self.hovered = Some(position);
         self.shared.hovered.set(Some(position));
 
-        let top = position as f32 * self.item_height;
+        let top = self.padding_top + position as f32 * self.item_height;
         scroll_into_view(
             self.element,
             self.tree,
@@ -133,7 +138,7 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Menu<'_, '_,
             self.tree, event, layout, cursor, renderer, clipboard, shell, &bounds,
         );
 
-        if let Some(position) = self.shared.hovered.get() {
+        if let Some(position) = self.shared.hovered.get().filter(|&i| i < self.count) {
             *self.hovered = Some(position);
         }
 
@@ -160,6 +165,11 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Menu<'_, '_,
             return;
         };
 
+        if *named == key::Named::Tab && self.on_search.is_some() {
+            self.close(shell);
+            return;
+        }
+
         let Some(last) = self.count.checked_sub(1) else {
             if *named == key::Named::Escape {
                 self.close(shell);
@@ -169,7 +179,7 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Menu<'_, '_,
         };
 
         let page = ((self.max_height / self.item_height).floor() as usize).max(1);
-        let current = *self.hovered;
+        let current = self.hovered.filter(|&i| i < self.count);
 
         let next = match (named, modifiers.shift()) {
             (key::Named::ArrowDown, _) | (key::Named::Tab, false) => {
@@ -185,7 +195,24 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Menu<'_, '_,
             (key::Named::Enter | key::Named::Space, _)
                 if *named == key::Named::Enter || self.on_search.is_none() =>
             {
-                if let Some(position) = current {
+                let exact = || {
+                    if self.on_search.is_none()
+                        || !self.select_on_exact_match
+                        || self.query.is_empty()
+                    {
+                        return None;
+                    }
+                    (0..self.count).find(|&position| {
+                        option_at(self.count, self.indices, position).is_some_and(|option| {
+                            search::exact_match(
+                                &(self.options.key)(option),
+                                self.query,
+                                self.search_case_sensitive,
+                            )
+                        })
+                    })
+                };
+                if let Some(position) = current.or_else(exact) {
                     self.choose(position, shell);
                 }
                 shell.capture_event();
@@ -229,5 +256,28 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Menu<'_, '_,
         self.element
             .as_widget_mut()
             .operate(self.tree, layout, renderer, operation);
+    }
+}
+
+fn option_at(count: usize, indices: Option<&[usize]>, position: usize) -> Option<usize> {
+    if position >= count {
+        return None;
+    }
+    match indices {
+        Some(indices) => indices.get(position).copied(),
+        None => Some(position),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::option_at;
+
+    #[test]
+    fn stale_positions_cannot_select_after_filtering() {
+        assert_eq!(option_at(1, Some(&[42]), 4999), None);
+        assert_eq!(option_at(1, Some(&[42]), 0), Some(42));
+        assert_eq!(option_at(0, Some(&[]), 0), None);
+        assert_eq!(option_at(5, None, 5), None);
     }
 }

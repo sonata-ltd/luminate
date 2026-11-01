@@ -55,6 +55,8 @@ pub struct Dropdown<'a, T, Message> {
     query: &'a str,
     on_search: Option<Box<dyn Fn(String) -> Message + 'a>>,
     filter: bool,
+    select_on_exact_match: bool,
+    search_case_sensitive: bool,
     placeholder: &'a str,
     empty: &'a str,
     width: Length,
@@ -104,6 +106,8 @@ where
         query: "",
         on_search: None,
         filter: true,
+        select_on_exact_match: true,
+        search_case_sensitive: false,
         placeholder: "",
         empty: "Nothing found",
         width: Length::Fill,
@@ -155,6 +159,8 @@ impl<'a, T, Message> Dropdown<'a, T, Message> {
     }
 
     /// Enables search. The application owns the `query` and receives edits through `on_search`.
+    /// Closing the menu clears the temporary query through `on_search`, restoring
+    /// the selected value (or the placeholder when nothing is selected).
     #[must_use]
     pub fn search(mut self, query: &'a str, on_search: impl Fn(String) -> Message + 'a) -> Self {
         self.query = query;
@@ -166,6 +172,22 @@ impl<'a, T, Message> Dropdown<'a, T, Message> {
     #[must_use]
     pub fn search_key(mut self, key: impl Fn(&'a T) -> String + 'a) -> Self {
         self.search_key = Some(Box::new(key));
+        self
+    }
+
+    /// Whether Enter selects an exact search-key match when no item is highlighted.
+    /// Enabled by default. Empty queries and partial matches never select automatically.
+    /// If multiple keys match, the first option is selected.
+    #[must_use]
+    pub fn select_on_exact_match(mut self, enabled: bool) -> Self {
+        self.select_on_exact_match = enabled;
+        self
+    }
+
+    /// Whether filtering and exact matches distinguish letter case. Defaults to false.
+    #[must_use]
+    pub fn search_case_sensitive(mut self, enabled: bool) -> Self {
+        self.search_case_sensitive = enabled;
         self
     }
 
@@ -236,7 +258,9 @@ impl<'a, T, Message> Dropdown<'a, T, Message> {
         self.on_select.is_some()
     }
 
-    /// Height of an item. The same for all items, which virtualization needs.
+    /// Minimum height of an item, shared by all items for virtualization.
+    /// Grows to fit the text line height and vertical item padding.
+    /// Custom item content may require a larger explicit minimum.
     #[must_use]
     pub fn item_height(mut self, height: f32) -> Self {
         self.item_height = height;
@@ -361,6 +385,13 @@ struct TextSettings {
 }
 
 impl TextSettings {
+    fn item_height(self, minimum: f32, padding: Padding, default_size: Pixels) -> f32 {
+        let line_height = self
+            .line_height
+            .to_absolute(self.size.unwrap_or(default_size));
+        minimum.max(line_height.0 + padding.top + padding.bottom)
+    }
+
     fn text<'a>(self, label: String) -> iced::widget::Text<'a, Theme, crate::Renderer> {
         let mut label = text(label).line_height(self.line_height);
         if let Some(size) = self.size {
@@ -403,6 +434,7 @@ impl<'a, Message: 'a> Options<'a, Message> {
 
 fn search_input<'a, Message: Clone + 'a>(
     hint: &str,
+    has_selection: bool,
     query: &'a str,
     on_search: Rc<dyn Fn(String) -> Message + 'a>,
     settings: TextSettings,
@@ -413,17 +445,23 @@ fn search_input<'a, Message: Clone + 'a>(
         .padding(0)
         .line_height(settings.line_height)
         .width(Length::Fill)
-        .class(InputClass::Custom(Box::new(|theme: &Theme, _status| {
-            let tokens = theme.input;
-            text_input::Style {
-                background: Background::Color(Color::TRANSPARENT),
-                border: Border::default(),
-                icon: tokens.text,
-                placeholder: tokens.placeholder,
-                value: tokens.text,
-                selection: tokens.ring,
-            }
-        })));
+        .class(InputClass::Custom(Box::new(
+            move |theme: &Theme, _status| {
+                let tokens = theme.input;
+                text_input::Style {
+                    background: Background::Color(Color::TRANSPARENT),
+                    border: Border::default(),
+                    icon: tokens.text,
+                    placeholder: if has_selection {
+                        tokens.text
+                    } else {
+                        tokens.placeholder
+                    },
+                    value: tokens.text,
+                    selection: tokens.ring,
+                }
+            },
+        )));
 
     if let Some(size) = settings.size {
         input = input.size(size);
@@ -453,6 +491,8 @@ where
             query,
             on_search,
             filter,
+            select_on_exact_match,
+            search_case_sensitive,
             placeholder,
             empty,
             width,
@@ -486,6 +526,7 @@ where
         let field = match &on_search {
             Some(on_search) => search_input(
                 selected_label.as_deref().unwrap_or(placeholder),
+                selected_label.is_some(),
                 query,
                 Rc::clone(on_search),
                 settings,
@@ -497,12 +538,15 @@ where
         };
 
         Element::new(widget::DropdownWidget {
+            text_settings: settings,
             options: Rc::new(Options::new(
                 options, selected, on_select, view, search_key, settings,
             )),
             field,
             searchable: on_search.is_some(),
             filter,
+            select_on_exact_match,
+            search_case_sensitive,
             query,
             on_search,
             on_open,
@@ -540,5 +584,29 @@ impl<T, Message> fmt::Debug for Dropdown<'_, T, Message> {
             .field("searchable", &self.on_search.is_some())
             .field("width", &self.width)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_height_fits_typography_and_preserves_larger_minimums() {
+        let settings = TextSettings {
+            size: Some(Pixels(16.0)),
+            line_height: LineHeight::Absolute(Pixels(24.0)),
+            font: None,
+        };
+        let padding = Padding::from([7.0, 8.0]);
+        assert_eq!(settings.item_height(34.0, padding, Pixels(16.0)), 38.0);
+        assert_eq!(settings.item_height(48.0, padding, Pixels(16.0)), 48.0);
+
+        let settings = TextSettings {
+            size: None,
+            line_height: LineHeight::Relative(1.5),
+            font: None,
+        };
+        assert_eq!(settings.item_height(34.0, padding, Pixels(20.0)), 44.0);
     }
 }
