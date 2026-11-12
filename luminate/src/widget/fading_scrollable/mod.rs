@@ -1,5 +1,17 @@
 //! A scrollable whose bars stay out of the way until they are wanted.
+//!
+//! Optional [`FadingScrollable::edge_fade`] fades overflowing content into
+//! transparency. [`FadingScrollable::subpixel_scroll`] preserves fractional
+//! travel and [`FadingScrollable::follow`] keeps a descendant visible as its
+//! layout changes, without application messages or tasks.
 
+mod content;
+#[cfg(test)]
+mod enhancements;
+mod fade;
+mod follow;
+
+use iced_texture_cache::{TextureCache, TextureRenderer};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -2910,6 +2922,11 @@ where
     curves: Curves,
     /// Whether a wheel turn is travelled rather than jumped.
     smooth: bool,
+    subpixel: bool,
+    content_offset: Rc<Cell<Vector>>,
+    edge_fade: Option<fade::EdgeFade<Renderer>>,
+    follow: Option<iced::widget::Id>,
+    follow_margin: f32,
     /// The most a turn of the wheel can grow to inside a fast series.
     fastest: f32,
     /// The application's `on_scroll`, kept here as well as in the inner
@@ -2994,11 +3011,11 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer> FadingScrollable<'a, Message, Theme, Renderer>
+impl<'a, Message: 'a, Theme, Renderer> FadingScrollable<'a, Message, Theme, Renderer>
 where
     Theme: Catalog + scrollable::Catalog + 'a,
     <Theme as scrollable::Catalog>::Class<'a>: From<scrollable::StyleFn<'a, Theme>>,
-    Renderer: text::Renderer,
+    Renderer: text::Renderer + 'a,
 {
     /// Wraps `content` in a vertical scrollable with fading bars.
     #[must_use]
@@ -3015,8 +3032,12 @@ where
             min_pill: MIN_PILL,
         };
 
+        let content_offset = Rc::new(Cell::new(Vector::ZERO));
         let mut scrollable = Self {
-            inner: Some(blank(Scrollable::new(content))),
+            inner: Some(blank(Scrollable::new(content::view(
+                content.into(),
+                Rc::clone(&content_offset),
+            )))),
             class: <Theme as Catalog>::default(),
             motion: None,
             bar,
@@ -3026,6 +3047,11 @@ where
             axes,
             curves: Curves::default(),
             smooth: true,
+            subpixel: false,
+            content_offset,
+            edge_fade: None,
+            follow: None,
+            follow_margin: 8.0,
             fastest: FASTEST,
             on_scroll: None,
             heard: Rc::new(Cell::new(None)),
@@ -3033,6 +3059,57 @@ where
         scrollable.reapply_direction();
 
         scrollable
+    }
+
+    /// Preserves fractional scroll positions during smooth travel on both axes.
+    ///
+    /// Iced reports integral translations to operations and `on_scroll`; the
+    /// remaining fraction is applied to content paint, input and overlays.
+    /// The viewport and scrollbars stay fixed. Disabled by default.
+    #[must_use]
+    pub fn subpixel_scroll(mut self, enabled: bool) -> Self {
+        self.subpixel = enabled;
+        self
+    }
+
+    /// Fades content into transparency at vertical edges with hidden content.
+    ///
+    /// The fade grows with the hidden extent, up to `length` logical pixels.
+    /// It records only the viewport; scrollbars and overlays are not faded.
+    /// Zero disables it. Requires the public texture renderer API, without
+    /// changing the renderer requirements of scrollables that don't use fades.
+    #[must_use]
+    pub fn edge_fade(mut self, length: impl Into<iced::Pixels>) -> Self
+    where
+        Renderer: TextureRenderer,
+    {
+        self.edge_fade = Some(fade::EdgeFade::new(length.into().0));
+        self
+    }
+
+    /// Smoothly keeps the descendant identified by `target` visible.
+    ///
+    /// Measured after layout, including animated sizes. A taller target keeps
+    /// its heading near the top. Manual scrolling suspends following until
+    /// the target ID changes. `None` stops following. This moves only this
+    /// scrollable's vertical axis, never its ancestors or nested scrollables.
+    #[must_use]
+    pub fn follow(mut self, target: impl Into<Option<iced::widget::Id>>) -> Self {
+        self.follow = target.into();
+        self
+    }
+
+    /// Inset around a followed target, in logical pixels. Defaults to 8 px.
+    /// It is capped at a quarter of the viewport height on short viewports.
+    #[must_use]
+    pub fn follow_margin(mut self, margin: impl Into<iced::Pixels>) -> Self {
+        let margin = margin.into().0;
+        self.follow_margin = if margin.is_finite() {
+            margin.max(0.0)
+        } else {
+            0.0
+        };
+        self
     }
 
     /// Rebuilds the inner scrollable's `Direction` from the axes and bar
@@ -3399,6 +3476,9 @@ struct State {
     withheld: Option<scrollable::Viewport>,
     /// A scroll an operation asked for, taken on the next event.
     requested: Glide,
+    follow_id: Option<iced::widget::Id>,
+    following: bool,
+    fade_cache: TextureCache,
 }
 
 impl State {
@@ -3451,6 +3531,9 @@ impl State {
                 horizontal: 1.0,
             },
             requested: Glide::default(),
+            follow_id: None,
+            following: true,
+            fade_cache: TextureCache::new(),
         }
     }
 
@@ -3637,6 +3720,80 @@ where
                 shell.request_redraw();
             }
         }
+    }
+
+    /// Resolve this widget's scrollbar gestures before handing input to content.
+    fn drag_input(
+        &self,
+        state: &mut State,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        shell: &mut Shell<'_, Message>,
+    ) -> (bool, Option<AbsoluteOffset<Option<f32>>>) {
+        let lanes = self.lanes(layout);
+        let zones = zones(self.bar, lanes, layout.bounds());
+        let mut swallowed = false;
+        let mut take_to = None;
+
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                state.dragging = grabbed(zones, state.revealed(), cursor);
+
+                if let Some(axis) = state.dragging {
+                    let gutter = lanes.of(axis).expect("grabbed means a lane");
+                    let reach = *state.reach.of(axis);
+                    state.grabbed_at = grip(self.bar, axis, &gutter, reach, cursor);
+
+                    // A press on the rail takes the pill there at once, not
+                    // on the first movement after it: a click with a still
+                    // mouse has to scroll too. On the pill itself this is
+                    // where it already is.
+                    take_to = cursor
+                        .position()
+                        .map(|at| dragged_to(self.bar, axis, gutter, reach, state.grabbed_at, at));
+                }
+
+                // The bar is ours: iced's own is zero-width and never grabs,
+                // so a press anywhere in a gutter is this widget's to keep —
+                // and one on a pill too faint to see belongs to nobody.
+                swallowed = cursor.position().is_some_and(|at| {
+                    Axis::BOTH
+                        .into_iter()
+                        .any(|axis| zones.of(axis).is_some_and(|zone| zone.contains(at)))
+                });
+
+                if swallowed {
+                    shell.capture_event();
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                state.dragging = None;
+            }
+            // The cursor, not the event's position: an ancestor scrollable
+            // translates the cursor into this layout's coordinates, where
+            // the gutters are, and passes the event on untouched.
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if let Some(axis) = state.dragging
+                    && let Some(gutter) = lanes.of(axis)
+                    && let Some(position) = cursor.position()
+                {
+                    take_to = Some(dragged_to(
+                        self.bar,
+                        axis,
+                        *gutter,
+                        *state.reach.of(axis),
+                        state.grabbed_at,
+                        position,
+                    ));
+                    swallowed = true;
+                    shell.capture_event();
+                }
+            }
+            _ => {}
+        }
+
+        (swallowed, take_to)
     }
 
     /// Spends one frame: settles both phases against the clock it carries
@@ -3957,6 +4114,7 @@ where
     }
 
     fn diff(&self, tree: &mut Tree) {
+        tree.state.downcast_ref::<State>().fade_cache.invalidate();
         tree.children[0].diff(self.as_widget());
     }
 
@@ -3974,6 +4132,7 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
+        tree.state.downcast_ref::<State>().fade_cache.invalidate();
         self.inner_mut()
             .layout(&mut tree.children[0], renderer, limits)
     }
@@ -3988,15 +4147,40 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        self.inner().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
+        let state = tree.state.downcast_ref::<State>();
+        let mut paint = |renderer: &mut Renderer| {
+            self.inner().draw(
+                &tree.children[0],
+                renderer,
+                theme,
+                style,
+                layout,
+                cursor,
+                viewport,
+            );
+        };
+        if let Some(fade) = &self.edge_fade {
+            let reach = *state.reach.of(Axis::Vertical);
+            let offset = if self.subpixel {
+                state.offset(Axis::Vertical)
+            } else {
+                reach.offset
+            };
+            let maximum = (reach.content - reach.viewport).max(0.0);
+            let length = fade.length.min(layout.bounds().height / 2.0);
+            (fade.paint)(
+                renderer,
+                &state.fade_cache,
+                layout.bounds(),
+                viewport,
+                offset.clamp(0.0, length),
+                (maximum - offset).clamp(0.0, length),
+                1.0,
+                &mut paint,
+            );
+        } else {
+            paint(renderer);
+        }
 
         let Some(visible) = layout.bounds().intersection(viewport) else {
             return;
@@ -4069,69 +4253,33 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let lanes = self.lanes(layout);
-        let zones = zones(self.bar, lanes, layout.bounds());
-        let state = tree.state.downcast_mut::<State>();
-
-        let mut swallowed = false;
-        let mut take_to = None;
-
-        match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                state.dragging = grabbed(zones, state.revealed(), cursor);
-
-                if let Some(axis) = state.dragging {
-                    let gutter = lanes.of(axis).expect("grabbed means a lane");
-                    let reach = *state.reach.of(axis);
-                    state.grabbed_at = grip(self.bar, axis, &gutter, reach, cursor);
-
-                    // A press on the rail takes the pill there at once, not
-                    // on the first movement after it: a click with a still
-                    // mouse has to scroll too. On the pill itself this is
-                    // where it already is.
-                    take_to = cursor
-                        .position()
-                        .map(|at| dragged_to(self.bar, axis, gutter, reach, state.grabbed_at, at));
-                }
-
-                // The bar is ours: iced's own is zero-width and never grabs,
-                // so a press anywhere in a gutter is this widget's to keep —
-                // and one on a pill too faint to see belongs to nobody.
-                swallowed = cursor.position().is_some_and(|at| {
-                    Axis::BOTH
-                        .into_iter()
-                        .any(|axis| zones.of(axis).is_some_and(|zone| zone.contains(at)))
-                });
-
-                if swallowed {
-                    shell.capture_event();
-                }
+        {
+            let state = tree.state.downcast_mut::<State>();
+            state.fade_cache.invalidate();
+            if state.follow_id != self.follow {
+                state.follow_id.clone_from(&self.follow);
+                state.following = true;
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                state.dragging = None;
-            }
-            // The cursor, not the event's position: an ancestor scrollable
-            // translates the cursor into this layout's coordinates, where
-            // the gutters are, and passes the event on untouched.
-            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                if let Some(axis) = state.dragging
-                    && let Some(gutter) = lanes.of(axis)
-                    && let Some(position) = cursor.position()
-                {
-                    take_to = Some(dragged_to(
-                        self.bar,
-                        axis,
-                        *gutter,
-                        *state.reach.of(axis),
-                        state.grabbed_at,
-                        position,
-                    ));
-                    swallowed = true;
-                    shell.capture_event();
-                }
-            }
-            _ => {}
         }
+        if matches!(event, Event::Window(window::Event::RedrawRequested(_)))
+            && tree.state.downcast_ref::<State>().following
+            && self.axes.vertical
+            && self.follow.is_some()
+        {
+            let target_id = self.follow.clone();
+            let mut target = follow::Target::new(target_id.as_ref());
+            self.inner_mut()
+                .operate(&mut tree.children[0], layout, renderer, &mut target);
+            let state = tree.state.downcast_mut::<State>();
+            if let Some(y) = target.offset(state.heading(Axis::Vertical), self.follow_margin) {
+                state.requested.to = Some(AbsoluteOffset {
+                    x: None,
+                    y: Some(y),
+                });
+            }
+        }
+        let state = tree.state.downcast_mut::<State>();
+        let (swallowed, take_to) = self.drag_input(state, event, layout, cursor, shell);
 
         let cues = cues(self.bar, self.axes, state.dragging, event, layout, cursor);
 
@@ -4172,7 +4320,16 @@ where
         // Last, so it sees whatever this event did to the offset — the
         // wheel the scrollable just spent, or the drag taken above.
         let seen = self.reach(tree, layout, renderer, None);
-        let requested = tree.state.downcast_mut::<State>().requested.to.take();
+        let state = tree.state.downcast_mut::<State>();
+        let manual = !matches!(event, Event::Window(window::Event::RedrawRequested(_)))
+            && (take_to.is_some()
+                || (matches!(event, Event::Mouse(mouse::Event::WheelScrolled { .. }))
+                    && cursor.is_over(layout.bounds()))
+                || (seen.vertical.offset - state.left_at.vertical).abs() > 0.5);
+        if manual {
+            state.following = false;
+        }
+        let requested = state.requested.to.take();
         let to = self.aim(
             tree.state.downcast_mut::<State>(),
             seen,
@@ -4191,6 +4348,19 @@ where
         state.reach = reach;
 
         self.report(state, heard, reach, shell);
+
+        let residual = |axis| {
+            let reach = *reach.of(axis);
+            state
+                .offset(axis)
+                .clamp(0.0, (reach.content - reach.viewport).max(0.0))
+                - reach.offset
+        };
+        self.content_offset.set(if self.subpixel {
+            Vector::new(residual(Axis::Horizontal), residual(Axis::Vertical))
+        } else {
+            Vector::ZERO
+        });
 
         for axis in Axis::BOTH {
             *state.left_at.of_mut(axis) = reach.of(axis).offset;
@@ -4264,13 +4434,13 @@ where
 
 /// Wraps `content` in a [`FadingScrollable`].
 #[must_use]
-pub fn fading_scrollable<'a, Message, Theme, Renderer>(
+pub fn fading_scrollable<'a, Message: 'a, Theme, Renderer>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
 ) -> FadingScrollable<'a, Message, Theme, Renderer>
 where
     Theme: Catalog + scrollable::Catalog + 'a,
     <Theme as scrollable::Catalog>::Class<'a>: From<scrollable::StyleFn<'a, Theme>>,
-    Renderer: text::Renderer,
+    Renderer: text::Renderer + 'a,
 {
     FadingScrollable::new(content)
 }
