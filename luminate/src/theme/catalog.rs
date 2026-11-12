@@ -966,6 +966,27 @@ impl menu::Catalog for Theme {
 
 impl combo_box::Catalog for Theme {}
 
+impl crate::widget::progress_bar::Catalog for Theme {
+    type Class<'a> = crate::widget::progress_bar::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme| {
+            let tokens = theme.progress_bar;
+            crate::widget::progress_bar::Style {
+                background: tokens.background.into(),
+                bar: tokens.bar.into(),
+                error: tokens.error.into(),
+                highlight: tokens.highlight,
+                border: border::rounded(tokens.radius),
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> crate::widget::progress_bar::Style {
+        class(self)
+    }
+}
+
 impl progress_bar::Catalog for Theme {
     type Class<'a> = ProgressBarClass<'a>;
 

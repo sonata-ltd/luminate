@@ -4,7 +4,9 @@
 
 use crate::hero::Hero;
 use crate::iso::scenes_flat;
-use iced_luminate::descriptor::{Axis, Button, ButtonHierarchy, Input, Pager, Sidebar};
+use iced_luminate::descriptor::{
+    Axis, Button, ButtonHierarchy, Input, Pager, ProgressBar, Sidebar,
+};
 use iced_luminate::iced::Length;
 use iced_luminate::iced::widget::{column, container, row, text};
 use iced_luminate::router::{Action, Page, Registry};
@@ -119,7 +121,26 @@ impl Page for ShowcasePage {
             "Every descriptor in one view",
             row![
                 sidebar,
-                column![input, pager, steps].spacing(20).width(Length::Fill),
+                column![
+                    input,
+                    pager,
+                    steps,
+                    luminate.progress_bar(ProgressBar::new(0.0..=100.0, 30.0)),
+                    luminate.progress_bar(ProgressBar::new(0.0..=100.0, 0.0).indeterminate(true)),
+                    luminate.progress_bar(
+                        ProgressBar::new(0.0..=100.0, (self.step + 1) as f32 * 30.0)
+                            .show_progress(true)
+                            .smoothed()
+                    ),
+                    luminate.progress_bar(ProgressBar::new(0.0..=100.0, 30.0).errored(true)),
+                    luminate.progress_bar(
+                        ProgressBar::new(0.0..=100.0, 30.0)
+                            .errored(true)
+                            .show_progress(true)
+                    ),
+                ]
+                .spacing(20)
+                .width(Length::Fill),
             ]
             .spacing(20),
         )

@@ -27,7 +27,30 @@ use iced::{Color, Padding, Shadow, Vector};
 use crate::descriptor::{Axis, ButtonContent, ButtonHierarchy, ButtonSize};
 use crate::theme::metrics::{Radius, Spacing, Width, padding_vh};
 use crate::theme::palette::{Palette, mix, with_alpha};
-use crate::theme::typography::{TextStyle, TypographyTheme};
+use crate::theme::typography::{TextSize, TextStyle, TypographyTheme};
+
+/// Progress-bar paint, geometry and percentage typography.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProgressBarTheme {
+    /// Unfilled track colour.
+    pub background: Color,
+    /// Normal and indeterminate fill, derived from the palette accent.
+    pub bar: Color,
+    /// Error fill, derived from red 500.
+    pub error: Color,
+    /// Midpoint of the indeterminate highlight.
+    pub highlight: Color,
+    /// Thickness in logical pixels.
+    pub girth: f32,
+    /// Corner radius in logical pixels.
+    pub radius: f32,
+    /// Gap between track and percentage.
+    pub spacing: f32,
+    /// Percentage text colour.
+    pub text: Color,
+    /// Percentage typography.
+    pub text_style: TextStyle,
+}
 
 /// Colours of a button in one status.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -515,6 +538,8 @@ pub struct Theme {
     pub dropdown: DropdownTheme,
     /// Pick indicator tokens.
     pub pick_indicator: PickIndicatorTheme,
+    /// Progress-bar tokens.
+    pub progress_bar: ProgressBarTheme,
 }
 
 /// The light look's `button` tokens; see [`Theme::light`].
@@ -984,6 +1009,17 @@ impl Theme {
             table: light_table(&p, &typography),
             dropdown: light_dropdown(&p),
             pick_indicator: light_pick_indicator(&p),
+            progress_bar: ProgressBarTheme {
+                background: p.gray.s50,
+                bar: p.accent,
+                error: p.red.s500,
+                highlight: mix(p.accent, p.white, 0.486),
+                girth: 6.0,
+                radius: 3.0,
+                spacing: 10.0,
+                text: p.text_primary,
+                text_style: TextStyle::text(TextSize::Sm, iced::font::Weight::Semibold),
+            },
         }
     }
 
@@ -997,6 +1033,10 @@ impl Theme {
 
         Self {
             name: "Luminate Dark",
+            progress_bar: ProgressBarTheme {
+                background: p.gray.s700,
+                ..light.progress_bar
+            },
             mode: Mode::Dark,
             background,
             divider: p.gray.s700,

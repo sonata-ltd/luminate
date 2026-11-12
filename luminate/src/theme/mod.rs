@@ -56,6 +56,6 @@ pub use catalog::{
 };
 pub use tokens::{
     ButtonPadding, ButtonStatusColors, ButtonTheme, ButtonVariant, CardTheme, DropdownTheme,
-    ErrorBubbleTheme, FadingScrollableTheme, InputTheme, PickIndicatorTheme, ScrollableTheme,
-    SidebarTheme, TableTheme, TabsTheme, Theme,
+    ErrorBubbleTheme, FadingScrollableTheme, InputTheme, PickIndicatorTheme, ProgressBarTheme,
+    ScrollableTheme, SidebarTheme, TableTheme, TabsTheme, Theme,
 };

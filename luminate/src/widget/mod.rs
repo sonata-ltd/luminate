@@ -84,6 +84,7 @@ pub mod fading_scrollable;
 pub mod interaction_override;
 pub mod multi_border;
 pub mod pick_indicator;
+pub mod progress_bar;
 pub mod sidebar;
 pub mod table;
 pub mod tabs;

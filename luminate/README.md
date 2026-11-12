@@ -94,6 +94,24 @@ value).label("Name").error(Some("required")).on_input(msg)`,
 `Card::new("Title").pages(steps, current).controls(row)`,
 `Pager::new(pages).current(i)`.
 
+`Luminate::progress_bar(ProgressBar::new(0.0..=100.0, value))` follows iced's
+range/value API, with `length`, `girth` and `vertical`. Use
+`.indeterminate(true)` for the classic macOS animation, `.show_progress(true)`
+for a percentage, and `.errored(true)` for the error variant. An error without
+a percentage fills the track; with a percentage it keeps the current value.
+Errors take precedence over indeterminate mode. Percentages use `styled_text`
+in the wrapper; the low-level `widget::progress_bar` draws only the track.
+`Theme::progress_bar` supplies geometry, typography and colours, derived from
+the palette's accent and red 500. Indeterminate highlights run on iced's redraw
+clock with a linear 2-second cycle and delays of 0, 1 and 2 seconds.
+
+Add `.smoothed()` to animate changes in the filled fraction through Luminate's
+shared `Motion` (keep the application root wrapped in `luminate.host(..)`).
+The default is `animate::curves::QUICK`, a brisk 220 ms spring without bounce;
+`.smoothing_curve(curve)` overrides it. The initial value appears immediately,
+and new targets preserve spring velocity during a transition. Percentage text
+shows the target value. Without `.smoothed()`, updates remain instant.
+
 ### Theme
 
 `theme::Theme` is a value of every colour, metric and `TextStyle` the kit

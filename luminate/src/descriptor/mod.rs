@@ -25,6 +25,7 @@ mod button;
 mod card;
 mod input;
 mod pager;
+mod progress_bar;
 mod sidebar;
 mod tabs;
 
@@ -32,5 +33,6 @@ pub use button::{Button, ButtonContent, ButtonHierarchy, ButtonSize};
 pub use card::Card;
 pub use input::Input;
 pub use pager::Pager;
+pub use progress_bar::ProgressBar;
 pub use sidebar::{Axis, Sidebar};
 pub use tabs::{TabItem, Tabs};

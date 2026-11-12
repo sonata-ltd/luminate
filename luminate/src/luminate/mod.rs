@@ -12,6 +12,7 @@ mod card;
 mod dropdown;
 mod input;
 mod pager;
+mod progress_bar;
 mod sidebar;
 mod table;
 mod tabs;
