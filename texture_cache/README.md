@@ -412,3 +412,58 @@ Measurements are in
 [BENCHMARKS.md](https://github.com/sonata-ltd/luminate/blob/master/texture_cache/BENCHMARKS.md);
 changes in the workspace
 [CHANGELOG](https://github.com/sonata-ltd/luminate/blob/master/CHANGELOG.md).
+
+## Radial paint layers
+
+`radial_gradient(Radial)` is a decorative leaf, composed with iced's `stack`.
+It does not own content, intercept input, or require a `TextureCache`. The
+GPU draws an analytic fill through iced's public custom primitive API; no SVG,
+CPU rasterisation, intermediate texture or extra render pass is involved.
+`RadialRenderer` is separate from `TextureRenderer`, so downstream renderer
+wrappers delegate only the operations they support.
+
+```no_run
+use iced::{Color, widget::{container, stack, text}};
+use iced_texture_cache::{Radial, radial_gradient};
+
+let glow = Radial::new()
+    .center([0.5, 0.9])
+    .radii([0.8, 0.9])
+    .add_stop(0.0, Color::from_rgba(0.03, 1.0, 0.03, 0.2))
+    .add_stop(1.0, Color::TRANSPARENT);
+let _: iced_texture_cache::Element<'_, ()> = stack![
+    radial_gradient(glow).width(320).height(180).border_radius(20.0),
+    container(text("Ready to play")).padding(24),
+].into();
+```
+
+The centre and two radii use fractions of the widget's width and height, so
+an ellipse resizes with its bounds. The centre may lie outside the bounds.
+Up to eight stops are sorted; equal offsets replace the preceding colour.
+Finite channels are clamped; invalid stops are ignored. Endpoints extend
+outwards (pad). Zero stops, invalid geometry or non-positive opacity paints
+nothing; one stop is a solid fill. Colours interpolate premultiplied in iced's
+active colour space, avoiding dark fringes when fading to transparent black.
+Only the fill is rounded: sibling content and overlays keep their own clipping.
+Use a `container` around the stack for padding, borders and layout.
+
+The widget's `center`, `radii` and `opacity` setters also accept live `Anim`
+values. They are read at paint time and marked `Tier::Paint`. The normal
+Luminate motion host drives them; there is no independent timer. Changes
+invalidate enclosing cached recordings, including the final resting frame.
+For a static fill, `cached(cache, stack![...])` works normally. For an animated
+fill over static cached content, put `radial_gradient` beside `cached` in the
+stack to avoid recording the content on each frame. To fade the whole group
+without recording, use `cached(...).opacity(...)` on the outside.
+
+On `tiny-skia`, the same fill is sampled on the CPU into one retained RGBA image
+per widget. Geometry, colours, corners, raster scale or size changes regenerate
+it; movement and opacity do not. A raster is limited to 16,384 pixels per side
+and 16 Mi pixels total (64 MiB); larger fills log a warning and paint nothing.
+Software image composition follows iced's raster backend and can differ from
+GPU composition at fractional positions and in gamma-corrected alpha blending.
+
+The Luminate `overview` example has a **Radial gradient** page with independent
+centre/radius controls, transparency, corner masking, a cached comparison and a
+button under a decorative overlay. Run `cargo run -p iced_luminate --example
+overview --features canvas` from the workspace root.

@@ -937,6 +937,78 @@ pub(crate) fn derived_len(renderer: &Renderer) -> usize {
     }
 }
 
+#[cfg(feature = "wgpu")]
+impl crate::RadialRenderer for WgpuRenderer {
+    fn draw_radial(
+        &mut self,
+        bounds: Rectangle,
+        fill: crate::Radial,
+        corners: iced_core::border::Radius,
+        opacity: f32,
+        _cache: &mut crate::RadialCache,
+    ) {
+        use iced_wgpu::primitive::Renderer as _;
+        if crate::radial::drawable(bounds, fill, opacity) {
+            self.inner.draw_primitive(
+                bounds,
+                crate::radial::gpu::RadialPrimitive::new(bounds, fill, corners, opacity),
+            );
+        }
+    }
+}
+
+#[cfg(feature = "tiny-skia")]
+impl crate::RadialRenderer for TinySkiaRenderer {
+    fn draw_radial(
+        &mut self,
+        bounds: Rectangle,
+        fill: crate::Radial,
+        corners: iced_core::border::Radius,
+        opacity: f32,
+        cache: &mut crate::RadialCache,
+    ) {
+        if !crate::radial::drawable(bounds, fill, opacity) {
+            return;
+        }
+        let scale = self.scale_factor * self.transformations.current().scale_factor();
+        let Some(handle) = cache.image(bounds, fill, corners, scale) else {
+            return;
+        };
+        image::Renderer::draw_image(
+            &mut self.inner,
+            image::Image {
+                handle,
+                filter_method: image::FilterMethod::Linear,
+                rotation: iced_core::Radians(0.0),
+                border_radius: iced_core::border::Radius::default(),
+                opacity: opacity.min(1.0),
+                snap: false,
+            },
+            bounds,
+            bounds,
+        );
+    }
+}
+
+#[cfg(all(feature = "wgpu", feature = "tiny-skia"))]
+impl crate::RadialRenderer for Renderer {
+    fn draw_radial(
+        &mut self,
+        bounds: Rectangle,
+        fill: crate::Radial,
+        corners: iced_core::border::Radius,
+        opacity: f32,
+        cache: &mut crate::RadialCache,
+    ) {
+        match self {
+            Self::Primary(renderer) => renderer.draw_radial(bounds, fill, corners, opacity, cache),
+            Self::Secondary(renderer) => {
+                renderer.draw_radial(bounds, fill, corners, opacity, cache);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

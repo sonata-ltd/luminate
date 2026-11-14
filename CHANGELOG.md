@@ -17,6 +17,10 @@ The first release. What each crate provides:
 
 ### Added
 
+- `iced_texture_cache::{Radial, RadialGradient, radial_gradient, RadialRenderer}`:
+  composable radial paint layers, analytic GPU rendering, bounded software
+  fallback, paint-tier animation and a dedicated Luminate overview page.
+
 #### iced_animate
 
 - `Motion`: a tree-external animation engine with keyed tracks (`MotionKey`,
