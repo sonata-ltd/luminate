@@ -20,6 +20,7 @@ use iced_texture_cache::{FilterQuality, set_filter_quality};
 use luminate_examples_support::bench::Bench;
 
 use crate::pages::dropdown::DropdownPage;
+use crate::pages::radial::RadialPage;
 use crate::pages::table::TablePage;
 use crate::pages::tabs::Tabs;
 use crate::pages::typo::Typography;
@@ -93,6 +94,7 @@ impl App {
             .add::<CardPage>("Card")
             .add::<MotionPage>("Motion")
             .add::<SvgToolsetPage>("SVG toolset")
+            .add::<RadialPage>("Radial gradient")
             .add::<WeightPage>("Weight")
             .add::<ShowcasePage>("Showcase")
             .add::<NestedSidebar>("Nested sidebar")

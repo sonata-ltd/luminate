@@ -6,6 +6,7 @@ pub(crate) mod dropdown;
 pub(crate) mod inputs;
 pub(crate) mod motion;
 pub(crate) mod nested_sidebar;
+pub(crate) mod radial;
 pub(crate) mod showcase;
 pub(crate) mod snapshot;
 pub(crate) mod svg_toolset;

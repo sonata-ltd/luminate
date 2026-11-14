@@ -255,3 +255,27 @@ pub(crate) const ALL: &[&Scene] = &[
     &NESTED_SIDEBAR,
     &TYPOGRAPHY,
 ];
+
+/// Concentric plates for an elliptical radial fill.
+pub(crate) const RADIAL: Scene = Scene {
+    elements: &[
+        Element3::new(
+            Shape::Slab { radius: 8.0 },
+            Vec3::new(0.0, 0.0, 0.0),
+            (38.0, 28.0),
+            Tone::Neutral,
+        ),
+        Element3::new(
+            Shape::Slab { radius: 8.0 },
+            Vec3::new(0.0, 0.0, 2.0),
+            (28.0, 20.0),
+            Tone::Muted,
+        ),
+        Element3::new(
+            Shape::Slab { radius: 6.0 },
+            Vec3::new(0.0, 0.0, 4.0),
+            (16.0, 12.0),
+            Tone::Accent,
+        ),
+    ],
+};
