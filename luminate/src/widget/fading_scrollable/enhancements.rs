@@ -299,3 +299,423 @@ fn scrollbar_animation_repaints_inside_a_cached_pager_without_application_ticks(
         );
     }
 }
+
+#[test]
+fn legacy_edge_fade_stays_vertical_and_per_side_builder_accepts_asymmetric_lengths() {
+    let legacy: Widget = fading_scrollable(Space::new()).edge_fade(iced::Pixels(12.0));
+    assert_eq!(
+        legacy.edge_fade.unwrap().lengths,
+        Padding::ZERO.top(12).bottom(12)
+    );
+    let lengths = Padding::ZERO.top(3).right(6).bottom(9).left(12);
+    let configured: Widget = fading_scrollable(Space::new()).edge_fade_sides(lengths);
+    assert_eq!(configured.edge_fade.unwrap().lengths, lengths);
+}
+
+#[test]
+fn horizontal_fades_follow_hidden_content_while_vertical_edges_remain_opaque() {
+    let content =
+        container(Space::new().width(600).height(600)).style(|_: &crate::Theme| container::Style {
+            background: Some(Color::WHITE.into()),
+            ..Default::default()
+        });
+    let mut h = Harness::new(content.into(), None);
+    h.widget = h
+        .widget
+        .horizontal()
+        .edge_fade_sides(Padding::ZERO.left(20).right(8));
+    h.node = h.widget.layout(
+        &mut h.tree,
+        &h.renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(200.0, 100.0)),
+    );
+
+    let render = |h: &mut Harness| {
+        h.renderer
+            .reset(Rectangle::with_size(Size::new(200.0, 100.0)));
+        h.widget.draw(
+            &h.tree,
+            &mut h.renderer,
+            &crate::Theme::LIGHT,
+            &renderer::Style {
+                text_color: Color::BLACK,
+            },
+            Layout::new(&h.node),
+            mouse::Cursor::Unavailable,
+            &Rectangle::with_size(Size::new(200.0, 100.0)),
+        );
+        h.renderer
+            .screenshot(Size::new(200, 100), 1.0, Color::TRANSPARENT)
+    };
+    let alpha = |pixels: &[u8], x, y| pixels[((y * 200 + x) * 4 + 3) as usize];
+
+    h.frame();
+    let pixels = render(&mut h);
+    assert_eq!(alpha(&pixels, 0, 50), 255);
+    assert!(alpha(&pixels, 199, 50) < 40);
+    assert_eq!(alpha(&pixels, 100, 0), 255);
+    assert_eq!(alpha(&pixels, 100, 99), 255);
+
+    h.tree
+        .state
+        .downcast_mut::<State>()
+        .requested
+        .to(AbsoluteOffset {
+            x: Some(50.0),
+            y: Some(50.0),
+        });
+    h.frames(180);
+    let pixels = render(&mut h);
+    assert!(alpha(&pixels, 0, 50) < 20);
+    assert!(alpha(&pixels, 199, 50) < 40);
+    assert_eq!(alpha(&pixels, 100, 0), 255);
+    assert_eq!(alpha(&pixels, 100, 99), 255);
+
+    h.tree
+        .state
+        .downcast_mut::<State>()
+        .requested
+        .to(AbsoluteOffset {
+            x: Some(400.0),
+            y: None,
+        });
+    h.frames(180);
+    let pixels = render(&mut h);
+    assert_eq!(alpha(&pixels, 199, 50), 255);
+}
+
+#[test]
+fn four_side_fades_invalidate_the_intermediate_when_content_changes() {
+    let make = |color| -> crate::Element<'static, ()> {
+        container(Space::new().width(600).height(600))
+            .style(move |_: &crate::Theme| container::Style {
+                background: Some(color),
+                ..Default::default()
+            })
+            .into()
+    };
+    let mut h = Harness::new(make(Color::WHITE.into()), None);
+    h.widget = h.widget.horizontal().edge_fade_sides(20);
+    h.node = h.widget.layout(
+        &mut h.tree,
+        &h.renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(200.0, 100.0)),
+    );
+    h.frame();
+    h.tree
+        .state
+        .downcast_mut::<State>()
+        .requested
+        .to(AbsoluteOffset {
+            x: Some(50.0),
+            y: Some(50.0),
+        });
+    h.frames(180);
+
+    for color in [Color::WHITE, Color::from_rgb(0.0, 0.0, 1.0)] {
+        let mut next = fading_scrollable(make(color.into()))
+            .width(200)
+            .height(100)
+            .horizontal()
+            .edge_fade_sides(20);
+        next.diff(&mut h.tree);
+        h.node = next.layout(
+            &mut h.tree,
+            &h.renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(200.0, 100.0)),
+        );
+        h.widget = next;
+        h.frame();
+        h.renderer
+            .reset(Rectangle::with_size(Size::new(200.0, 100.0)));
+        h.widget.draw(
+            &h.tree,
+            &mut h.renderer,
+            &crate::Theme::LIGHT,
+            &renderer::Style {
+                text_color: Color::BLACK,
+            },
+            Layout::new(&h.node),
+            mouse::Cursor::Unavailable,
+            &Rectangle::with_size(Size::new(200.0, 100.0)),
+        );
+        let rgba = h
+            .renderer
+            .screenshot(Size::new(200, 100), 1.0, Color::TRANSPARENT);
+        let pixel = &rgba[((50 * 200 + 100) * 4)..((50 * 200 + 100) * 4 + 4)];
+        let expected = if color == Color::WHITE {
+            [255, 255, 255, 255]
+        } else {
+            [0, 0, 255, 255]
+        };
+        assert_eq!(
+            pixel, expected,
+            "both cached passes must reflect the latest content"
+        );
+    }
+}
+
+fn outset_event(
+    h: &mut Harness,
+    event: &Event,
+    cursor: mouse::Cursor,
+    viewport: Rectangle,
+) -> bool {
+    let mut messages = vec![];
+    let mut shell = Shell::new(&mut messages);
+    h.widget.update(
+        &mut h.tree,
+        event,
+        Layout::new(&h.node),
+        cursor,
+        &h.renderer,
+        &mut clipboard::Null,
+        &mut shell,
+        &viewport,
+    );
+    shell.is_event_captured()
+}
+
+fn outset_frame(h: &mut Harness, cursor: mouse::Cursor, viewport: Rectangle) {
+    h.now += Duration::from_millis(16);
+    let event = Event::Window(window::Event::RedrawRequested(h.now));
+    outset_event(h, &event, cursor, viewport);
+}
+
+fn outset_pixels(h: &mut Harness, viewport: Rectangle, scale: f32) -> Vec<u8> {
+    let size = Size::new((240.0 * scale) as u32, (140.0 * scale) as u32);
+    let _ = h.renderer.screenshot(size, scale, Color::TRANSPARENT);
+    h.renderer
+        .reset(Rectangle::with_size(Size::new(240.0, 140.0)));
+    h.widget.draw(
+        &h.tree,
+        &mut h.renderer,
+        &crate::Theme::LIGHT,
+        &renderer::Style {
+            text_color: Color::BLACK,
+        },
+        Layout::new(&h.node),
+        mouse::Cursor::Unavailable,
+        &viewport,
+    );
+    h.renderer.screenshot(size, scale, Color::TRANSPARENT)
+}
+
+#[test]
+fn scrollbar_offsets_preserve_layout_and_move_only_their_own_axis() {
+    let mut h = Harness::new(rows(), None);
+    let geometry = |h: &Harness| {
+        let layout = Layout::new(&h.node);
+        (layout.bounds(), layout.children().next().unwrap().bounds())
+    };
+    let original = geometry(&h);
+    let rail = h.widget.lanes(Layout::new(&h.node)).vertical.unwrap();
+    h.widget = h.widget.scrollbar_offset(Vector::new(16.0, -8.0));
+    h.node = h.widget.layout(
+        &mut h.tree,
+        &h.renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(200.0, 100.0)),
+    );
+    assert_eq!(geometry(&h), original);
+    let shifted = h.widget.lanes(Layout::new(&h.node)).vertical.unwrap();
+    assert_eq!(shifted.x, rail.x + 16.0);
+    assert_eq!(shifted.y, rail.y);
+    assert_eq!(shifted.size(), rail.size());
+    h.widget = h
+        .widget
+        .scrollbar_offset(Vector::new(f32::NAN, f32::INFINITY));
+    assert_eq!(h.widget.bar.offset, Vector::ZERO);
+    h.widget = h.widget.scrollbar_offset(Vector::new(-12.0, -8.0));
+    assert_eq!(
+        h.widget.lanes(Layout::new(&h.node)).vertical.unwrap().x,
+        rail.x - 12.0
+    );
+}
+
+#[test]
+fn translated_two_axis_rails_and_hit_targets_never_overlap_at_the_corner() {
+    let mut h = Harness::new(Space::new().width(600).height(600).into(), None);
+    h.widget = h.widget.horizontal();
+    h.node = h.widget.layout(
+        &mut h.tree,
+        &h.renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(200.0, 100.0)),
+    );
+    for offset in [
+        Vector::new(16.0, 16.0),
+        Vector::new(-10.0, -10.0),
+        Vector::ZERO,
+    ] {
+        h.widget = h.widget.scrollbar_offset(offset);
+        let lanes = h.widget.lanes(Layout::new(&h.node));
+        let hit = zones(h.widget.bar, lanes, Layout::new(&h.node).bounds());
+        assert!(
+            lanes
+                .vertical
+                .unwrap()
+                .intersection(&lanes.horizontal.unwrap())
+                .is_none()
+        );
+        assert!(
+            hit.vertical
+                .unwrap()
+                .intersection(&hit.horizontal.unwrap())
+                .is_none()
+        );
+        assert!(hit.vertical.unwrap().width >= 0.0);
+        assert!(hit.horizontal.unwrap().height >= 0.0);
+    }
+}
+
+#[test]
+fn vertical_outset_bar_draws_hovers_drags_and_accepts_wheel_outside_content() {
+    let viewport = Rectangle::with_size(Size::new(240.0, 140.0));
+    for scale in [1.0, 1.25, 2.0] {
+        let mut h = Harness::new(rows(), None);
+        h.widget = h.widget.scrollbar_offset(Vector::new(16.0, 0.0));
+        let cursor = mouse::Cursor::Available(Point::new(211.0, 12.0));
+        outset_event(
+            &mut h,
+            &Event::Mouse(mouse::Event::CursorMoved {
+                position: Point::new(211.0, 12.0),
+            }),
+            cursor,
+            viewport,
+        );
+        outset_frame(&mut h, cursor, viewport);
+        assert!(h.tree.state.downcast_ref::<State>().revealed().vertical >= GRABBABLE);
+        let pixels = outset_pixels(&mut h, viewport, scale);
+        let alpha = |x: f32, y: f32| {
+            pixels[((((y * scale) as u32 * (240.0 * scale) as u32 + (x * scale) as u32) * 4) + 3)
+                as usize]
+        };
+        assert!(
+            alpha(211.0, 12.0) > 0,
+            "bar must be painted beyond the 200px content at scale {scale}"
+        );
+        assert_eq!(
+            alpha(195.0, 12.0),
+            0,
+            "old scrollbar position must stay clear"
+        );
+        assert!(outset_event(
+            &mut h,
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            cursor,
+            viewport
+        ));
+        assert_eq!(
+            h.tree.state.downcast_ref::<State>().dragging,
+            Some(Axis::Vertical)
+        );
+        let moved = Point::new(211.0, 75.0);
+        assert!(outset_event(
+            &mut h,
+            &Event::Mouse(mouse::Event::CursorMoved { position: moved }),
+            mouse::Cursor::Available(moved),
+            viewport
+        ));
+        assert!(h.offset() > 200.0);
+        outset_event(
+            &mut h,
+            &Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            mouse::Cursor::Unavailable,
+            viewport,
+        );
+        assert_eq!(h.tree.state.downcast_ref::<State>().dragging, None);
+    }
+
+    let mut h = Harness::new(rows(), None);
+    h.widget = h.widget.scrollbar_offset(Vector::new(16.0, 0.0));
+    let cursor = mouse::Cursor::Available(Point::new(211.0, 50.0));
+    outset_frame(&mut h, cursor, viewport);
+    assert!(outset_event(
+        &mut h,
+        &Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -40.0 }
+        }),
+        cursor,
+        viewport
+    ));
+    for _ in 0..180 {
+        outset_frame(&mut h, cursor, viewport);
+    }
+    assert_eq!(h.offset(), 40.0);
+}
+
+#[test]
+fn horizontal_outset_bar_draws_and_drags_below_the_content() {
+    let viewport = Rectangle::with_size(Size::new(240.0, 140.0));
+    let mut h = Harness::new(Space::new().width(600).height(60).into(), None);
+    h.widget = h
+        .widget
+        .horizontal()
+        .no_vertical()
+        .scrollbar_offset(Vector::new(0.0, 16.0));
+    h.node = h.widget.layout(
+        &mut h.tree,
+        &h.renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(200.0, 100.0)),
+    );
+    let cursor = mouse::Cursor::Available(Point::new(12.0, 111.0));
+    outset_frame(&mut h, cursor, viewport);
+    let pixels = outset_pixels(&mut h, viewport, 1.0);
+    assert!(pixels[((111 * 240 + 12) * 4 + 3) as usize] > 0);
+    assert!(outset_event(
+        &mut h,
+        &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        cursor,
+        viewport
+    ));
+    assert_eq!(
+        h.tree.state.downcast_ref::<State>().dragging,
+        Some(Axis::Horizontal)
+    );
+    let moved = Point::new(170.0, 111.0);
+    outset_event(
+        &mut h,
+        &Event::Mouse(mouse::Event::CursorMoved { position: moved }),
+        mouse::Cursor::Available(moved),
+        viewport,
+    );
+    assert!(h.tree.state.downcast_ref::<State>().reach.horizontal.offset > 0.0);
+}
+
+#[test]
+fn clipped_outset_rails_do_not_paint_hover_capture_or_scroll() {
+    let viewport = Rectangle::with_size(Size::new(205.0, 100.0));
+    for x in [204.5, 211.0] {
+        let mut h = Harness::new(rows(), None);
+        h.widget = h.widget.scrollbar_offset(Vector::new(16.0, 0.0));
+        let cursor = mouse::Cursor::Available(Point::new(x, 12.0));
+        outset_frame(&mut h, cursor, viewport);
+        assert_eq!(
+            h.tree.state.downcast_ref::<State>().revealed().vertical,
+            0.0
+        );
+        assert!(!outset_event(
+            &mut h,
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            cursor,
+            viewport
+        ));
+        assert_eq!(h.tree.state.downcast_ref::<State>().dragging, None);
+        assert!(!outset_event(
+            &mut h,
+            &Event::Mouse(mouse::Event::WheelScrolled {
+                delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 }
+            }),
+            cursor,
+            viewport
+        ));
+        for _ in 0..5 {
+            outset_frame(&mut h, cursor, viewport);
+        }
+        assert_eq!(h.offset(), 0.0);
+        assert!(
+            outset_pixels(&mut h, viewport, 1.0)
+                .chunks_exact(4)
+                .all(|pixel| pixel[3] == 0)
+        );
+    }
+}

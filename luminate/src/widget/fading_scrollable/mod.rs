@@ -1,7 +1,7 @@
 //! A scrollable whose bars stay out of the way until they are wanted.
 //!
-//! Optional [`FadingScrollable::edge_fade`] fades overflowing content into
-//! transparency. [`FadingScrollable::subpixel_scroll`] preserves fractional
+//! Optional [`FadingScrollable::edge_fade`] fades vertical overflow into
+//! transparency. [`FadingScrollable::edge_fade_sides`] configures all four edges. [`FadingScrollable::subpixel_scroll`] preserves fractional
 //! travel and [`FadingScrollable::follow`] keeps a descendant visible as its
 //! layout changes, without application messages or tasks.
 
@@ -384,7 +384,10 @@ fn cues(
     // A wheel turn reaches every widget the pointer's path crosses, so it
     // only counts where the pointer is actually over this one.
     if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event
-        && cursor.is_over(bounds)
+        && (cursor.is_over(bounds)
+            || Axis::BOTH
+                .into_iter()
+                .any(|axis| zones.of(axis).is_some_and(|zone| cursor.is_over(zone))))
     {
         let (x, y) = match delta {
             mouse::ScrollDelta::Lines { x, y } | mouse::ScrollDelta::Pixels { x, y } => (*x, *y),
@@ -426,6 +429,8 @@ struct Bar {
     /// The inset outside the rails, between them and the viewport's
     /// edges: the bars live in the viewport shrunk by it.
     margin: Padding,
+    /// Cross-axis translations: x moves the vertical bar, y the horizontal bar.
+    offset: Vector,
     /// The shortest the pill may get. Without it a long page shrinks the
     /// pill to a few pixels nobody can grab.
     min_pill: f32,
@@ -463,22 +468,38 @@ fn gutters(
         height: (bounds.height - bar.margin.top - bar.margin.bottom).max(0.0),
     };
 
-    // Where both bars are up, each stops short of the other's whole rail,
-    // so the corner belongs to neither and one hit-test cannot answer for
-    // two axes.
-    let vertical = scrolls_y.then(|| Rectangle {
-        x: bounds.x + bounds.width - right,
+    let mut vertical = scrolls_y.then_some(Rectangle {
+        x: bounds.x + bounds.width - right + bar.offset.x,
         y: bounds.y,
         width: right,
-        height: (bounds.height - if scrolls_x { bottom } else { 0.0 }).max(0.0),
+        height: bounds.height,
     });
-
-    let horizontal = scrolls_x.then(|| Rectangle {
+    let mut horizontal = scrolls_x.then_some(Rectangle {
         x: bounds.x,
-        y: bounds.y + bounds.height - bottom,
-        width: (bounds.width - if scrolls_y { right } else { 0.0 }).max(0.0),
+        y: bounds.y + bounds.height - bottom + bar.offset.y,
+        width: bounds.width,
         height: bottom,
     });
+
+    // Preserve the original arithmetic at zero offset, including fractional layouts.
+    if bar.offset == Vector::ZERO {
+        if let Some(rail) = &mut vertical {
+            rail.height = (bounds.height - if scrolls_x { bottom } else { 0.0 }).max(0.0);
+        }
+        if let Some(rail) = &mut horizontal {
+            rail.width = (bounds.width - if scrolls_y { right } else { 0.0 }).max(0.0);
+        }
+        return Axes {
+            vertical,
+            horizontal,
+        };
+    }
+
+    // Reserve only the corner where the translated rails would actually meet.
+    if let (Some(v), Some(h)) = (&mut vertical, &mut horizontal) {
+        v.height = v.height.min((h.y - v.y).max(0.0));
+        h.width = h.width.min((v.x - h.x).max(0.0));
+    }
 
     Axes {
         vertical,
@@ -498,7 +519,7 @@ fn zones(bar: Bar, rails: Axes<Option<Rectangle>>, bounds: Rectangle) -> Axes<Op
         let x = rail.x.min(rail.x + rail.width - bar.gutter);
         Rectangle {
             x,
-            width: bounds.x + bounds.width - x,
+            width: (bounds.x + bounds.width + bar.offset.x - x).max(rail.width),
             ..rail
         }
     });
@@ -506,7 +527,7 @@ fn zones(bar: Bar, rails: Axes<Option<Rectangle>>, bounds: Rectangle) -> Axes<Op
         let y = rail.y.min(rail.y + rail.height - bar.gutter);
         Rectangle {
             y,
-            height: bounds.y + bounds.height - y,
+            height: (bounds.y + bounds.height + bar.offset.y - y).max(rail.height),
             ..rail
         }
     });
@@ -1969,6 +1990,7 @@ mod tests {
         track_padding: Padding::ZERO,
         margin: Padding::ZERO,
         min_pill: 0.0,
+        offset: Vector::ZERO,
     };
 
     /// A bar with uneven ends and a floor under the pill. The ends differ
@@ -1985,6 +2007,7 @@ mod tests {
         },
         margin: Padding::ZERO,
         min_pill: 20.0,
+        offset: Vector::ZERO,
     };
 
     /// A bar held off every edge, by different amounts so a test can tell
@@ -2000,6 +2023,7 @@ mod tests {
             left: 7.0,
         },
         min_pill: 0.0,
+        offset: Vector::ZERO,
     };
 
     const BOTH: Axes<bool> = Axes {
@@ -3030,6 +3054,7 @@ where
             track_padding: Padding::new(PADDING),
             margin: Padding::ZERO,
             min_pill: MIN_PILL,
+            offset: Vector::ZERO,
         };
 
         let content_offset = Rc::new(Cell::new(Vector::ZERO));
@@ -3072,18 +3097,40 @@ where
         self
     }
 
-    /// Fades content into transparency at vertical edges with hidden content.
+    /// Fades vertical overflow into transparency at the top and bottom.
     ///
-    /// The fade grows with the hidden extent, up to `length` logical pixels.
-    /// It records only the viewport; scrollbars and overlays are not faded.
-    /// Zero disables it. Requires the public texture renderer API, without
-    /// changing the renderer requirements of scrollables that don't use fades.
+    /// Existing calls preserve their vertical-only behaviour. For independent
+    /// top, right, bottom and left lengths, use [`Self::edge_fade_sides`].
+    /// Zero disables both vertical fades. Requires [`TextureRenderer`].
     #[must_use]
-    pub fn edge_fade(mut self, length: impl Into<iced::Pixels>) -> Self
+    pub fn edge_fade(self, length: impl Into<iced::Pixels>) -> Self
     where
         Renderer: TextureRenderer,
     {
-        self.edge_fade = Some(fade::EdgeFade::new(length.into().0));
+        let length = length.into().0;
+        self.edge_fade_sides(Padding::ZERO.top(length).bottom(length))
+    }
+
+    /// Independently fades overflowing content at each edge.
+    ///
+    /// Lengths are logical pixels, in [`Padding`] order: top, right, bottom,
+    /// left. A scalar enables all four edges equally. Zero disables a side;
+    /// negative and non-finite lengths are treated as zero. Each fade grows
+    /// with the hidden content and is capped at half its viewport axis.
+    /// At corners, horizontal and vertical alpha multiply. Scrollbars and
+    /// overlays are not faded. Horizontal overflow requires [`Self::horizontal`].
+    ///
+    /// ```ignore
+    /// fading_scrollable(content).edge_fade_sides(
+    ///     iced::Padding::ZERO.top(12).bottom(24).left(8).right(0),
+    /// );
+    /// ```
+    #[must_use]
+    pub fn edge_fade_sides(mut self, lengths: impl Into<Padding>) -> Self
+    where
+        Renderer: TextureRenderer,
+    {
+        self.edge_fade = Some(fade::EdgeFade::new(lengths.into()));
         self
     }
 
@@ -3328,6 +3375,29 @@ where
         self
     }
 
+    /// Moves scrollbar geometry without changing content layout or viewport size.
+    ///
+    /// `offset.x` shifts the vertical scrollbar horizontally; `offset.y` shifts
+    /// the horizontal scrollbar vertically. Positive values move right/down,
+    /// negative values move left/up. Non-finite components become zero.
+    /// Rail, pill, hover target and drag coordinates move together. Padding,
+    /// margins, content fades and overlay placement remain unchanged.
+    ///
+    /// Outset bars may draw and receive input outside this widget's bounds, but
+    /// never outside the ancestor viewport. Ancestors must leave paint/input
+    /// space for the bar; this does not enlarge a window or bypass parent clips.
+    ///
+    /// ```ignore
+    /// fading_scrollable(content)
+    ///     .scrollbar_offset(iced::Vector::new(16.0, 0.0));
+    /// ```
+    #[must_use]
+    pub fn scrollbar_offset(mut self, offset: Vector) -> Self {
+        let finite = |value: f32| if value.is_finite() { value } else { 0.0 };
+        self.bar.offset = Vector::new(finite(offset.x), finite(offset.y));
+        self
+    }
+
     /// The shortest the pill may get. Without a floor a long page shrinks
     /// it to a sliver nobody can grab. Defaults to 24 px.
     #[must_use]
@@ -3479,6 +3549,7 @@ struct State {
     follow_id: Option<iced::widget::Id>,
     following: bool,
     fade_cache: TextureCache,
+    fade_intermediate_cache: TextureCache,
 }
 
 impl State {
@@ -3534,7 +3605,13 @@ impl State {
             follow_id: None,
             following: true,
             fade_cache: TextureCache::new(),
+            fade_intermediate_cache: TextureCache::new(),
         }
+    }
+
+    fn invalidate_fade(&self) {
+        self.fade_cache.invalidate();
+        self.fade_intermediate_cache.invalidate();
     }
 
     /// This frame's `(reveal, expand, press)` on `axis`.
@@ -3607,6 +3684,49 @@ where
     Theme: Catalog + scrollable::Catalog,
     Renderer: text::Renderer,
 {
+    fn visible_fade_lengths(
+        &self,
+        state: &State,
+        bounds: Rectangle,
+        requested: Padding,
+    ) -> Padding {
+        let hidden_edges = |axis: Axis, near: f32, far: f32, extent: f32| {
+            if !*self.axes.of(axis) {
+                return (0.0, 0.0);
+            }
+
+            let reach = *state.reach.of(axis);
+            let offset = if self.subpixel {
+                state.offset(axis)
+            } else {
+                reach.offset
+            };
+            let maximum = (reach.content - reach.viewport).max(0.0);
+            (
+                offset.clamp(0.0, near.min(extent / 2.0)),
+                (maximum - offset).clamp(0.0, far.min(extent / 2.0)),
+            )
+        };
+        let (top, bottom) = hidden_edges(
+            Axis::Vertical,
+            requested.top,
+            requested.bottom,
+            bounds.height,
+        );
+        let (left, right) = hidden_edges(
+            Axis::Horizontal,
+            requested.left,
+            requested.right,
+            bounds.width,
+        );
+        Padding {
+            top,
+            right,
+            bottom,
+            left,
+        }
+    }
+
     /// The `Direction` the inner scrollable is configured with.
     ///
     /// Always [`Scrollbar::hidden`]: a zero-width bar makes iced's
@@ -3682,6 +3802,83 @@ where
         gutters(self.bar, self.axes, bounds, content)
     }
 
+    fn scrollbar_bounds(&self, layout: Layout<'_>) -> Rectangle {
+        let lanes = self.lanes(layout);
+        Axis::BOTH
+            .into_iter()
+            .filter_map(|axis| *lanes.of(axis))
+            .fold(layout.bounds(), |bounds, lane| bounds.union(&lane))
+    }
+
+    fn bar_cursor(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        dragging: bool,
+    ) -> mouse::Cursor {
+        if dragging {
+            return cursor;
+        }
+        let Some(point) = cursor.position().filter(|point| viewport.contains(*point)) else {
+            return mouse::Cursor::Unavailable;
+        };
+        let lanes = self.lanes(layout);
+        let zones = zones(self.bar, lanes, layout.bounds());
+        let hidden_target = Axis::BOTH.into_iter().any(|axis| {
+            zones.of(axis).is_some_and(|zone| zone.contains(point))
+                && lanes
+                    .of(axis)
+                    .and_then(|lane| lane.intersection(viewport))
+                    .is_none()
+        });
+        if hidden_target {
+            mouse::Cursor::Unavailable
+        } else {
+            cursor
+        }
+    }
+
+    /// Wheel input on an outset rail cannot reach Iced's content-sized viewport.
+    /// Write its raw offset through the same operation used by dragging; `aim`
+    /// then supplies the normal smooth wheel travel and acceleration.
+    fn outset_wheel_offset(
+        &self,
+        state: &State,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) -> Option<AbsoluteOffset<Option<f32>>> {
+        if cursor.is_over(layout.bounds()) {
+            return None;
+        }
+        let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event else {
+            return None;
+        };
+        let point = cursor.position()?;
+        let zones = zones(self.bar, self.lanes(layout), layout.bounds());
+        let axis = Axis::BOTH
+            .into_iter()
+            .find(|axis| zones.of(*axis).is_some_and(|zone| zone.contains(point)))?;
+        let delta = match *delta {
+            mouse::ScrollDelta::Lines { x, y } => Vector::new(x, y) * 60.0,
+            mouse::ScrollDelta::Pixels { x, y } => Vector::new(x, y),
+        };
+        let amount = match axis {
+            Axis::Vertical => delta.y,
+            Axis::Horizontal => {
+                if delta.x == 0.0 {
+                    delta.y
+                } else {
+                    delta.x
+                }
+            }
+        };
+        let mut offset = AbsoluteOffset { x: None, y: None };
+        axis.aim_at(&mut offset, state.reach.of(axis).offset - amount);
+        Some(offset)
+    }
+
     /// The spring a wheel travel glides on, when the curve is a plain one:
     /// a spring with no lead-in delay. Anything else goes through the
     /// engine, which knows how to run it.
@@ -3718,6 +3915,32 @@ where
             } else {
                 *state.glide.of_mut(axis) = Some(glide);
                 shell.request_redraw();
+            }
+        }
+    }
+
+    fn update_follow_target(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+    ) {
+        if matches!(event, Event::Window(window::Event::RedrawRequested(_)))
+            && tree.state.downcast_ref::<State>().following
+            && self.axes.vertical
+            && self.follow.is_some()
+        {
+            let target_id = self.follow.clone();
+            let mut target = follow::Target::new(target_id.as_ref());
+            self.inner_mut()
+                .operate(&mut tree.children[0], layout, renderer, &mut target);
+            let state = tree.state.downcast_mut::<State>();
+            if let Some(y) = target.offset(state.heading(Axis::Vertical), self.follow_margin) {
+                state.requested.to = Some(AbsoluteOffset {
+                    x: None,
+                    y: Some(y),
+                });
             }
         }
     }
@@ -4114,7 +4337,7 @@ where
     }
 
     fn diff(&self, tree: &mut Tree) {
-        tree.state.downcast_ref::<State>().fade_cache.invalidate();
+        tree.state.downcast_ref::<State>().invalidate_fade();
         tree.children[0].diff(self.as_widget());
     }
 
@@ -4132,7 +4355,7 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        tree.state.downcast_ref::<State>().fade_cache.invalidate();
+        tree.state.downcast_ref::<State>().invalidate_fade();
         self.inner_mut()
             .layout(&mut tree.children[0], renderer, limits)
     }
@@ -4160,21 +4383,15 @@ where
             );
         };
         if let Some(fade) = &self.edge_fade {
-            let reach = *state.reach.of(Axis::Vertical);
-            let offset = if self.subpixel {
-                state.offset(Axis::Vertical)
-            } else {
-                reach.offset
-            };
-            let maximum = (reach.content - reach.viewport).max(0.0);
-            let length = fade.length.min(layout.bounds().height / 2.0);
+            let bounds = layout.bounds();
+            let edges = self.visible_fade_lengths(state, bounds, fade.lengths);
             (fade.paint)(
                 renderer,
                 &state.fade_cache,
-                layout.bounds(),
+                &state.fade_intermediate_cache,
+                bounds,
                 viewport,
-                offset.clamp(0.0, length),
-                (maximum - offset).clamp(0.0, length),
+                edges,
                 1.0,
                 &mut paint,
             );
@@ -4182,7 +4399,7 @@ where
             paint(renderer);
         }
 
-        let Some(visible) = layout.bounds().intersection(viewport) else {
+        let Some(visible) = self.scrollbar_bounds(layout).intersection(viewport) else {
             return;
         };
 
@@ -4255,33 +4472,25 @@ where
     ) {
         {
             let state = tree.state.downcast_mut::<State>();
-            state.fade_cache.invalidate();
+            state.invalidate_fade();
             if state.follow_id != self.follow {
                 state.follow_id.clone_from(&self.follow);
                 state.following = true;
             }
         }
-        if matches!(event, Event::Window(window::Event::RedrawRequested(_)))
-            && tree.state.downcast_ref::<State>().following
-            && self.axes.vertical
-            && self.follow.is_some()
-        {
-            let target_id = self.follow.clone();
-            let mut target = follow::Target::new(target_id.as_ref());
-            self.inner_mut()
-                .operate(&mut tree.children[0], layout, renderer, &mut target);
-            let state = tree.state.downcast_mut::<State>();
-            if let Some(y) = target.offset(state.heading(Axis::Vertical), self.follow_margin) {
-                state.requested.to = Some(AbsoluteOffset {
-                    x: None,
-                    y: Some(y),
-                });
-            }
-        }
+        self.update_follow_target(tree, event, layout, renderer);
         let state = tree.state.downcast_mut::<State>();
-        let (swallowed, take_to) = self.drag_input(state, event, layout, cursor, shell);
+        let bar_cursor = self.bar_cursor(layout, cursor, viewport, state.dragging.is_some());
+        let (mut swallowed, take_to) = self.drag_input(state, event, layout, bar_cursor, shell);
 
-        let cues = cues(self.bar, self.axes, state.dragging, event, layout, cursor);
+        let cues = cues(
+            self.bar,
+            self.axes,
+            state.dragging,
+            event,
+            layout,
+            bar_cursor,
+        );
 
         for axis in Axis::BOTH {
             *state.scrolled.of_mut(axis) |= cues.of(axis).scrolled;
@@ -4307,6 +4516,19 @@ where
 
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
             self.spend(tree.state.downcast_mut::<State>(), cues, *now, shell);
+        }
+
+        let wheel_cursor = self.bar_cursor(layout, cursor, viewport, false);
+        let wheel_offset = self.outset_wheel_offset(
+            tree.state.downcast_ref::<State>(),
+            event,
+            layout,
+            wheel_cursor,
+        );
+        if let Some(offset) = wheel_offset {
+            self.reach(tree, layout, renderer, Some(offset));
+            swallowed = true;
+            shell.capture_event();
         }
 
         let heard = if swallowed {
@@ -4398,6 +4620,15 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        let zones = zones(self.bar, self.lanes(layout), layout.bounds());
+        let bar_cursor = self.bar_cursor(layout, cursor, viewport, false);
+        if Axis::BOTH
+            .into_iter()
+            .any(|axis| zones.of(axis).is_some_and(|zone| bar_cursor.is_over(zone)))
+        {
+            return mouse::Interaction::default();
+        }
+
         self.inner()
             .mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
     }
