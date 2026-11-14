@@ -11,6 +11,8 @@ pub struct ColorScale {
     pub s25: Color,
     /// Step 30.
     pub s30: Color,
+    /// Step 35.
+    pub s35: Color,
     /// Step 40.
     pub s40: Color,
     /// Step 50.
@@ -40,6 +42,7 @@ impl ColorScale {
     pub const GRAY: Self = Self {
         s25: Color::from_rgb8(253, 253, 253),
         s30: Color::from_rgb8(250, 250, 250),
+        s35: Color::from_rgb8(245, 245, 245),
         s40: Color::from_rgb8(240, 240, 240),
         s50: Color::from_rgb8(230, 231, 232),
         s100: Color::from_rgb8(207, 209, 210),
@@ -58,6 +61,7 @@ impl ColorScale {
     pub const RED: Self = Self {
         s25: Color::from_rgb8(255, 251, 250),
         s30: Color::from_rgb8(255, 249, 248),
+        s35: Color::from_rgb8(255, 247, 246),
         s40: Color::from_rgb8(254, 246, 245),
         s50: Color::from_rgb8(254, 243, 242),
         s100: Color::from_rgb8(254, 228, 226),
