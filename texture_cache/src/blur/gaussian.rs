@@ -223,7 +223,7 @@ mod tests {
     fn a_kernel_has_the_variance_it_was_asked_for() {
         for sigma in [0.5_f32, 1.0, 2.5, 4.0] {
             let half = kernel(sigma);
-            assert!(!half.is_empty());
+            assert_ne!(half, [] as [f32; 0]);
             // The mirrored kernel sums to one.
             let sum = half[0] + 2.0 * half[1..].iter().sum::<f32>();
             assert!((sum - 1.0).abs() < 1e-4, "sigma {sigma} summed to {sum}");
@@ -322,7 +322,7 @@ mod tests {
         for sigma in [0.0_f32, -1.0, f32::NAN, 0.1, 0.5, 0.8] {
             let chosen = plan(sigma);
             assert_eq!(chosen.passes, 0, "sigma {sigma}");
-            assert!(chosen.taps.is_empty());
+            assert_eq!(chosen.taps, [] as [(f32, f32); 0]);
         }
     }
 }

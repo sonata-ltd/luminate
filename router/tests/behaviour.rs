@@ -246,7 +246,7 @@ fn a_route_message_round_trips_through_debug_without_panicking() {
     let (mut router, _) = router();
     router.navigate::<Counter>().unwrap();
     let route: RouteMessage = router.message::<Counter>(Msg::Bump).unwrap();
-    assert!(!format!("{route:?}").is_empty());
+    assert_ne!(format!("{route:?}"), "");
     assert!(
         router.message::<Kept>(Msg::Bump).is_none(),
         "no live instance"

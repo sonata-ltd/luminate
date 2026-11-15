@@ -749,7 +749,9 @@ fn clipped_outset_rails_do_not_paint_hover_capture_or_scroll() {
         assert_eq!(h.offset(), 0.0);
         assert!(
             outset_pixels(&mut h, viewport, 1.0)
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .all(|pixel| pixel[3] == 0)
         );
     }

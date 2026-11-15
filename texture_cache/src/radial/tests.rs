@@ -199,11 +199,9 @@ fn gpu_keeps_multiple_instances_clips_and_cached_layers_independent() {
     };
     use iced_core::renderer::Headless;
     use iced_core::{Font, Pixels, Renderer as _};
-    let mut renderer = iced_test::futures::futures::executor::block_on(Renderer::new(
-        Font::DEFAULT,
-        Pixels(16.0),
-        Some("wgpu"),
-    ))
+    let mut renderer = iced_test::futures::futures::executor::block_on(
+        <Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), Some("wgpu")),
+    )
     .expect("wgpu adapter");
     let size = Size::new(160, 80);
     let red = Radial::new()

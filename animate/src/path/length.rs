@@ -262,6 +262,7 @@ mod tests {
 
     use super::ArcLength;
     use crate::path::PathData;
+    use crate::path::data::Subpath;
 
     /// A circle of four cubic quarter arcs, the usual κ approximation.
     fn circle(r: f32) -> PathData {
@@ -388,8 +389,8 @@ mod tests {
             .unwrap();
         let table = ArcLength::new(&two);
         assert_eq!(table.trim(&two, 0.25, 0.75).len(), 2);
-        assert!(table.trim(&two, 0.6, 0.4).is_empty());
-        assert!(table.trim(&two, 0.5, 0.5).is_empty());
+        assert_eq!(table.trim(&two, 0.6, 0.4), Vec::<Subpath>::new());
+        assert_eq!(table.trim(&two, 0.5, 0.5), Vec::<Subpath>::new());
         assert!(
             table.trim(&two, -3.0, 4.0).len() == 2,
             "clamped to the whole path"
@@ -447,6 +448,6 @@ mod tests {
         assert_eq!(table.point_at(&dot, 0.5), Point::new(5.0, 5.0));
         let tangent = table.tangent_at(&dot, 0.5);
         assert!(tangent.x.is_finite() && tangent.y.is_finite());
-        assert!(table.trim(&dot, 0.0, 0.5).is_empty());
+        assert_eq!(table.trim(&dot, 0.0, 0.5), Vec::<Subpath>::new());
     }
 }

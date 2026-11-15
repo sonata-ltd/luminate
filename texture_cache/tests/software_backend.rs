@@ -258,5 +258,5 @@ fn auto_invalidate_off_keeps_the_texture_after_a_click() {
 #[test]
 fn the_helper_is_headless_and_named() {
     let renderer = headless_tiny_skia();
-    assert!(!Headless::name(&renderer).is_empty());
+    assert_ne!(Headless::name(&renderer), "");
 }

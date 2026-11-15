@@ -1534,6 +1534,6 @@ mod tests {
             &<Theme as multi_border::Catalog>::default(),
             multi_border::Status::default(),
         );
-        assert!(ring.rings.is_empty());
+        assert_eq!(ring.rings, Vec::<multi_border::Ring>::new());
     }
 }
