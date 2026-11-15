@@ -1,4 +1,7 @@
-//! Measure natural target bounds; nested scrollables are never moved.
+//! Measure where a target is drawn; nested scrollables are never moved.
+//!
+//! Layout bounds below a nested scrollable ignore its scroll offset, so the
+//! translations of the scrollables enclosing the target are subtracted.
 use iced::advanced::widget::{Operation, operation::Scrollable};
 use iced::{Rectangle, Vector, widget::Id};
 #[derive(Default)]
@@ -7,6 +10,11 @@ pub(super) struct Target<'a> {
     viewport: Option<Rectangle>,
     content: Rectangle,
     bounds: Option<Rectangle>,
+    /// The translation of a nested scrollable just met, for the `traverse`
+    /// into its content that follows.
+    pending: Option<Vector>,
+    /// Translations of the nested scrollables around the current widget.
+    nested: Vec<Vector>,
 }
 impl<'a> Target<'a> {
     pub(super) fn new(id: Option<&'a Id>) -> Self {
@@ -33,24 +41,33 @@ impl<'a> Target<'a> {
 }
 impl Operation for Target<'_> {
     fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+        let translation = self.pending.take().unwrap_or(Vector::ZERO);
+        self.nested.push(translation);
         visit(self);
+        self.nested.pop();
     }
     fn scrollable(
         &mut self,
         _: Option<&Id>,
         bounds: Rectangle,
         content: Rectangle,
-        _: Vector,
+        translation: Vector,
         _: &mut dyn Scrollable,
     ) {
         if self.viewport.is_none() {
             self.viewport = Some(bounds);
             self.content = content;
+        } else {
+            self.pending = Some(translation);
         }
     }
     fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
         if self.id.is_some() && id == self.id {
-            self.bounds = Some(bounds);
+            let shift = self
+                .nested
+                .iter()
+                .fold(Vector::ZERO, |sum, translation| sum + *translation);
+            self.bounds = Some(bounds - shift);
         }
     }
     fn text(&mut self, id: Option<&Id>, bounds: Rectangle, _: &str) {

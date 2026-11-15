@@ -142,6 +142,41 @@ fn following_remeasures_a_shrinking_target_in_a_hundred_pixel_viewport() {
 }
 
 #[test]
+fn following_a_target_inside_a_scrolled_nested_scrollable_uses_where_it_is_drawn() {
+    let inner = fading_scrollable(iced::widget::column![
+        Space::new().height(200),
+        container(Space::new().width(180).height(40)).id("nested"),
+        Space::new().height(200),
+    ])
+    .height(100);
+    let content = iced::widget::column![inner, Space::new().height(300)].into();
+    let mut h = Harness::new(content, None);
+    h.frame();
+
+    // Scroll the nested scrollable so the target sits at the top of the viewport.
+    h.event(
+        &Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -200.0 },
+        }),
+        mouse::Cursor::Available(Point::new(40.0, 40.0)),
+    );
+    h.frames(60);
+    assert_eq!(
+        h.offset(),
+        0.0,
+        "the wheel belongs to the nested scrollable"
+    );
+
+    h.widget.follow = Some(Id::new("nested"));
+    h.frames(180);
+    assert_eq!(
+        h.offset(),
+        0.0,
+        "an already visible target must not move the outer scrollable"
+    );
+}
+
+#[test]
 fn fade_multiplies_alpha_only_where_content_overflows_and_leaves_scrollbars_separate() {
     let content =
         container(Space::new().width(200).height(600)).style(|_: &crate::Theme| container::Style {

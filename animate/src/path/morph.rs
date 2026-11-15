@@ -450,7 +450,10 @@ impl MorphDriver {
             return 0.0;
         }
 
-        (along / norm).clamp(0.0, MAX_CARRIED_VELOCITY)
+        // Negative when the new target lies against the motion: the shape
+        // keeps going its old way briefly (progress below 0 extrapolates past
+        // the snapshot, as an overshoot does past 1) before turning back.
+        (along / norm).clamp(-MAX_CARRIED_VELOCITY, MAX_CARRIED_VELOCITY)
     }
 }
 
@@ -723,6 +726,10 @@ mod tests {
     /// morph starts), so the reported speed for "after" is not what a
     /// same-length "before" average would suggest.
     fn growth_around_a_retarget(carry: bool) -> (f32, f32) {
+        growth_around_a_retarget_to(carry, 30.0)
+    }
+
+    fn growth_around_a_retarget_to(carry: bool, side: f32) -> (f32, f32) {
         const INSTANT: f32 = 0.001;
 
         let params = SpringParams::new(0.0, std::time::Duration::from_millis(400));
@@ -735,7 +742,7 @@ mod tests {
         driver.tick(DT);
         let speed_before = (width(&driver) - before) / DT;
 
-        driver.retarget(centred_square(30.0));
+        driver.retarget(centred_square(side));
         let at_retarget = width(&driver);
         driver.tick(INSTANT);
         let speed_after = (width(&driver) - at_retarget) / INSTANT;
@@ -750,6 +757,16 @@ mod tests {
         assert!(
             after > 0.6 * before && after < 1.6 * before,
             "carried: {before} then {after}"
+        );
+    }
+
+    #[test]
+    fn carrying_velocity_keeps_outward_momentum_when_the_target_shrinks() {
+        let (before, after) = growth_around_a_retarget_to(true, 5.0);
+        assert!(before > 1.0, "mid-flight: {before}");
+        assert!(
+            after > 0.6 * before && after < 1.6 * before,
+            "still growing at first: {before} then {after}"
         );
     }
 

@@ -1,11 +1,12 @@
 use std::rc::Rc;
 
 use iced::advanced::svg::{Renderer as _, Svg};
-use iced::advanced::widget::{Operation, Tree};
+use iced::advanced::widget::{Operation, Tree, tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer};
 use iced::{Alignment, Event, Length, Rectangle, Size, Vector, touch};
 
 use super::{Catalog, Shared, Status};
+use crate::widget::tap::Tap;
 use crate::{Element, Renderer, Theme};
 
 pub(super) struct Item<'a, Message> {
@@ -36,6 +37,14 @@ impl<'a, Message> Item<'a, Message> {
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Item<'_, Message> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<Tap>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(Tap::default())
+    }
+
     fn children(&self) -> Vec<Tree> {
         vec![Tree::new(self.content.as_widget())]
     }
@@ -95,7 +104,14 @@ impl<Message> Widget<Message, Theme, Renderer> for Item<'_, Message> {
             viewport,
         );
 
+        // A drag that turns into a scroll of the menu is not a pick.
+        let tap = tree.state.downcast_mut::<Tap>();
+        tap.track(event);
+
         if shell.is_event_captured() || !cursor.is_over(layout.bounds()) {
+            if matches!(event, Event::Touch(touch::Event::FingerLifted { .. })) {
+                tap.cancel();
+            }
             return;
         }
 
@@ -106,8 +122,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Item<'_, Message> {
                 self.shared.hovered.set(Some(self.position));
                 shell.request_redraw();
             }
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerPressed { .. }) => {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                self.shared.chosen.set(Some(self.position));
+                shell.capture_event();
+            }
+            // Left uncaptured so the menu's scrollable can start a gesture;
+            // the pick happens on the lift.
+            Event::Touch(touch::Event::FingerPressed { id, position }) => {
+                tap.press(*id, *position);
+            }
+            Event::Touch(touch::Event::FingerLifted { .. }) if tap.lift(event) => {
                 self.shared.chosen.set(Some(self.position));
                 shell.capture_event();
             }

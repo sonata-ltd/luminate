@@ -890,6 +890,11 @@ struct State {
     at_rest: bool,
     /// The cache generation last propagated to the ancestors.
     propagated_generation: u64,
+    /// The composite (transform, opacity, genie and morph progress) seen on
+    /// the previous `RedrawRequested`. These change the picture without
+    /// re-recording this texture, so an enclosing texture that bakes it in
+    /// must be told about them separately.
+    last_composite: Option<(Transformation, f32, f32, f32)>,
     /// Whether the previous frame was drawn live ([`Cached::live_at_rest`]).
     /// Starts `true`, so a layer that is moving from its very first frame
     /// records afresh even with a cache that holds another tree's picture.
@@ -907,6 +912,7 @@ impl State {
             snap_anchor: None,
             at_rest: false,
             propagated_generation: 0,
+            last_composite: None,
             live: true,
         }
     }
@@ -1072,6 +1078,23 @@ where
         // Our texture is baked into every ancestor's: tell them once per
         // invalidation, not once per event while we are hidden.
         let _ = ancestors::propagate(&self.cache, &mut state.propagated_generation);
+
+        // A composite change (a genie, a morph, a fade or a move) changes our
+        // picture without invalidating our texture: the ancestors must
+        // re-record whenever it differs from the previous frame, including
+        // the frame it settles on.
+        if redraw_now.is_some() {
+            let composite = (
+                user_transform,
+                self.opacity.get(),
+                self.warp_progress.get(),
+                self.morph_progress.get(),
+            );
+            if state.last_composite.is_some_and(|last| last != composite) {
+                ancestors::invalidate_ancestors();
+            }
+            state.last_composite = Some(composite);
+        }
 
         shell.merge(local, |m| m);
     }
@@ -1632,6 +1655,43 @@ mod tests {
         );
         harness.frame(Instant::now());
         assert_eq!(cache.record_count(), 1, "the default is unchanged");
+    }
+
+    #[test]
+    fn a_genie_inside_another_cache_re_records_the_outer_until_it_settles() {
+        use iced_animate::curves::SMOOTH;
+        use iced_animate::{Motion, MotionKey};
+
+        let motion = Motion::new();
+        let outer = TextureCache::new();
+        let inner = TextureCache::new();
+        let progress = motion.enter(MotionKey::unique(), SMOOTH, 1.0_f32, 0.0);
+        let root = motion.host(cached(
+            outer.clone(),
+            cached(inner.clone(), square::<()>(RED)).genie(progress.clone(), GenieShape::default()),
+        ));
+        let mut harness = Harness::new(Size::new(100.0, 40.0), root);
+        let mut clock = Instant::now();
+        run(&mut harness, &mut clock, 3);
+        let early = outer.record_count();
+        run(&mut harness, &mut clock, 3);
+        assert!(outer.record_count() > early, "the outer follows the genie");
+
+        run(&mut harness, &mut clock, 300);
+        assert!(!progress.is_animating(), "the genie has collapsed");
+        let settled = outer.record_count();
+        run(&mut harness, &mut clock, 3);
+        assert_eq!(
+            outer.record_count(),
+            settled,
+            "at rest the outer stops re-recording"
+        );
+        let shot = harness.screenshot(1.0);
+        assert_eq!(
+            &shot.pixel(10, 10)[..3],
+            &[255, 255, 255],
+            "the collapsed genie is gone"
+        );
     }
 
     #[test]

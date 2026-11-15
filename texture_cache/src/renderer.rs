@@ -483,7 +483,8 @@ impl TextureRenderer for WgpuRenderer {
         };
         self.store.note_composited(
             cache.id(),
-            bounds * (self.transformations.current() * transform),
+            bounds,
+            self.transformations.current() * transform,
         );
 
         // At rest the texture is cut to the content's own corners, measured
@@ -698,7 +699,8 @@ impl TextureRenderer for TinySkiaRenderer {
         let transform = transform * fallback;
         self.store.note_composited(
             cache.id(),
-            bounds * (self.transformations.current() * transform),
+            bounds,
+            self.transformations.current() * transform,
         );
 
         // There is no bicubic kernel in iced's raster path, so `CatmullRom`

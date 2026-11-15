@@ -63,6 +63,9 @@ pub(super) struct State {
 struct FilterCache {
     case_sensitive: bool,
     query: String,
+    /// The option keys `matchers` were built from, to notice options that
+    /// were renamed or reordered without changing their count.
+    keys: Vec<String>,
     matchers: Vec<String>,
     indices: Option<Rc<Vec<usize>>>,
 }
@@ -126,12 +129,23 @@ impl<'a, Message: Clone + 'a> DropdownWidget<'a, Message> {
             return None;
         }
 
-        if cache.matchers.len() != self.options.count
-            || cache.case_sensitive != self.search_case_sensitive
-        {
+        let stale = cache.case_sensitive != self.search_case_sensitive
+            || cache.keys.len() != self.options.count
+            || cache
+                .keys
+                .iter()
+                .enumerate()
+                .any(|(i, key)| *key != (self.options.key)(i));
+
+        if stale {
             cache.case_sensitive = self.search_case_sensitive;
-            cache.matchers = (0..self.options.count)
-                .map(|i| search::normalize(&(self.options.key)(i), self.search_case_sensitive))
+            cache.keys = (0..self.options.count)
+                .map(|i| (self.options.key)(i))
+                .collect();
+            cache.matchers = cache
+                .keys
+                .iter()
+                .map(|key| search::normalize(key, self.search_case_sensitive))
                 .collect();
             cache.indices = None;
         }

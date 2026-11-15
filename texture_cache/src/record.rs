@@ -357,21 +357,138 @@ impl<T: Texture> Entry<T> {
 }
 
 /// The backend-independent half of a store: entries by cache id.
-struct Entries<T>(Mutex<HashMap<Id, Entry<T>>>);
+struct Entries<T> {
+    map: Mutex<HashMap<Id, Entry<T>>>,
+    nesting: Mutex<Nesting>,
+}
+
+/// A texture composited into another one's recording: the size it was drawn
+/// at, and how that drawn rectangle (origin at its corner) maps into the
+/// space of the texture it was drawn into.
+#[derive(Debug, Clone, Copy)]
+struct Nested {
+    id: Id,
+    size: Size,
+    to_parent: Affine,
+}
+
+/// A scale per axis followed by an offset: what a composite can do to a
+/// rectangle. iced's `Transformation` scales uniformly only, but a texture
+/// drawn into bounds of another aspect ratio is stretched per axis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Affine {
+    scale: iced_core::Vector,
+    offset: iced_core::Vector,
+}
+
+impl Affine {
+    fn new(sx: f32, sy: f32, offset: iced_core::Vector) -> Self {
+        Self {
+            scale: iced_core::Vector::new(sx, sy),
+            offset,
+        }
+    }
+
+    /// Each axis is read from the matrix on its own: iced's constructors
+    /// scale uniformly, but a product with `orthographic` need not. Like
+    /// `Rectangle * Transformation`, a rotation or shear is not representable
+    /// and its cross terms are dropped.
+    fn from_transformation(transformation: Transformation) -> Self {
+        let x = iced_core::Vector::new(1.0, 0.0) * transformation;
+        let y = iced_core::Vector::new(0.0, 1.0) * transformation;
+        Self::new(x.x, y.y, transformation.translation())
+    }
+
+    /// `inner` first, then `self`.
+    fn then(self, inner: Self) -> Self {
+        Self::new(
+            self.scale.x * inner.scale.x,
+            self.scale.y * inner.scale.y,
+            iced_core::Vector::new(
+                self.offset.x + self.scale.x * inner.offset.x,
+                self.offset.y + self.scale.y * inner.offset.y,
+            ),
+        )
+    }
+
+    fn apply(self, rect: Rectangle) -> Rectangle {
+        Rectangle {
+            x: rect.x * self.scale.x + self.offset.x,
+            y: rect.y * self.scale.y + self.offset.y,
+            width: rect.width * self.scale.x,
+            height: rect.height * self.scale.y,
+        }
+    }
+}
+
+/// Which textures were composited into which recording.
+///
+/// Inside a recording a composite is noted in the recording texture's own
+/// coordinates, not the screen's. When that texture is itself composited,
+/// what was drawn into it is placed again through the outer composite, so a
+/// pane of glass on screen finds a source baked into another texture where
+/// it really is.
+#[derive(Default)]
+struct Nesting {
+    /// The composites noted by each recording now running, innermost last.
+    recording: Vec<Vec<Nested>>,
+    /// The composites drawn into each recorded texture.
+    children: HashMap<Id, Vec<Nested>>,
+}
+
+/// Ends a recording frame of [`Entries::begin_record`], also on unwind.
+struct Recording<'a, T: Texture> {
+    entries: &'a Entries<T>,
+    id: Id,
+}
+
+impl<T: Texture> Recording<'_, T> {
+    /// The recording completed: its texture now holds what it noted.
+    fn finish(self) {
+        let mut nesting = self.entries.nesting();
+        let children = nesting.recording.pop().unwrap_or_default();
+        let _ = nesting.children.insert(self.id, children);
+        drop(nesting);
+        std::mem::forget(self);
+    }
+}
+
+impl<T: Texture> Drop for Recording<'_, T> {
+    fn drop(&mut self) {
+        let _ = self.entries.nesting().recording.pop();
+    }
+}
 
 impl<T: Texture> Entries<T> {
     fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
+        Self {
+            map: Mutex::new(HashMap::new()),
+            nesting: Mutex::new(Nesting::default()),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<Id, Entry<T>>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.map.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn nesting(&self) -> MutexGuard<'_, Nesting> {
+        self.nesting.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Starts collecting the composites drawn into the texture of `id`;
+    /// [`Recording::finish`] stores them once the recording completes.
+    fn begin_record(&self, id: Id) -> Recording<'_, T> {
+        self.nesting().recording.push(Vec::new());
+        Recording { entries: self, id }
     }
 
     /// Drops the entries of caches whose last [`TextureCache`] handle died.
     fn trim(&self) {
-        self.lock()
-            .retain(|_, entry| entry.liveness().strong_count() > 0);
+        // Lock order: nesting, then entries, as in `note_composited`.
+        let mut nesting = self.nesting();
+        let mut map = self.lock();
+        map.retain(|_, entry| entry.liveness().strong_count() > 0);
+        nesting.children.retain(|id, _| map.contains_key(id));
     }
 
     /// Size and scale of the last record of `id`; `None` if it was never
@@ -394,12 +511,31 @@ impl<T: Texture> Entries<T> {
         }
     }
 
-    /// Records where `id` was last composited. A no-op for an unknown or
+    /// Records where `id` was last composited: `bounds` in the drawing
+    /// renderer's coordinates, which `transform` maps to its target (the
+    /// screen, or the texture being recorded). A no-op for an unknown or
     /// uncacheable cache: a composite of one draws nothing anyway.
-    fn note_composited(&self, id: Id, bounds: Rectangle) {
-        if let Some(Entry::Recorded(texture)) = self.lock().get_mut(&id) {
-            texture.note_composited(bounds);
+    ///
+    /// Whatever was composited into the texture of `id` is placed again
+    /// through this composite; see [`Nesting`].
+    fn note_composited(&self, id: Id, bounds: Rectangle, transform: iced_core::Transformation) {
+        let nested = Nested {
+            id,
+            size: bounds.size(),
+            to_parent: Affine::from_transformation(transform).then(Affine::new(
+                1.0,
+                1.0,
+                iced_core::Vector::new(bounds.x, bounds.y),
+            )),
+        };
+
+        let mut nesting = self.nesting();
+        if let Some(frame) = nesting.recording.last_mut() {
+            frame.push(nested);
         }
+
+        let mut map = self.lock();
+        place(&mut map, &nesting.children, nested, &mut Vec::new());
     }
 
     /// Records that `cache` cannot be cached at `size` (any stale texture is
@@ -473,6 +609,62 @@ impl<R> Pool<R> {
     fn len(&self) -> usize {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
+}
+
+/// Places `nested` and, through it, everything recorded into its texture.
+///
+/// A texture's own space spans its recorded logical size, which the
+/// composite may stretch into a differently sized rectangle, so its children
+/// are scaled by drawn size over recorded size. `path` holds the textures
+/// being placed above this one: a relation left over from an older record
+/// could otherwise lead back to one of them and never end.
+fn place<T: Texture>(
+    map: &mut HashMap<Id, Entry<T>>,
+    children: &HashMap<Id, Vec<Nested>>,
+    nested: Nested,
+    path: &mut Vec<Id>,
+) {
+    let Nested {
+        id,
+        size,
+        to_parent,
+    } = nested;
+    let Some(Entry::Recorded(texture)) = map.get_mut(&id) else {
+        return;
+    };
+    texture.note_composited(to_parent.apply(Rectangle::with_size(size)));
+
+    let (recorded, scale) = texture.recorded();
+    let logical = Size::new(
+        recorded.width as f32 / scale,
+        recorded.height as f32 / scale,
+    );
+    let stretch = Size::new(size.width / logical.width, size.height / logical.height);
+    if !(stretch.width.is_finite() && stretch.height.is_finite()) {
+        return;
+    }
+    let texture_to_parent = to_parent.then(Affine::new(
+        stretch.width,
+        stretch.height,
+        iced_core::Vector::ZERO,
+    ));
+
+    path.push(id);
+    for child in children.get(&id).into_iter().flatten() {
+        if child.id == id || path.contains(&child.id) {
+            continue;
+        }
+        place(
+            map,
+            children,
+            Nested {
+                to_parent: texture_to_parent.then(child.to_parent),
+                ..*child
+            },
+            path,
+        );
+    }
+    let _ = path.pop();
 }
 
 #[cfg(feature = "wgpu")]
@@ -696,6 +888,7 @@ mod gpu {
             };
 
             let viewport = Viewport::with_physical_size(size, scale_factor);
+            let recording = self.entries.begin_record(cache.id());
             let mut renderer = run(self.pool.take(|| self.new_renderer()), &viewport);
             // `iced_wgpu::Renderer::present` submits and then trims the
             // shared engine (its API offers no way to skip the trim), so a
@@ -722,6 +915,7 @@ mod gpu {
                 }),
             );
             drop(entries);
+            recording.finish();
             cache.note_record();
 
             Record::Fresh
@@ -737,8 +931,15 @@ mod gpu {
 
         /// Records where the texture of `id` was just composited, so a pane
         /// of glass over it can work out which part of it lies underneath.
-        pub(crate) fn note_composited(&self, id: Id, bounds: Rectangle) {
-            self.entries.note_composited(id, bounds);
+        /// `bounds` is in the drawing renderer's coordinates and `transform`
+        /// maps them to its target; see `Entries::note_composited`.
+        pub(crate) fn note_composited(
+            &self,
+            id: Id,
+            bounds: Rectangle,
+            transform: iced_core::Transformation,
+        ) {
+            self.entries.note_composited(id, bounds, transform);
         }
 
         /// The blurred backdrop for a pane of glass at `glass`: the derived
@@ -1047,6 +1248,7 @@ mod cpu {
             cache.note_record();
 
             let viewport = Viewport::with_physical_size(size, scale_factor);
+            let recording = self.entries.begin_record(cache.id());
             let mut renderer = run(self.pool.take(|| self.new_renderer()), &viewport);
             // A record always re-rasterizes the whole texture, so the damage
             // is the full viewport; `mask` is the clip-mask scratch.
@@ -1094,6 +1296,8 @@ mod cpu {
                     });
                 }
             }
+            drop(entries);
+            recording.finish();
 
             Record::Fresh
         }
@@ -1170,8 +1374,15 @@ mod cpu {
 
         /// Records where the texture of `id` was just composited, so a pane
         /// of glass over it can work out which part of it lies underneath.
-        pub(crate) fn note_composited(&self, id: Id, bounds: Rectangle) {
-            self.entries.note_composited(id, bounds);
+        /// `bounds` is in the drawing renderer's coordinates and `transform`
+        /// maps them to its target; see `Entries::note_composited`.
+        pub(crate) fn note_composited(
+            &self,
+            id: Id,
+            bounds: Rectangle,
+            transform: iced_core::Transformation,
+        ) {
+            self.entries.note_composited(id, bounds, transform);
         }
 
         /// The blurred backdrop a pane of glass at `glass` reads from the
@@ -1538,6 +1749,118 @@ mod store_tests {
         renderer
     }
 
+    /// Records `outer` at 100x100 with each of `inner` composited into it at
+    /// `at`, in the outer texture's own coordinates.
+    fn record_with_nested(
+        store: &TinySkiaCacheStore,
+        outer: &TextureCache,
+        inner: &[TextureCache],
+        at: Rectangle,
+    ) {
+        let size = Size::new(100, 100);
+        for cache in inner {
+            assert_eq!(store.record(cache, SIZE, 1.0, empty), Record::Fresh);
+        }
+        let record = store.record(outer, size, 1.0, |renderer, viewport| {
+            for cache in inner {
+                store.note_composited(cache.id(), at, Transformation::IDENTITY);
+            }
+            empty(renderer, viewport)
+        });
+        assert_eq!(record, Record::Fresh);
+    }
+
+    fn placed(store: &TinySkiaCacheStore, cache: &TextureCache) -> Rectangle {
+        store.source(cache.id()).expect("recorded").bounds
+    }
+
+    #[test]
+    fn a_texture_stretched_into_its_bounds_stretches_what_it_holds() {
+        let store = store();
+        let (outer, inner) = (TextureCache::new(), TextureCache::new());
+        record_with_nested(
+            &store,
+            &outer,
+            std::slice::from_ref(&inner),
+            Rectangle::new(iced_core::Point::new(10.0, 10.0), Size::new(20.0, 20.0)),
+        );
+
+        // The 100x100 recording drawn into 200x100 at (50, 0).
+        let bounds = Rectangle::new(iced_core::Point::new(50.0, 0.0), Size::new(200.0, 100.0));
+        store.note_composited(outer.id(), bounds, Transformation::IDENTITY);
+        assert_eq!(
+            placed(&store, &inner),
+            Rectangle::new(iced_core::Point::new(70.0, 10.0), Size::new(40.0, 20.0))
+        );
+    }
+
+    #[test]
+    fn a_nonuniform_transformation_scales_each_axis_on_its_own() {
+        let store = store();
+        let (outer, inner) = (TextureCache::new(), TextureCache::new());
+        let at = Rectangle::new(iced_core::Point::new(10.0, 10.0), Size::new(20.0, 20.0));
+        record_with_nested(&store, &outer, std::slice::from_ref(&inner), at);
+
+        // x by 2, y by 1: a projection for a 100x200 target, then the
+        // inverse of one for 200x200.
+        let stretch = Transformation::orthographic(200, 200).inverse()
+            * Transformation::orthographic(100, 200);
+        let bounds = Rectangle::with_size(Size::new(100.0, 100.0));
+        assert_eq!(
+            bounds * stretch,
+            Rectangle::with_size(Size::new(200.0, 100.0))
+        );
+
+        store.note_composited(outer.id(), bounds, stretch);
+        assert_eq!(
+            placed(&store, &inner),
+            Rectangle::new(iced_core::Point::new(20.0, 10.0), Size::new(40.0, 20.0))
+        );
+    }
+
+    #[test]
+    fn every_nested_texture_is_placed_however_many_there_are() {
+        let store = store();
+        let outer = TextureCache::new();
+        let inner: Vec<TextureCache> = (0..1100).map(|_| TextureCache::new()).collect();
+        let at = Rectangle::new(iced_core::Point::new(10.0, 10.0), Size::new(20.0, 20.0));
+        record_with_nested(&store, &outer, &inner, at);
+
+        store.note_composited(
+            outer.id(),
+            Rectangle::with_size(Size::new(100.0, 100.0)),
+            Transformation::translate(100.0, 0.0),
+        );
+        for cache in [&inner[0], &inner[1099]] {
+            assert_eq!(
+                placed(&store, cache),
+                at + iced_core::Vector::new(100.0, 0.0)
+            );
+        }
+    }
+
+    #[test]
+    fn a_stale_relation_leading_back_does_not_loop() {
+        let store = store();
+        let (a, b) = (TextureCache::new(), TextureCache::new());
+        let at = Rectangle::new(iced_core::Point::new(10.0, 10.0), Size::new(20.0, 20.0));
+        // `b` inside `a`, then `a` inside a newer record of `b`.
+        record_with_nested(&store, &a, std::slice::from_ref(&b), at);
+        b.invalidate();
+        let record = store.record(&b, Size::new(100, 100), 1.0, |renderer, viewport| {
+            store.note_composited(a.id(), at, Transformation::IDENTITY);
+            empty(renderer, viewport)
+        });
+        assert_eq!(record, Record::Fresh);
+
+        store.note_composited(
+            a.id(),
+            Rectangle::with_size(Size::new(100.0, 100.0)),
+            Transformation::translate(5.0, 0.0),
+        );
+        assert_eq!(placed(&store, &b), at + iced_core::Vector::new(5.0, 0.0));
+    }
+
     #[test]
     fn entries_are_dropped_after_the_last_handle_dies() {
         let store = store();
@@ -1741,7 +2064,7 @@ mod store_tests {
             width: 4.0,
             height: 4.0,
         };
-        store.note_composited(cache.id(), placed);
+        store.note_composited(cache.id(), placed, Transformation::IDENTITY);
         let bounds = store.source(cache.id()).expect("recorded").bounds;
         assert_eq!(bounds, placed);
 
@@ -1763,7 +2086,7 @@ mod store_tests {
         assert_eq!(bounds, placed, "so does a resize");
 
         // An unknown or uncacheable id is a no-op, not a panic.
-        store.note_composited(TextureCache::new().id(), placed);
+        store.note_composited(TextureCache::new().id(), placed, Transformation::IDENTITY);
     }
 
     #[test]
@@ -1826,7 +2149,7 @@ mod store_tests {
     fn frosted_source(store: &TinySkiaCacheStore) -> TextureCache {
         let cache = TextureCache::new();
         assert_eq!(store.record(&cache, SIZE, 1.0, red), Record::Fresh);
-        store.note_composited(cache.id(), GLASS);
+        store.note_composited(cache.id(), GLASS, Transformation::IDENTITY);
         cache
     }
 
@@ -1949,7 +2272,7 @@ mod store_tests {
         // texture scale of 2: the entry's own scale, not the window's, is
         // the one a radius has to be measured in.
         assert_eq!(store.record(&cache, SIZE, 2.0, red), Record::Fresh);
-        store.note_composited(cache.id(), GLASS);
+        store.note_composited(cache.id(), GLASS, Transformation::IDENTITY);
 
         assert!(store.frosted(cache.id(), frost_of(6.0, 1), GLASS).is_some());
 

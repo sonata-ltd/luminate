@@ -335,3 +335,45 @@ fn a_blurred_square_has_no_dark_fringe_on_white() {
         );
     }
 }
+
+/// A source baked into another cache is found where the outer composite puts
+/// it on screen, not where it sits inside the outer texture.
+#[test]
+fn glass_finds_a_source_nested_in_a_translated_cache() {
+    let outer = TextureCache::new();
+    let source = TextureCache::new();
+    let mut harness = Harness::new(BIG_WINDOW);
+    let width = BIG_WINDOW.width as u32;
+
+    let view = || -> El<'_> {
+        let split = row![
+            shape().width(40.0).height(40.0).fill(RED),
+            shape().width(40.0).height(40.0).fill(Color::WHITE),
+        ];
+        // Sized so the stack, which takes its first child's size, gives the
+        // pane the whole strip; the translate moves only the picture.
+        let base = container(
+            cached(outer.clone(), cached(source.clone(), split))
+                .translate(iced::Vector::new(60.0, 0.0)),
+        )
+        .width(200.0)
+        .height(40.0);
+        stack![
+            base,
+            frosted(source.clone())
+                .radius(6.0)
+                .width(200.0)
+                .height(40.0),
+        ]
+        .into()
+    };
+
+    let _ = harness.frame(view());
+    let rgba = harness.frame(view());
+
+    // The seam is drawn at x = 100: the glass blurs it there...
+    let [r, g, _, _] = pixel(&rgba, width, 98, 20);
+    assert!(r > 200 && g > 30, "the seam is blurred: {r}, {g}");
+    // ...and draws nothing where the source would sit untranslated.
+    assert_eq!(pixel(&rgba, width, 20, 20), [255, 255, 255, 255]);
+}

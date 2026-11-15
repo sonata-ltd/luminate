@@ -7,6 +7,10 @@ use iced_core::{Point, Vector};
 /// How far, in path units, a flattened polyline may stray from its curve.
 pub(crate) const TOLERANCE: f32 = 0.05;
 
+/// The tolerance as a fraction of a segment's size, for segments so small
+/// that [`TOLERANCE`] would flatten them to a single chord.
+const RELATIVE_TOLERANCE: f32 = 0.01;
+
 /// The most straight pieces one segment is flattened into, whatever its size.
 const MAX_STEPS: u32 = 256;
 
@@ -162,7 +166,9 @@ impl Cubic {
     }
 
     /// How many uniform straight pieces keep a polyline within
-    /// [`TOLERANCE`] of the curve.
+    /// [`TOLERANCE`] of the curve, or within [`RELATIVE_TOLERANCE`] of its
+    /// size when that is tighter, so a tiny curve keeps its shape for a
+    /// widget that scales it up.
     ///
     /// `n` pieces stray at most `M / (8 n²)`, where `M = 6 d` bounds the
     /// second derivative and `d` is the larger second difference of the
@@ -174,7 +180,23 @@ impl Cubic {
             (x * x + y * y).sqrt()
         };
         let d = second(self.p0, self.p1, self.p2).max(second(self.p1, self.p2, self.p3));
-        let steps = (0.75 * d / TOLERANCE).sqrt().ceil();
+        if d == 0.0 {
+            return 1;
+        }
+
+        let points = [self.p0, self.p1, self.p2, self.p3];
+        let extent = |axis: fn(&Point) -> f32| {
+            let (lo, hi) = points
+                .iter()
+                .map(axis)
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| {
+                    (lo.min(v), hi.max(v))
+                });
+            hi - lo
+        };
+        let size = extent(|p| p.x).hypot(extent(|p| p.y));
+        let tolerance = TOLERANCE.min(size * RELATIVE_TOLERANCE);
+        let steps = (0.75 * d / tolerance).sqrt().ceil();
 
         if steps.is_finite() {
             (steps as u32).clamp(1, MAX_STEPS)
@@ -309,6 +331,19 @@ mod tests {
         );
         assert!(bend.steps() > 10);
         assert!(Cubic::point(Point::new(f32::NAN, 0.0)).steps() >= 1);
+    }
+
+    #[test]
+    fn a_tiny_closed_curve_keeps_its_shape() {
+        let curve = Cubic::new(
+            Point::ORIGIN,
+            Point::new(0.01, 0.01),
+            Point::new(0.01, -0.01),
+            Point::ORIGIN,
+        );
+        assert!(curve.steps() > 4, "flattened to {} pieces", curve.steps());
+        // The loop reaches x = 0.0075 and back.
+        assert!(curve.length() > 0.015, "length {}", curve.length());
     }
 
     #[test]

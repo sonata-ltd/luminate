@@ -88,4 +88,5 @@ pub mod progress_bar;
 pub mod sidebar;
 pub mod table;
 pub mod tabs;
+mod tap;
 pub mod virtual_list;

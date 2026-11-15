@@ -7,6 +7,7 @@ use iced::{Alignment, Background, Border, Color, Event, Length, Rectangle, Size,
 
 use super::{Catalog, Meta, Rows, Shared, Status};
 use crate::widget::pick_indicator;
+use crate::widget::tap::Tap;
 use crate::{Element, Renderer, Theme};
 
 pub(super) struct RowWidget<'a, Message> {
@@ -20,6 +21,7 @@ pub(super) struct RowWidget<'a, Message> {
 struct State {
     hovered: bool,
     pressed: bool,
+    tap: Tap,
     indicator: pick_indicator::State,
 }
 
@@ -62,6 +64,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for RowWidget<'_, Message>
         tree::State::new(State {
             hovered: false,
             pressed: false,
+            tap: Tap::default(),
             indicator: pick_indicator::State::new(self.meta.pick, self.shared.motion.as_ref()),
         })
     }
@@ -148,13 +151,18 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for RowWidget<'_, Message>
             shell.request_redraw();
         }
 
+        // A drag that turns into a scroll is not a press.
+        if state.tap.track(event) {
+            state.pressed = false;
+            shell.request_redraw();
+        }
+
         if shell.is_event_captured() {
             return;
         }
 
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerPressed { .. })
                 if hovered && self.meta.on_press.is_some() =>
             {
                 state.pressed = true;
@@ -162,10 +170,25 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for RowWidget<'_, Message>
                 shell.capture_event();
                 shell.request_redraw();
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerLifted { .. })
-                if state.pressed =>
+            // Left uncaptured so an enclosing scrollable can start a gesture.
+            Event::Touch(touch::Event::FingerPressed { id, position })
+                if hovered && self.meta.on_press.is_some() =>
             {
+                state.pressed = true;
+                state.tap.press(*id, *position);
+                self.shared.pressed.set(Some(self.index));
+                shell.request_redraw();
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.pressed => {
+                state.pressed = false;
+                shell.request_redraw();
+
+                if hovered && let Some(message) = &self.meta.on_press {
+                    shell.publish(message.clone());
+                    shell.capture_event();
+                }
+            }
+            Event::Touch(touch::Event::FingerLifted { .. }) if state.tap.lift(event) => {
                 state.pressed = false;
                 shell.request_redraw();
 

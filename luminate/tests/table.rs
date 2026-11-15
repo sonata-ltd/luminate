@@ -445,3 +445,52 @@ fn row_key_keeps_cell_state_with_its_row() {
     assert!(by_key.contains(&("Id(Custom(\"log0\"))".to_owned(), 120.0)));
     assert_eq!(by_key.iter().filter(|(_, y)| *y != 0.0).count(), 1);
 }
+
+fn finger(
+    ui: &mut Simulator<'_, Msg, Theme, Renderer>,
+    at: Point,
+    event: fn(iced::touch::Finger, Point) -> iced::touch::Event,
+) {
+    ui.point_at(at);
+    let _ = ui.simulate([Event::Touch(event(iced::touch::Finger(0), at))]);
+}
+
+#[test]
+fn a_touch_drag_scrolls_a_selectable_table_and_a_tap_selects() {
+    use iced::touch::Event as T;
+
+    let rows = rows(1_000);
+    let mut ui = sim(scrolled(&rows));
+    let _ = ui.simulate([frame()]);
+    assert!(ui.find("Row 0").is_ok());
+
+    finger(&mut ui, Point::new(100.0, 250.0), |id, position| {
+        T::FingerPressed { id, position }
+    });
+    for y in [240.0, 150.0, 50.0] {
+        finger(&mut ui, Point::new(100.0, y), |id, position| {
+            T::FingerMoved { id, position }
+        });
+    }
+    finger(&mut ui, Point::new(100.0, 50.0), |id, position| {
+        T::FingerLifted { id, position }
+    });
+    for _ in 0..60 {
+        std::thread::sleep(Duration::from_millis(8));
+        let _ = ui.simulate([frame()]);
+    }
+    assert!(
+        ui.find("Row 0").is_err(),
+        "a 200 px drag must scroll the rows"
+    );
+
+    finger(&mut ui, Point::new(100.0, 150.0), |id, position| {
+        T::FingerPressed { id, position }
+    });
+    finger(&mut ui, Point::new(100.0, 150.0), |id, position| {
+        T::FingerLifted { id, position }
+    });
+    let messages = ui.into_messages().collect::<Vec<_>>();
+    assert_eq!(messages.len(), 1, "only the tap selects: {messages:?}");
+    assert!(matches!(messages[0], Msg::Select(_)));
+}

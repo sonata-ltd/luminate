@@ -11,6 +11,10 @@ pub(super) struct Span {
 /// Fixed and `Shrink` columns (measured by the header) go first, the rest is
 /// shared by `Fill` and `FillPortion`. Column edges are rounded to whole pixels,
 /// so neighboring backgrounds leave no gaps and the widths sum exactly.
+///
+/// Span positions are relative to the content box (inside `inset`): rows
+/// already sit inside the inset-padded list, and the header adds `inset.left`
+/// itself. The returned total includes the horizontal inset.
 pub(super) fn spans(
     available: f32,
     widths: &[Length],
@@ -65,7 +69,7 @@ pub(super) fn spans(
         let end = cursor.round();
 
         spans.push(Span {
-            x: inset.left + start + cell_padding_x,
+            x: start + cell_padding_x,
             width: (end - start - padding).max(0.0),
         });
     }
@@ -143,5 +147,21 @@ mod tests {
 
         let last = spans[1];
         assert_eq!(last.x + last.width + cell_padding_x, 600.0);
+    }
+
+    #[test]
+    fn spans_exclude_the_left_inset() {
+        let widths = [Length::Fixed(50.0), Length::Fill];
+        let inset = Padding {
+            left: 12.0,
+            right: 12.0,
+            ..Padding::default()
+        };
+        let (spans, total) = spans(200.0, &widths, &[0.0; 2], 8.0, inset);
+
+        assert_eq!(total, 200.0);
+        assert_eq!(spans[0].x, 8.0);
+        let last = spans[1];
+        assert_eq!(last.x + last.width + 8.0, 200.0 - 24.0);
     }
 }

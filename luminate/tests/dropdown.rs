@@ -401,3 +401,108 @@ fn space_picks_the_highlighted_item_without_search() {
         vec![Msg::Select("Option 1".into())]
     );
 }
+
+#[test]
+fn reordered_options_refresh_the_search_matches() {
+    use iced_luminate::texture::testing::headless_tiny_skia;
+    use iced_test::runtime::user_interface::{Cache, UserInterface};
+
+    fn view(options: &[String]) -> Element<'_, Msg> {
+        page(
+            dropdown(options, None::<&String>, Msg::Select)
+                .search("App", Msg::Search)
+                .select_on_exact_match(false),
+        )
+    }
+
+    let before = vec![String::from("Apple"), String::from("Banana")];
+    let after = vec![String::from("Banana"), String::from("Apple")];
+    let mut renderer = headless_tiny_skia();
+    let size = Size::new(500.0, 600.0);
+    let mut clipboard = iced_luminate::iced::advanced::clipboard::Null;
+    let mut messages = Vec::new();
+    let mut ui = UserInterface::build(view(&before), size, Cache::default(), &mut renderer);
+    let _ = ui.update(
+        &iced_test::simulator::click().collect::<Vec<_>>(),
+        mouse::Cursor::Available(Point::new(100.0, 55.0)),
+        &mut renderer,
+        &mut clipboard,
+        &mut messages,
+    );
+
+    // Same count, new order: the cached matchers must not be reused.
+    let mut ui = UserInterface::build(view(&after), size, ui.into_cache(), &mut renderer);
+    let events = [Named::ArrowDown, Named::Enter]
+        .into_iter()
+        .flat_map(|key| iced_test::simulator::tap_key(Key::Named(key), None))
+        .collect::<Vec<_>>();
+    let _ = ui.update(
+        &events,
+        mouse::Cursor::Unavailable,
+        &mut renderer,
+        &mut clipboard,
+        &mut messages,
+    );
+    assert_eq!(
+        messages,
+        vec![Msg::Select("Apple".into()), Msg::Search(String::new())]
+    );
+}
+
+#[test]
+fn a_touch_drag_scrolls_the_menu_and_a_tap_picks() {
+    use iced_luminate::iced::touch::{Event as T, Finger};
+
+    fn finger(ui: &mut Simulator<'_, Msg, Theme, Renderer>, y: f32, event: fn(Finger, Point) -> T) {
+        let at = Point::new(100.0, y);
+        ui.point_at(at);
+        let _ = ui.simulate([Event::Touch(event(Finger(0), at))]);
+    }
+
+    let options = options(50);
+    let view = dropdown(&options, None::<&String>, Msg::Select).on_close(Msg::Closed);
+    let mut ui = sim(page(view));
+    open(&mut ui);
+    assert!(ui.find("Option 0").is_ok());
+
+    for _ in 0..3 {
+        finger(&mut ui, 260.0, |id, position| T::FingerPressed {
+            id,
+            position,
+        });
+        for y in [250.0, 180.0, 100.0] {
+            finger(&mut ui, y, |id, position| T::FingerMoved { id, position });
+        }
+        finger(&mut ui, 100.0, |id, position| T::FingerLifted {
+            id,
+            position,
+        });
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(8));
+            let _ = ui.simulate([frame()]);
+        }
+    }
+    // The menu must still be open, scrolled past its first options.
+    assert!(
+        ui.find("Option 0").is_err(),
+        "the drag must scroll the menu"
+    );
+    assert!(
+        ui.find("Option 20").is_ok(),
+        "the drag must not close the menu"
+    );
+
+    finger(&mut ui, 150.0, |id, position| T::FingerPressed {
+        id,
+        position,
+    });
+    finger(&mut ui, 150.0, |id, position| T::FingerLifted {
+        id,
+        position,
+    });
+    let messages = ui.into_messages().collect::<Vec<_>>();
+    assert!(
+        matches!(messages.as_slice(), [Msg::Select(_), Msg::Closed]),
+        "only the tap picks: {messages:?}"
+    );
+}
