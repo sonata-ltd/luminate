@@ -5,6 +5,7 @@ use std::fmt;
 use iced::Length;
 use iced::advanced::svg;
 use iced::advanced::widget;
+use iced::alignment::Horizontal;
 use iced::widget::text::LineHeight;
 
 /// Visual weight of a button.
@@ -62,6 +63,9 @@ pub struct Button<'a, Message> {
     pub width: Length,
     /// Height (default `Shrink`).
     pub height: Length,
+    /// Horizontal label alignment (default `Center`).
+    /// With an icon, aligns the label in the space after the icon.
+    pub align_x: Horizontal,
     /// Overrides the label's line height.
     pub line_height: Option<LineHeight>,
     /// Widget id, for operations such as focusing.
@@ -94,6 +98,7 @@ impl<'a, Message> Button<'a, Message> {
             size: ButtonSize::default(),
             width: Length::Shrink,
             height: Length::Shrink,
+            align_x: Horizontal::Center,
             line_height: None,
             id: None,
             on_press: None,
@@ -155,6 +160,15 @@ impl<'a, Message> Button<'a, Message> {
         self
     }
 
+    /// Aligns the label horizontally (default `Center`).
+    /// Use `Horizontal::Left` to place the text at the left padding, or
+    /// immediately after the icon and its spacing when an icon is present.
+    #[must_use]
+    pub fn align_x(mut self, alignment: Horizontal) -> Self {
+        self.align_x = alignment;
+        self
+    }
+
     /// Overrides the label's line height.
     #[must_use]
     pub fn line_height(mut self, line_height: impl Into<LineHeight>) -> Self {
@@ -206,6 +220,7 @@ impl<Message> fmt::Debug for Button<'_, Message> {
             .field("size", &self.size)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("align_x", &self.align_x)
             .field("line_height", &self.line_height)
             .field("id", &self.id)
             .field("enabled", &self.on_press.is_some())

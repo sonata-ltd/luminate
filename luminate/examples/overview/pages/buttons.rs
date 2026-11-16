@@ -135,6 +135,28 @@ fn example(luminate: &Luminate) -> Element<'_, Message> {
             ]
             .spacing(luminate.theme().spacing.lg)
         ),
+        category(
+            luminate,
+            "Left-aligned labels",
+            row![
+                luminate.button(
+                    Button::new("Download")
+                        .width(220)
+                        .align_x(iced::alignment::Horizontal::Left)
+                        .hierarchy(ButtonHierarchy::Secondary)
+                        .on_press(Message::ActionPressed)
+                ),
+                luminate.button(
+                    Button::new("Download")
+                        .icon(DOWNLOAD_03.clone())
+                        .width(220)
+                        .align_x(iced::alignment::Horizontal::Left)
+                        .hierarchy(ButtonHierarchy::Secondary)
+                        .on_press(Message::ActionPressed)
+                ),
+            ]
+            .spacing(luminate.theme().spacing.lg)
+        ),
     ]
     .spacing(luminate.theme().spacing.xl)
     .into()

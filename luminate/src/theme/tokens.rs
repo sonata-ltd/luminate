@@ -78,7 +78,7 @@ pub struct ButtonVariant {
     pub shadow: Option<Shadow>,
 }
 
-/// Paddings of one button size, by content.
+/// Paddings and icon-to-label spacing of one button size.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ButtonPadding {
     /// Padding around a text-only button.
@@ -87,6 +87,8 @@ pub struct ButtonPadding {
     pub icon: Padding,
     /// Padding around an icon-and-text button.
     pub icon_and_text: Padding,
+    /// Gap between the SVG bounds and the label, in logical pixels.
+    pub icon_spacing: f32,
 }
 
 impl ButtonPadding {
@@ -136,8 +138,6 @@ pub struct ButtonTheme {
     pub label: TextStyle,
     /// Icon side length in logical pixels.
     pub icon_size: f32,
-    /// Gap between icon and label.
-    pub icon_spacing: f32,
 }
 
 impl ButtonTheme {
@@ -601,16 +601,20 @@ const fn light_button(p: &Palette, typography: &TypographyTheme) -> ButtonTheme 
             text: padding_vh(7.0, 15.0),
             icon: padding_vh(7.0, 7.0),
             icon_and_text: padding_vh(7.0, 10.0),
+            icon_spacing: 5.0,
         },
         medium: ButtonPadding {
             text: padding_vh(9.0, 17.0),
             icon: padding_vh(9.0, 9.0),
-            icon_and_text: padding_vh(9.0, 7.0),
+            icon_and_text: padding_vh(9.0, 9.0),
+            icon_spacing: 7.0,
         },
+        // Match Medium until Large receives its own spacing values.
         large: ButtonPadding {
-            text: padding_vh(11.0, 19.0),
-            icon: padding_vh(11.0, 11.0),
-            icon_and_text: padding_vh(11.0, 11.0),
+            text: padding_vh(9.0, 17.0),
+            icon: padding_vh(9.0, 9.0),
+            icon_and_text: padding_vh(9.0, 9.0),
+            icon_spacing: 7.0,
         },
         radius: 10.0,
         ring_width: 2.0,
@@ -618,7 +622,6 @@ const fn light_button(p: &Palette, typography: &TypographyTheme) -> ButtonTheme 
         ring_radius: 13.0,
         label: typography.label,
         icon_size: 20.0,
-        icon_spacing: 5.0,
     }
 }
 

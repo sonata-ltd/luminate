@@ -25,6 +25,7 @@ impl Luminate {
             size,
             width,
             height,
+            align_x,
             line_height,
             id,
             on_press,
@@ -34,11 +35,12 @@ impl Luminate {
 
         let tokens = self.theme.button;
         let is_disabled = on_press.is_none();
-        let padding = tokens.padding(size).for_content(&content);
+        let size_tokens = tokens.padding(size);
+        let padding = size_tokens.for_content(&content);
 
         let label = move |text: &'a str| {
             let mut label = styled_text::<Theme, Renderer>(text, tokens.label)
-                .align_x(Center)
+                .align_x(align_x)
                 .width(Fill);
             if let Some(line_height) = line_height {
                 label = label.line_height(line_height);
@@ -61,7 +63,7 @@ impl Luminate {
             ButtonContent::Text(text) => label(text).into(),
             ButtonContent::Icon(handle) => icon(handle).into(),
             ButtonContent::Combined { icon: handle, text } => row![icon(handle), label(text)]
-                .spacing(tokens.icon_spacing)
+                .spacing(size_tokens.icon_spacing)
                 .align_y(Center)
                 .into(),
         };
