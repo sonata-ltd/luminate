@@ -1,7 +1,7 @@
 # `iced_luminate`
 
 The Luminate design kit for [iced](https://iced.rs) 0.14. It provides a theme,
-descriptors that `Luminate` turns into elements, and three supporting widgets.
+descriptors that `Luminate` turns into elements, and supporting widgets.
 It re-exports `iced_animate`, `iced_texture_cache`, and `iced_page_router`, so
 an application needs one dependency line.
 
@@ -80,19 +80,27 @@ iced_luminate = "0.1"
 `Luminate::new()` (or `with_theme(Theme::DARK)`) holds a `Theme` and a `Motion`
 engine. It is `Clone`, so pages can keep their own copy. `host(content)`
 wraps the root of the view in the engine's clock. Nothing animates without
-it. `button`, `input`, `sidebar`, `card`, and `pager` turn descriptors
+it. `button`, `input`, `sidebar`, `header`, `card`, and `pager` turn descriptors
 into `Element`s; `theme()` and `motion()` expose the parts, so a page animates
 its own values against `luminate.motion()`.
 
 ### Descriptors
 
-`descriptor::Button`, `Input`, `Sidebar`, `Card` and `Pager` are plain data
+`descriptor::Button`, `Input`, `Sidebar`, `Header`, `Card` and `Pager` are plain data
 with public fields and builder methods: `Button::new("Save").hierarchy(
 ButtonHierarchy::Secondary).on_press(msg)`, `Input::new(placeholder,
 value).label("Name").error(Some("required")).on_input(msg)`,
 `Sidebar::new(items).axis(Axis::Vertical).collapsed(false)`,
+`Header::new(items).shadow_side(ShadowSide::Trailing)`,
 `Card::new("Title").pages(steps, current).controls(row)`,
 `Pager::new(pages).current(i)`.
+
+Button labels are centered by default. Use
+`Button::new("Save").width(220).align_x(iced::alignment::Horizontal::Left)`
+to align the text to the left padding. With `.icon(handle)`, the label starts
+immediately after the icon and its theme spacing.
+The icon-to-label gap is configured per size through
+`theme.button.small.icon_spacing`, `.medium.icon_spacing`, and `.large.icon_spacing`.
 
 `Luminate::progress_bar(ProgressBar::new(0.0..=100.0, value))` follows iced's
 range/value API, with `length`, `girth` and `vertical`. Use
@@ -148,10 +156,12 @@ and `TextureCache` are re-exported at the root.
 ### Widgets
 
 `widget::multi_border::MultiBorder` (`multi_border(..)`),
-`widget::sidebar::Sidebar` (`sidebar(..)`) and `widget::error_bubble::ErrorBubble`
-(`error_bubble(..)`) are ordinary iced widgets with
+`widget::sidebar::Sidebar` (`sidebar(..)`), `widget::header::Header`
+(`header(..)`) and `widget::error_bubble::ErrorBubble` (`error_bubble(..)`) are ordinary iced widgets with
 `Catalog`s for both `iced::Theme` and `theme::Theme`; the descriptors above are
-the usual way in.
+the usual way in. Sidebar and Header share their implementation in
+`widget::collapsible_bar`; the former has an inner trailing-edge shade, while
+the latter has an external edge-directed shadow.
 
 ## Feature flags
 

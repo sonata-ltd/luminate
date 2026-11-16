@@ -21,7 +21,7 @@ exclude = ["examples/**"]
 workspace = true
 
 [dependencies]
-# `svg` is always on: sidebar chevrons, button icons and the error-bubble
+# `svg` is always on: collapsible-bar chevrons, button icons and the error-bubble
 # arrow are SVGs.
 iced = { workspace = true, features = ["svg"] }
 iced_animate.workspace = true

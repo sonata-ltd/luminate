@@ -209,7 +209,7 @@ The first release. What each crate provides:
 #### iced_luminate
 
 - `Luminate`: theme + motion engine; `host`, `button`, `input`, `sidebar`,
-  `card`, `pager`, `tabs`; `Luminate::load_fonts()`.
+  `header`, `card`, `pager`, `tabs`; `Luminate::load_fonts()`.
 - `Luminate::load_fonts()` registers the upright and italic faces straight
   into iced's font system, called once in `main` before `iced::application`,
   and declares each again at every weight in `typography::DECLARED_WEIGHTS`
@@ -228,7 +228,12 @@ The first release. What each crate provides:
   30 MB, since iced keeps each buffer and copies it again into its font
   database.
 - `descriptor::{Button, ButtonContent, ButtonHierarchy, ButtonSize, Input,
-  Sidebar, Axis, Card, Pager, Tabs}` as plain data with builders.
+  Sidebar, Header, Axis, ShadowSide, Card, Pager, Tabs}` as plain data with
+  builders.
+- `Header` mirrors the Sidebar collapse mechanics with a horizontal default,
+  a white light-theme surface and an external `0 2px 20px` shadow. Its
+  `ShadowSide::{Leading, Trailing}` selects top/bottom in horizontal mode and
+  left/right in vertical mode.
 - `Tabs` takes the tabs, the `active` index, a `width` and `on_select`; the
   selection backing and separators animate on the kit's engine, and the bar's
   colours and metrics come from `TabsTheme` (`Theme::tabs`) through
@@ -244,9 +249,9 @@ The first release. What each crate provides:
   DisplaySize, TypographyTheme, styled_text, FONT, FAMILY}`; bundled Inter
   (OFL-1.1) behind `bundled-font`.
 - Widgets `widget::{multi_border::MultiBorder, sidebar::Sidebar,
-  error_bubble::ErrorBubble, animated_text::AnimatedText}` with
-  `multi_border()`, `sidebar()`, `error_bubble()`, `animated_text()`; every
-  item has one public path.
+  header::Header, error_bubble::ErrorBubble, animated_text::AnimatedText}`
+  with `multi_border()`, `sidebar()`, `header()`, `error_bubble()`,
+  `animated_text()`; Sidebar and Header share `widget::collapsible_bar`.
 - `widget::animated_text`: text drawn at an animated weight and size.
   `iced::Font` names nine weights and nothing between them, so while the
   weight moves the widget shapes its own `cosmic_text::Buffer` at an arbitrary
