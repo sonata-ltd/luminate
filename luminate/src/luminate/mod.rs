@@ -10,6 +10,7 @@ use crate::theme::Theme;
 mod button;
 mod card;
 mod dropdown;
+mod header;
 mod input;
 mod pager;
 mod progress_bar;

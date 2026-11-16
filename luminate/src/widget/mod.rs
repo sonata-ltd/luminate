@@ -78,6 +78,7 @@ macro_rules! catalog {
 }
 
 pub mod animated_text;
+pub mod collapsible_bar;
 pub mod dropdown;
 pub mod error_bubble;
 pub mod fading_scrollable;
@@ -85,7 +86,7 @@ pub mod interaction_override;
 pub mod multi_border;
 pub mod pick_indicator;
 pub mod progress_bar;
-pub mod sidebar;
+pub use collapsible_bar::{header, sidebar};
 pub mod table;
 pub mod tabs;
 mod tap;

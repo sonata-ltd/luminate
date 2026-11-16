@@ -1,11 +1,11 @@
 //! Kit widgets through `iced_test`: a custom focus probe and touch on
-//! `MultiBorder`, collapsed-vs-expanded sidebar geometry on both axes, and
+//! `MultiBorder`, collapsible-bar geometry and header-shadow direction, and
 //! the error bubble over a `pick_list` and at the right edge.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-use iced_luminate::descriptor::{Axis, Button, Sidebar};
+use iced_luminate::descriptor::{Axis, Button, ShadowSide, Sidebar};
 use iced_luminate::iced::advanced::Renderer as _;
 use iced_luminate::iced::advanced::clipboard;
 use iced_luminate::iced::advanced::renderer::{self, Headless};
@@ -16,6 +16,7 @@ use iced_luminate::iced::{
 };
 use iced_luminate::texture::testing::headless_tiny_skia;
 use iced_luminate::widget::error_bubble::error_bubble;
+use iced_luminate::widget::header::{EdgeShadow, Style as HeaderStyle, header};
 use iced_luminate::widget::multi_border::{Focus, Status, Style, multi_border};
 use iced_luminate::{Element, Luminate, Renderer, Theme};
 use iced_test::Simulator;
@@ -170,6 +171,62 @@ fn render(root: Plain<'_>, size: Size) -> Vec<u8> {
         1.0,
         Color::WHITE,
     )
+}
+
+fn header_shadow(side: ShadowSide) -> Vec<u8> {
+    let bar: Plain<'_> = header([space().width(100).height(30).into()])
+        .padding(0)
+        .shadow_side(side)
+        .style(|_| HeaderStyle {
+            background: Color::WHITE,
+            hover_overlay: Color::TRANSPARENT,
+            icon: Color::BLACK,
+            shadow: Some(EdgeShadow::new(
+                Color::from_rgba(0.0, 0.0, 0.0, 0.8),
+                6.0,
+                8.0,
+            )),
+        })
+        .into();
+
+    render(
+        container(bar)
+            .padding(30)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        Size::new(160.0, 100.0),
+    )
+}
+
+fn darkness(rgba: &[u8], width: usize, rows: std::ops::Range<usize>) -> u64 {
+    rows.flat_map(|y| {
+        rgba[y * width * 4..(y + 1) * width * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| u64::from(255 - pixel[0]))
+    })
+    .sum()
+}
+
+#[test]
+fn the_header_shadow_moves_between_the_top_and_bottom_edges() {
+    // The header occupies y=30..60. Equal ten-pixel bands on either side
+    // reveal which way the same blurred shadow is offset.
+    let trailing = header_shadow(ShadowSide::Trailing);
+    let leading = header_shadow(ShadowSide::Leading);
+    let above = 20..30;
+    let below = 60..70;
+
+    assert!(
+        darkness(&trailing, 160, below.clone()) > darkness(&trailing, 160, above.clone()),
+        "a trailing horizontal shadow is darker below"
+    );
+    assert!(
+        darkness(&leading, 160, above) > darkness(&leading, 160, below),
+        "a leading horizontal shadow is darker above"
+    );
 }
 
 /// The bubble fill under `iced::Theme::Light`, as the compositor writes it.

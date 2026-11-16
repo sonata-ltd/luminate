@@ -1,4 +1,4 @@
-//! The sidebar descriptor and the [`Axis`] shared with the widget layer.
+//! The sidebar descriptor.
 
 use std::fmt;
 
@@ -6,16 +6,7 @@ use iced::border::Radius;
 use iced_animate::AnimLength;
 
 use crate::Element;
-
-/// Which way a sidebar lays its children out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Axis {
-    /// Children in a column; collapsing animates the width.
-    #[default]
-    Vertical,
-    /// Children in a row; collapsing animates the height.
-    Horizontal,
-}
+use crate::descriptor::Axis;
 
 /// A collapsible sidebar.
 ///

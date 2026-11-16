@@ -2,7 +2,7 @@
 //! each descriptor property that changes observable behaviour does so.
 
 use iced_luminate::descriptor::{
-    Axis, Button, ButtonHierarchy, ButtonSize, Card, Input, Pager, Sidebar,
+    Axis, Button, ButtonHierarchy, ButtonSize, Card, Header, Input, Pager, Sidebar,
 };
 use iced_luminate::iced::advanced::svg;
 use iced_luminate::iced::keyboard::{self, key};
@@ -271,6 +271,32 @@ fn the_sidebar_toggle_publishes_the_flipped_value() {
     // sidebar's corner and is 20 px square.
     let tokens = Theme::LIGHT.sidebar;
     let center = (tokens.header_size / 2.0).round();
+    ui.point_at(Point::new(center, center));
+    let _ = ui.simulate(iced_test::simulator::click());
+
+    assert_eq!(
+        ui.into_messages().collect::<Vec<_>>(),
+        vec![Message::Toggled(true)]
+    );
+}
+
+#[test]
+fn the_header_toggle_publishes_the_flipped_value() {
+    let luminate = Luminate::new();
+    let item: Element<'_, Message> = text("item").into();
+    let root = luminate.header(
+        Header::new([item])
+            .width(Length::Fill)
+            .axis(Axis::Horizontal)
+            .show_toggle(true)
+            .collapsed(false)
+            .on_toggle(Message::Toggled),
+    );
+
+    let mut ui = simulator(luminate.host(root));
+    settle(&mut ui);
+
+    let center = (Theme::LIGHT.header.header_size / 2.0).round();
     ui.point_at(Point::new(center, center));
     let _ = ui.simulate(iced_test::simulator::click());
 

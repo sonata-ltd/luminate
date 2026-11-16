@@ -21,18 +21,22 @@
 //! assert!(save.on_press.is_some());
 //! ```
 
+mod axis;
 mod button;
 mod card;
+mod header;
 mod input;
 mod pager;
 mod progress_bar;
 mod sidebar;
 mod tabs;
 
+pub use axis::{Axis, ShadowSide};
 pub use button::{Button, ButtonContent, ButtonHierarchy, ButtonSize};
 pub use card::Card;
+pub use header::Header;
 pub use input::Input;
 pub use pager::Pager;
 pub use progress_bar::ProgressBar;
-pub use sidebar::{Axis, Sidebar};
+pub use sidebar::Sidebar;
 pub use tabs::{TabItem, Tabs};

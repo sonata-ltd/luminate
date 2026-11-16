@@ -2,7 +2,7 @@
 //!
 //! [`Base`] makes it usable as the application theme; the `Catalog` impls
 //! let every widget the kit uses (`button`, `text_input`, `container`,
-//! `text`, `svg`, `scrollable`, `rule`, and the three kit widgets) and every
+//! `text`, `svg`, `scrollable`, `rule`, and the kit widgets) and every
 //! other stock widget an application may put inside a Luminate element
 //! (`checkbox`, `toggler`, `slider`, `radio`, `pick_list`, `overlay::menu`,
 //! `progress_bar`, `text_editor`, `combo_box`) style itself from the tokens. Each iced widget gets a class enum
@@ -27,7 +27,7 @@ use crate::theme::Theme;
 use crate::theme::palette::mix;
 use crate::widget::pick_indicator::{self, Pick};
 use crate::widget::{
-    dropdown, error_bubble, fading_scrollable, multi_border, sidebar, table, tabs,
+    dropdown, error_bubble, fading_scrollable, header, multi_border, sidebar, table, tabs,
 };
 
 // --- Base ---------------------------------------------------------------
@@ -1076,6 +1076,27 @@ impl sidebar::Catalog for Theme {
     }
 }
 
+impl header::Catalog for Theme {
+    type Class<'a> = header::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme| {
+            let tokens = theme.header;
+
+            header::Style {
+                background: tokens.background,
+                hover_overlay: tokens.hover_overlay,
+                icon: tokens.icon,
+                shadow: tokens.shadow,
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> header::Style {
+        class(self)
+    }
+}
+
 impl tabs::Catalog for Theme {
     type Class<'a> = tabs::StyleFn<'a, Self>;
 
@@ -1523,6 +1544,9 @@ mod tests {
         let theme = Theme::DARK;
         let bar = sidebar::Catalog::style(&theme, &<Theme as sidebar::Catalog>::default());
         assert_eq!(bar.background, theme.sidebar.background);
+        let bar = header::Catalog::style(&theme, &<Theme as header::Catalog>::default());
+        assert_eq!(bar.background, theme.header.background);
+        assert_eq!(bar.shadow, theme.header.shadow);
         let bar = tabs::Catalog::style(&theme, &<Theme as tabs::Catalog>::default());
         assert_eq!(bar.backing, theme.tabs.backing);
         let bubble =

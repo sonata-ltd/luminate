@@ -1,20 +1,14 @@
-//! A collapsible sidebar that animates between its full and collapsed size.
+//! A collapsible sidebar with an inner edge shadow.
 
-use iced::advanced::renderer::Quad;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, svg};
 use iced::border::Radius;
-use iced::gradient::Linear;
-use iced::{
-    Color, Degrees, Event, Gradient, Length, Padding, Pixels, Rectangle, Size, Vector, touch,
-};
-use iced_animate::curves::STRUCTURAL;
-use iced_animate::{Anim, AnimLength, Motion, MotionKey, Tier};
+use iced::{Color, Event, Length, Padding, Pixels, Rectangle, Shadow, Size, Vector};
+use iced_animate::{AnimLength, Motion};
 
 use crate::descriptor::Axis;
 
-mod compute_layout;
-mod icons;
+use super::core::{Core, Paint};
 
 /// Colours a [`Sidebar`] is drawn with.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,19 +37,6 @@ catalog!(|theme| {
         }),
     }
 });
-
-/// Default extent along the collapse axis when collapsed.
-const DEFAULT_COLLAPSED_SIZE: f32 = 50.0;
-/// Default extent of the toggle header along the flex main axis.
-const DEFAULT_HEADER_SIZE: f32 = 44.0;
-/// Default side length of the toggle chevron.
-const DEFAULT_ICON_SIZE: f32 = 20.0;
-/// Default padding around the children.
-const DEFAULT_PADDING: Padding = Padding::new(10.0);
-/// Default gap between children.
-const DEFAULT_SPACING: f32 = 5.0;
-/// Width of the band drawn along the inner edge for `Style::edge_shadow`.
-const EDGE_SHADOW_WIDTH: f32 = 6.0;
 
 /// A container whose collapse axis animates between its full size and a
 /// collapsed size.
@@ -101,23 +82,7 @@ pub struct Sidebar<'a, Message, Theme = iced::Theme, Renderer = crate::Renderer>
 where
     Theme: Catalog,
 {
-    children: Vec<iced::Element<'a, Message, Theme, Renderer>>,
-    width: AnimLength,
-    height: AnimLength,
-    collapsed_size: f32,
-    header_size: f32,
-    icon_size: f32,
-    padding: Padding,
-    spacing: f32,
-    collapsed: bool,
-    show_toggle: bool,
-    axis: Axis,
-    on_toggle: Option<Box<dyn Fn(bool) -> Message + 'a>>,
-    /// Engine driving the collapse. Without one the sidebar collapses in a
-    /// single frame.
-    motion: Option<Motion>,
-    /// Corners of the background, each its own radius. Square by default.
-    border_radius: Radius,
+    core: Core<'a, Message, Theme, Renderer>,
     class: Theme::Class<'a>,
 }
 
@@ -127,61 +92,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Sidebar")
-            .field("children", &self.children.len())
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .field("collapsed_size", &self.collapsed_size)
-            .field("header_size", &self.header_size)
-            .field("icon_size", &self.icon_size)
-            .field("padding", &self.padding)
-            .field("spacing", &self.spacing)
-            .field("collapsed", &self.collapsed)
-            .field("show_toggle", &self.show_toggle)
-            .field("axis", &self.axis)
-            .field("has_on_toggle", &self.on_toggle.is_some())
-            .field("motion", &self.motion)
+            .field("core", &self.core)
             .finish_non_exhaustive()
-    }
-}
-
-#[derive(Debug)]
-struct State {
-    /// Identity of the collapse track: it lives and dies with this state.
-    key: MotionKey,
-    /// `0.0` expanded, `1.0` collapsed.
-    collapse: Anim<f32>,
-    /// Whether the pointer was over the toggle at the last event.
-    is_toggle_hovered: bool,
-}
-
-fn target(collapsed: bool) -> f32 {
-    if collapsed { 1.0 } else { 0.0 }
-}
-
-impl State {
-    fn new(motion: Option<&Motion>, collapsed: bool) -> Self {
-        let mut state = Self {
-            key: MotionKey::unique(),
-            collapse: Anim::constant(target(collapsed)),
-            is_toggle_hovered: false,
-        };
-        state.retarget(motion, collapsed);
-        state
-    }
-
-    fn retarget(&mut self, motion: Option<&Motion>, collapsed: bool) {
-        match motion {
-            Some(motion) => {
-                self.collapse = motion.to(self.key, STRUCTURAL, target(collapsed));
-                self.collapse.mark_tier(Tier::Layout);
-            }
-            None => self.collapse = Anim::constant(target(collapsed)),
-        }
-    }
-
-    /// `0.0` expanded … `1.0` collapsed.
-    fn progress(&self) -> f32 {
-        self.collapse.get().clamp(0.0, 1.0)
     }
 }
 
@@ -203,102 +115,81 @@ where
         children: impl IntoIterator<Item = iced::Element<'a, Message, Theme, Renderer>>,
     ) -> Self {
         Self {
-            children: Vec::new(),
-            width: AnimLength::Shrink,
-            height: AnimLength::Shrink,
-            collapsed_size: DEFAULT_COLLAPSED_SIZE,
-            header_size: DEFAULT_HEADER_SIZE,
-            icon_size: DEFAULT_ICON_SIZE,
-            padding: DEFAULT_PADDING,
-            spacing: DEFAULT_SPACING,
-            collapsed: false,
-            show_toggle: false,
-            axis: Axis::Vertical,
-            on_toggle: None,
-            motion: None,
-            border_radius: Radius::default(),
+            core: Core::with_children(children, Axis::Vertical),
             class: Theme::default(),
         }
-        .extend(children)
     }
 
     /// Appends a child (void-sized elements are dropped).
     #[must_use]
     pub fn push(mut self, child: impl Into<iced::Element<'a, Message, Theme, Renderer>>) -> Self {
-        let child = child.into();
-        let size = child.as_widget().size_hint();
-
-        if !size.is_void() {
-            self.width = self.width.enclose(size.width);
-            self.height = self.height.enclose(size.height);
-            self.children.push(child);
-        }
-
+        self.core = self.core.push(child);
         self
     }
 
     /// Appends every child.
     #[must_use]
     pub fn extend(
-        self,
+        mut self,
         children: impl IntoIterator<Item = iced::Element<'a, Message, Theme, Renderer>>,
     ) -> Self {
-        children.into_iter().fold(self, Self::push)
+        self.core = self.core.extend(children);
+        self
     }
 
     /// Sets the width, which may be an animated value.
     #[must_use]
     pub fn width(mut self, width: impl Into<AnimLength>) -> Self {
-        self.width = width.into();
+        self.core.width = width.into();
         self
     }
 
     /// Sets the height, which may be an animated value.
     #[must_use]
     pub fn height(mut self, height: impl Into<AnimLength>) -> Self {
-        self.height = height.into();
+        self.core.height = height.into();
         self
     }
 
     /// Binds the collapse animation to `motion`.
     #[must_use]
     pub fn motion(mut self, motion: Motion) -> Self {
-        self.motion = Some(motion);
+        self.core.motion = Some(motion);
         self
     }
 
     /// Whether the sidebar is collapsed; it animates toward this value.
     #[must_use]
     pub fn collapsed(mut self, collapsed: bool) -> Self {
-        self.collapsed = collapsed;
+        self.core.collapsed = collapsed;
         self
     }
 
     /// Shows the built-in collapse toggle in a header row (or column).
     #[must_use]
     pub fn show_toggle(mut self, show: bool) -> Self {
-        self.show_toggle = show;
+        self.core.show_toggle = show;
         self
     }
 
     /// Layout axis (default [`Axis::Vertical`]).
     #[must_use]
     pub fn axis(mut self, axis: Axis) -> Self {
-        self.axis = axis;
+        self.core.axis = axis;
         self
     }
 
     /// Publishes the requested `collapsed` value when the toggle is pressed.
     #[must_use]
     pub fn on_toggle(mut self, on_toggle: impl Fn(bool) -> Message + 'a) -> Self {
-        self.on_toggle = Some(Box::new(on_toggle));
+        self.core.on_toggle = Some(Box::new(on_toggle));
         self
     }
 
     /// Extent along the collapse axis when collapsed (default 50).
     #[must_use]
     pub fn collapsed_size(mut self, size: impl Into<Pixels>) -> Self {
-        self.collapsed_size = size.into().0;
+        self.core.collapsed_size = size.into().0;
         self
     }
 
@@ -307,40 +198,38 @@ where
     /// (default 44).
     #[must_use]
     pub fn header_size(mut self, size: impl Into<Pixels>) -> Self {
-        self.header_size = size.into().0;
+        self.core.header_size = size.into().0;
         self
     }
 
     /// Side length of the toggle chevron (default 20).
     #[must_use]
     pub fn icon_size(mut self, size: impl Into<Pixels>) -> Self {
-        self.icon_size = size.into().0;
+        self.core.icon_size = size.into().0;
         self
     }
 
     /// Padding around the children (default 10 on every side).
     #[must_use]
     pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
-        self.padding = padding.into();
+        self.core.padding = padding.into();
         self
     }
 
     /// Gap between children (default 5).
     #[must_use]
     pub fn spacing(mut self, spacing: impl Into<Pixels>) -> Self {
-        self.spacing = spacing.into().0;
+        self.core.spacing = spacing.into().0;
         self
     }
 
-    /// Rounds the corners of the background, each by its own radius:
-    /// `12.0` for all four, `border::bottom_left(25.0)` for one, or
-    /// `Radius::default().top_left(4.0).bottom_left(25.0)` for any mix.
+    /// Rounds the corners of the background, each by its own radius.
     ///
     /// Only the fill is rounded, nothing is clipped: children stay clear of
     /// the corners as long as the padding is at least `0.3 × radius`.
     #[must_use]
     pub fn border_radius(mut self, radius: impl Into<Radius>) -> Self {
-        self.border_radius = radius.into();
+        self.core.border_radius = radius.into();
         self
     }
 
@@ -359,43 +248,6 @@ where
     pub fn class(mut self, class: impl Into<Theme::Class<'a>>) -> Self {
         self.class = class.into();
         self
-    }
-
-    /// Header extent along the flex main axis (0 when the toggle is hidden).
-    fn header_extent(&self) -> f32 {
-        if self.show_toggle {
-            self.header_size
-        } else {
-            0.0
-        }
-    }
-
-    /// The toggle square, centred in the header's leading corner.
-    fn toggle_bounds(&self, bounds: Rectangle) -> Rectangle {
-        let pad = ((self.header_size - self.icon_size) / 2.0).max(0.0);
-
-        Rectangle {
-            x: bounds.x + pad,
-            y: bounds.y + pad,
-            width: self.icon_size,
-            height: self.icon_size,
-        }
-    }
-
-    /// The corners of the edge-shadow band. The band runs along the inner
-    /// edge, so it takes that edge's corners: otherwise it would square them
-    /// off again.
-    fn edge_shadow_radius(&self) -> Radius {
-        let r = self.border_radius;
-
-        match self.axis {
-            Axis::Vertical => Radius::default()
-                .top_right(r.top_right)
-                .bottom_right(r.bottom_right),
-            Axis::Horizontal => Radius::default()
-                .bottom_left(r.bottom_left)
-                .bottom_right(r.bottom_right),
-        }
     }
 }
 
@@ -416,31 +268,23 @@ where
     Renderer: renderer::Renderer + svg::Renderer,
 {
     fn size(&self) -> Size<Length> {
-        // A live length is advertised as `Shrink`, never `Fixed(0.0)`: the
-        // void hint would make a parent drop the widget. See
-        // `AnimLength::size_hint`.
-        Size::new(self.width.size_hint(), self.height.size_hint())
+        self.core.size()
     }
 
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<State>()
+        Core::<Message, Theme, Renderer>::tag()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::new(self.motion.as_ref(), self.collapsed))
+        self.core.state()
     }
 
     fn children(&self) -> Vec<Tree> {
-        self.children.iter().map(Tree::new).collect()
+        self.core.trees()
     }
 
     fn diff(&self, tree: &mut Tree) {
-        // Idempotent; touches the track every build so it is never collected.
-        tree.state
-            .downcast_mut::<State>()
-            .retarget(self.motion.as_ref(), self.collapsed);
-
-        tree.diff_children(&self.children);
+        self.core.diff(tree);
     }
 
     fn operate(
@@ -450,19 +294,7 @@ where
         renderer: &Renderer,
         operation: &mut dyn iced::advanced::widget::Operation,
     ) {
-        operation.container(None, layout.bounds());
-        operation.traverse(&mut |operation| {
-            for ((child, tree), layout) in self
-                .children
-                .iter_mut()
-                .zip(&mut tree.children)
-                .zip(layout.children())
-            {
-                child
-                    .as_widget_mut()
-                    .operate(tree, layout, renderer, operation);
-            }
-        });
+        self.core.operate(tree, layout, renderer, operation);
     }
 
     fn update(
@@ -476,49 +308,9 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let toggle = self
-            .show_toggle
-            .then(|| self.toggle_bounds(layout.bounds()));
-        let is_press = matches!(
-            event,
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                | Event::Touch(touch::Event::FingerPressed { .. })
+        self.core.update(
+            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
         );
-
-        if let Some(toggle) = toggle
-            && is_press
-            && cursor.is_over(toggle)
-        {
-            // Publishing rebuilds and redraws; no explicit redraw request.
-            shell.capture_event();
-
-            if let Some(on_toggle) = &self.on_toggle {
-                shell.publish(on_toggle(!self.collapsed));
-            }
-
-            return;
-        }
-
-        for ((child, tree), layout) in self
-            .children
-            .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layout.children())
-        {
-            child.as_widget_mut().update(
-                tree, event, layout, cursor, renderer, clipboard, shell, viewport,
-            );
-        }
-
-        // The toggle highlight follows the pointer, and iced only redraws
-        // on request.
-        let hovered = toggle.is_some_and(|toggle| cursor.is_over(toggle));
-        let state = tree.state.downcast_mut::<State>();
-
-        if state.is_toggle_hovered != hovered {
-            state.is_toggle_hovered = hovered;
-            shell.request_redraw();
-        }
     }
 
     fn layout(
@@ -527,11 +319,7 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        // A moving length changes the layout, not just the paint.
-        self.width.mark_layout_tier();
-        self.height.mark_layout_tier();
-
-        compute_layout::resolve(self, tree, renderer, limits)
+        self.core.layout(tree, renderer, limits)
     }
 
     fn draw(
@@ -544,116 +332,23 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let bounds = layout.bounds();
-        let Some(visible) = bounds.intersection(viewport) else {
-            return;
-        };
-
-        let state = tree.state.downcast_ref::<State>();
         let colors = theme.style(&self.class);
-
-        renderer.fill_quad(
-            Quad {
-                bounds,
-                border: iced::Border {
-                    radius: self.border_radius,
-                    ..Default::default()
-                },
-                ..Default::default()
+        self.core.draw(
+            tree,
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+            Paint {
+                background: colors.background,
+                hover_overlay: colors.hover_overlay,
+                icon: colors.icon,
+                outer_shadow: Shadow::default(),
+                inner_edge_shadow: colors.edge_shadow,
             },
-            colors.background,
         );
-
-        if let Some(shadow) = colors.edge_shadow {
-            // A narrow band on the inner edge, transparent → shadow across
-            // its width: 90° runs left → right (right edge of a column),
-            // 180° top → bottom (bottom edge of a row).
-            let (angle, strip) = match self.axis {
-                Axis::Vertical => (
-                    Degrees(90.0),
-                    Rectangle {
-                        x: bounds.x + (bounds.width - EDGE_SHADOW_WIDTH).max(0.0),
-                        width: EDGE_SHADOW_WIDTH.min(bounds.width),
-                        ..bounds
-                    },
-                ),
-                Axis::Horizontal => (
-                    Degrees(180.0),
-                    Rectangle {
-                        y: bounds.y + (bounds.height - EDGE_SHADOW_WIDTH).max(0.0),
-                        height: EDGE_SHADOW_WIDTH.min(bounds.height),
-                        ..bounds
-                    },
-                ),
-            };
-            renderer.fill_quad(
-                Quad {
-                    bounds: strip,
-                    border: iced::Border {
-                        radius: self.edge_shadow_radius(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                Gradient::Linear(
-                    Linear::new(angle)
-                        .add_stop(0.0, Color { a: 0.0, ..shadow })
-                        .add_stop(1.0, shadow),
-                ),
-            );
-        }
-
-        if self.show_toggle {
-            let toggle = self.toggle_bounds(bounds);
-
-            if state.is_toggle_hovered {
-                renderer.fill_quad(
-                    Quad {
-                        bounds: toggle,
-                        border: iced::Border {
-                            radius: 4.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    colors.hover_overlay,
-                );
-            }
-
-            renderer.draw_svg(
-                svg::Svg {
-                    handle: icons::chevron(self.axis, self.collapsed),
-                    color: Some(colors.icon),
-                    rotation: 0.0.into(),
-                    opacity: 1.0,
-                },
-                toggle,
-                visible,
-            );
-        }
-
-        let draw_children = |renderer: &mut Renderer| {
-            for ((child, tree), layout) in self
-                .children
-                .iter()
-                .zip(&tree.children)
-                .zip(layout.children())
-                .filter(|(_, layout)| layout.bounds().intersects(&visible))
-            {
-                child
-                    .as_widget()
-                    .draw(tree, renderer, theme, style, layout, cursor, &visible);
-            }
-        };
-
-        // While the collapse axis is shorter than the children's natural
-        // size they must be clipped to the sidebar; at rest the parent's
-        // viewport is enough and a layer would cost a render pass.
-        if state.progress() > 0.0 || state.collapse.is_animating() {
-            renderer.with_layer(visible, draw_children);
-        } else {
-            draw_children(renderer);
-        }
     }
 
     fn mouse_interaction(
@@ -664,21 +359,8 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        if self.show_toggle && cursor.is_over(self.toggle_bounds(layout.bounds())) {
-            return mouse::Interaction::Pointer;
-        }
-
-        self.children
-            .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
-            .map(|((child, tree), layout)| {
-                child
-                    .as_widget()
-                    .mouse_interaction(tree, layout, cursor, viewport, renderer)
-            })
-            .max()
-            .unwrap_or_default()
+        self.core
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
     }
 
     fn overlay<'b>(
@@ -689,14 +371,8 @@ where
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        overlay::from_children(
-            &mut self.children,
-            tree,
-            layout,
-            renderer,
-            viewport,
-            translation,
-        )
+        self.core
+            .overlay(tree, layout, renderer, viewport, translation)
     }
 }
 
@@ -726,12 +402,11 @@ where
 
 #[cfg(test)]
 mod tests {
-
     use iced::advanced::widget::Tree;
     use iced::advanced::{layout, renderer::Headless};
     use iced::time::Instant;
     use iced::widget::text;
-    use iced::{Point, Size};
+    use iced::{Event, Point, Size, touch};
     use iced_animate::Motion;
     use iced_test::Simulator;
 
@@ -931,9 +606,7 @@ mod tests {
             }
         };
 
-        // Entering the toggle changes the highlight: one redraw is requested.
         assert_eq!(moved(&mut ui), RedrawRequest::NextFrame);
-        // Staying on it changes nothing: no request, no redraw churn.
         assert_eq!(moved(&mut ui), RedrawRequest::Wait);
     }
 }

@@ -110,6 +110,7 @@ fn page_text_reads_on_every_surface() {
             ("page", page),
             ("card", theme.card.background),
             ("sidebar", theme.sidebar.background),
+            ("header", theme.header.background),
         ] {
             let ratio = contrast(text, surface, page);
             assert!(

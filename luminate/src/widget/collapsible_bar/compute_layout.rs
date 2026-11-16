@@ -1,7 +1,7 @@
-//! Sidebar layout: a flex body (plus an optional header) whose collapse
+//! Collapsible-bar layout: a flex body (plus an optional toggle header) whose collapse
 //! axis interpolates between the full and the collapsed size.
 //!
-//! The collapse axis is the flex *cross* axis: a vertical sidebar is a
+//! The collapse axis is the flex *cross* axis: a vertical bar is a
 //! column whose width collapses; a horizontal one is a row whose height
 //! collapses. The header takes room along the flex main axis (above the
 //! column, left of the row). Everything that needs no renderer lives in
@@ -11,7 +11,7 @@ use iced::advanced::layout::{Limits, Node, flex};
 use iced::advanced::widget::Tree;
 use iced::{Alignment, Length, Size, Vector};
 
-use super::{Catalog, Sidebar, State};
+use super::core::{Core, State};
 use crate::descriptor::Axis;
 
 /// Linear interpolation from `full` (progress 0) to `collapsed` (progress 1).
@@ -101,30 +101,29 @@ pub(super) fn collapse(
     Collapse { full, current }
 }
 
-/// Lays the sidebar out: header offset, flex body, collapse-axis extent.
+/// Lays the bar out: header offset, flex body, collapse-axis extent.
 ///
 /// Children sit flush with the leading edge of a column (`Alignment::Start`,
 /// a navigation list) and centred across a row (`Alignment::Center`, a
 /// toolbar). When the collapse-axis length is `Shrink` the body is measured
 /// once at its natural size; that pass is reused as the final layout while
-/// the sidebar is fully expanded and the limits did not clamp it, so
+/// the bar is fully expanded and the limits did not clamp it, so
 /// children are laid out once per frame at rest.
 pub(super) fn resolve<Message, Theme, Renderer>(
-    sidebar: &mut Sidebar<'_, Message, Theme, Renderer>,
+    bar: &mut Core<'_, Message, Theme, Renderer>,
     tree: &mut Tree,
     renderer: &Renderer,
     limits: &Limits,
 ) -> Node
 where
-    Theme: Catalog,
     Renderer: iced::advanced::Renderer,
 {
-    let axis = sidebar.axis;
+    let axis = bar.axis;
     let progress = tree.state.downcast_ref::<State>().progress();
-    let header = sidebar.header_extent();
-    let collapsed_size = sidebar.collapsed_size;
-    let width = sidebar.width.resolve();
-    let height = sidebar.height.resolve();
+    let header = bar.header_extent();
+    let collapsed_size = bar.collapsed_size;
+    let width = bar.width.resolve();
+    let height = bar.height.resolve();
     let body_limits = body_limits(axis, limits, header);
     let align = match axis {
         Axis::Vertical => Alignment::Start,
@@ -138,10 +137,10 @@ where
             limits,
             width,
             height,
-            sidebar.padding,
-            sidebar.spacing,
+            bar.padding,
+            bar.spacing,
             align,
-            &mut sidebar.children,
+            &mut bar.children,
             &mut tree.children,
         )
     };

@@ -28,6 +28,7 @@ use crate::descriptor::{Axis, ButtonContent, ButtonHierarchy, ButtonSize};
 use crate::theme::metrics::{Radius, Spacing, Width, padding_vh};
 use crate::theme::palette::{Palette, mix, with_alpha};
 use crate::theme::typography::{TextSize, TextStyle, TypographyTheme};
+use crate::widget::collapsible_bar::header::EdgeShadow;
 
 /// Progress-bar paint, geometry and percentage typography.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -245,6 +246,42 @@ pub struct SidebarTheme {
 }
 
 impl SidebarTheme {
+    /// The gap between children along `axis`.
+    #[must_use]
+    pub const fn spacing(&self, axis: Axis) -> f32 {
+        match axis {
+            Axis::Vertical => self.column_spacing,
+            Axis::Horizontal => self.row_spacing,
+        }
+    }
+}
+
+/// Everything a header is drawn with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeaderTheme {
+    /// Fill behind the whole header.
+    pub background: Color,
+    /// Painted over the collapse toggle while hovered.
+    pub hover_overlay: Color,
+    /// Colour of the toggle chevron.
+    pub icon: Color,
+    /// External edge-directed shadow, if any.
+    pub shadow: Option<EdgeShadow>,
+    /// Extent of the toggle row (or column) along the flex main axis.
+    pub header_size: f32,
+    /// Size along the collapse axis when collapsed.
+    pub collapsed_size: f32,
+    /// Side length of the collapse-toggle icon.
+    pub icon_size: f32,
+    /// Padding around the children.
+    pub padding: f32,
+    /// Gap between the children of a column ([`Axis::Vertical`]).
+    pub column_spacing: f32,
+    /// Gap between the children of a row ([`Axis::Horizontal`]).
+    pub row_spacing: f32,
+}
+
+impl HeaderTheme {
     /// The gap between children along `axis`.
     #[must_use]
     pub const fn spacing(&self, axis: Axis) -> f32 {
@@ -522,6 +559,8 @@ pub struct Theme {
     pub input: InputTheme,
     /// Sidebar tokens.
     pub sidebar: SidebarTheme,
+    /// Header tokens.
+    pub header: HeaderTheme,
     /// Tab-bar tokens.
     pub tabs: TabsTheme,
     /// Card tokens.
@@ -664,6 +703,26 @@ const fn light_sidebar(p: &Palette) -> SidebarTheme {
         hover_overlay: with_alpha(p.black, 0.06),
         icon: p.text_primary,
         edge_shadow: Some(with_alpha(p.black, 0.03)),
+        header_size: 44.0,
+        collapsed_size: 50.0,
+        icon_size: 20.0,
+        padding: 10.0,
+        column_spacing: 5.0,
+        row_spacing: 8.0,
+    }
+}
+
+/// The light look's `header` tokens; see [`Theme::light`].
+const fn light_header(p: &Palette) -> HeaderTheme {
+    HeaderTheme {
+        background: p.white,
+        hover_overlay: with_alpha(p.black, 0.06),
+        icon: p.text_primary,
+        shadow: Some(EdgeShadow {
+            color: with_alpha(p.black, 0.05),
+            offset: 2.0,
+            blur_radius: 20.0,
+        }),
         header_size: 44.0,
         collapsed_size: 50.0,
         icon_size: 20.0,
@@ -1004,6 +1063,7 @@ impl Theme {
             button: light_button(&p, &typography),
             input: light_input(&p, &typography),
             sidebar: light_sidebar(&p),
+            header: light_header(&p),
             tabs: light_tabs(&p),
             card: light_card(&p, &typography),
             error_bubble: light_error_bubble(&p, &typography),
@@ -1054,6 +1114,17 @@ impl Theme {
                 icon: p.text_primary,
                 edge_shadow: Some(with_alpha(p.white, 0.05)),
                 ..light.sidebar
+            },
+            header: HeaderTheme {
+                background: p.gray.s800,
+                hover_overlay: with_alpha(p.white, 0.08),
+                icon: p.text_primary,
+                shadow: Some(EdgeShadow {
+                    color: with_alpha(p.black, 0.35),
+                    offset: 2.0,
+                    blur_radius: 20.0,
+                }),
+                ..light.header
             },
             tabs: TabsTheme {
                 background: p.gray.s800,
@@ -1157,6 +1228,12 @@ mod tests {
             );
         }
         assert!(t.sidebar.collapsed_size > 0.0 && t.sidebar.header_size > 0.0);
+        assert!(t.header.collapsed_size > 0.0 && t.header.header_size > 0.0);
+        if let Some(shadow) = t.header.shadow {
+            assert!(finite(shadow.color));
+            assert!(shadow.offset.is_finite() && shadow.offset >= 0.0);
+            assert!(shadow.blur_radius.is_finite() && shadow.blur_radius >= 0.0);
+        }
         assert!(t.card.width > 0.0);
         // 11 + 11 of padding around one line of the heading style, whose
         // line height is 28. The original kit wrote 53.4 into the code as a
@@ -1232,6 +1309,11 @@ mod tests {
         assert!(
             ratio(t.palette.text_primary, t.sidebar.background) >= 4.5,
             "{} sidebar",
+            t.name
+        );
+        assert!(
+            ratio(t.palette.text_primary, t.header.background) >= 4.5,
+            "{} header",
             t.name
         );
     }
@@ -1327,6 +1409,19 @@ mod tests {
             s.column_spacing
         );
         assert_eq!(Theme::DARK.sidebar.row_spacing, s.row_spacing);
+    }
+
+    #[test]
+    fn the_light_header_is_white_with_the_requested_shadow() {
+        let h = Theme::LIGHT.header;
+        let shadow = h.shadow.expect("the header casts an external shadow");
+
+        assert_eq!(h.background, Theme::LIGHT.palette.white);
+        assert_eq!(shadow.color, with_alpha(Theme::LIGHT.palette.black, 0.05));
+        assert_eq!(shadow.offset, 2.0);
+        assert_eq!(shadow.blur_radius, 20.0);
+        assert_eq!(h.spacing(Axis::Horizontal), h.row_spacing);
+        assert_eq!(h.spacing(Axis::Vertical), h.column_spacing);
     }
 
     #[test]

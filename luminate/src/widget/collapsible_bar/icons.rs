@@ -15,7 +15,7 @@ static UP: LazyLock<svg::Handle> =
 static DOWN: LazyLock<svg::Handle> =
     LazyLock::new(|| svg::Handle::from_memory(include_bytes!("assets/chevron-down.svg")));
 
-/// The toggle chevron: it points the way the sidebar edge will move when
+/// The toggle chevron: it points the way the bar edge will move when
 /// pressed (a column collapses its width, a row its height).
 pub(super) fn chevron(axis: Axis, collapsed: bool) -> svg::Handle {
     match (axis, collapsed) {
